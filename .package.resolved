@@ -1,5 +1,5 @@
 {
-  "originHash" : "d56287c6db3f59f8b2146f39b777c91898dbdada65d11e4f978ae1919fe029d7",
+  "originHash" : "cf5d233e83849f1fc9cf9add542a1cc6db5d16945e85f6a32225f92c65461131",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -20,12 +20,21 @@
       }
     },
     {
-      "identity" : "fluidaudio",
+      "identity" : "keyboardshortcuts",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/FluidInference/FluidAudio.git",
+      "location" : "https://github.com/sindresorhus/KeyboardShortcuts",
       "state" : {
-        "revision" : "3c6e79f1d74411cae1f3daf50260dd19a585dc2d",
-        "version" : "0.15.3"
+        "revision" : "1aef85578fdd4f9eaeeb8d53b7b4fc31bf08fe27",
+        "version" : "2.4.0"
+      }
+    },
+    {
+      "identity" : "mlx-audio-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/beshkenadze/mlx-audio-swift.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "6671490176d24bc962f0b8cd50dbf24e2427e387"
       }
     },
     {
@@ -33,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ml-explore/mlx-swift.git",
       "state" : {
-        "revision" : "61b9e011e09a62b489f6bd647958f1555bdf2896",
-        "version" : "0.31.3"
+        "revision" : "0bb916c67f4b9e5c682cbe02a42c701c93ab5021",
+        "version" : "0.31.6"
       }
     },
     {
@@ -47,12 +56,12 @@
       }
     },
     {
-      "identity" : "rnnoise",
+      "identity" : "posthog-ios",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ronnyf/rnnoise.git",
+      "location" : "https://github.com/PostHog/posthog-ios",
       "state" : {
-        "revision" : "6eecf0f4db9864221c777383d99795912703068e",
-        "version" : "1.0.1"
+        "revision" : "19288ee2f0575606b4669b2abadda2c9db97c529",
+        "version" : "3.66.1"
       }
     },
     {
@@ -62,6 +71,15 @@
       "state" : {
         "revision" : "87e50f483c54e6efd60e885f7f5aa946cee68023",
         "version" : "1.2.1"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
       }
     },
     {

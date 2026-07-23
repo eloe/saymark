@@ -1,0 +1,307 @@
+import AppKit
+import Foundation
+import KeyboardShortcuts
+import SaymarkKit
+import Observation
+import PostHog
+
+/// Thin SwiftUI-facing wrapper around `SaymarkKit.DictationSession`: maps the
+/// shared pipeline to an `@Observable` menu-bar state, wires the Carbon hotkey
+/// to start/stop, and injects the final transcript into the focused field.
+///
+/// All the heavy lifting (mic, STT, 480 ms feed, warm-up) lives in SaymarkKit and
+/// is shared verbatim with `saymark-cli`.
+@MainActor
+@Observable
+final class DictationController {
+    enum State: Equatable {
+        case loadingModels
+        case idle
+        case recording
+        case transcribing
+        case transcribed(String)
+        case error(String)
+    }
+
+    private(set) var state: State = .loadingModels
+
+    private let session = DictationSession()
+    private let hud = HUDController()
+    @ObservationIgnored private var updateSubscription: DictationUpdateSubscription?
+
+    /// The shared, already-warmed pipeline — exposed so onboarding's try-it step
+    /// reuses it instead of spinning up a second `DictationSession`.
+    var dictationSession: DictationSession { session }
+    @ObservationIgnored private var promptedAccessibility = false
+    @ObservationIgnored private var isPreparing = false
+
+    var shortcutLabel: String {
+        KeyboardShortcuts.getShortcut(for: .dictate)?.description ?? "⌃⌥Space"
+    }
+
+    /// Typing into other apps needs Accessibility (the hotkey itself does not).
+    var needsAccessibilityToType: Bool { !Accessibility.isTrusted }
+
+    var statusLine: String {
+        switch state {
+        case .loadingModels: return "Loading models…"
+        case .idle: return "Idle — hold \(shortcutLabel)"
+        case .recording: return "Listening…"
+        case .transcribing: return "Transcribing…"
+        case let .transcribed(t): return t.isEmpty ? "…(no speech detected)" : t
+        case let .error(m): return "Error: \(m)"
+        }
+    }
+
+    /// Compact status for the menu popover.
+    var shortStatus: String {
+        switch state {
+        case .loadingModels: return "Loading…"
+        case .idle, .transcribed: return "Ready"
+        case .recording: return "Listening"
+        case .transcribing: return "Transcribing"
+        case let .error(m): return m
+        }
+    }
+
+    /// True while a dictation is in flight (drives the popover pulse dot).
+    var isActive: Bool {
+        state == .recording || state == .transcribing
+    }
+
+    func bootstrap() {
+        let accessibilityTrusted = Accessibility.isTrusted
+        SaymarkDiagnostics.log(.info, "dictation.controller_bootstrap", fields: [
+            "model_mode": ModelSetting.current.rawValue,
+            "trigger_mode": TriggerMode.current.rawValue,
+            "insert_mode": InsertMode.current.rawValue,
+            "accessibility_trusted": accessibilityTrusted,
+        ])
+        updateSubscription = session.observeUpdates { [weak self] confirmed, partial in
+            self?.echo(confirmed, partial)
+        }
+        KeyboardShortcuts.onKeyDown(for: .dictate) { [weak self] in self?.hotkeyDown() }
+        KeyboardShortcuts.onKeyUp(for: .dictate) { [weak self] in self?.hotkeyUp() }
+        session.requestMicrophonePermission()            // surface the mic prompt early
+        if InsertMode.current == .inField, !accessibilityTrusted {
+            promptedAccessibility = true
+            Accessibility.prompt()
+        }
+        prepare(mode: ModelSetting.current)              // load only the current mode's models
+    }
+
+    func requestAccessibility() { Accessibility.prompt() }
+
+    /// Re-load when the Model setting changes (popover) — pulls in the newly
+    /// selected mode's models so the next dictation starts instantly.
+    func prepareCurrentMode() { prepare(mode: ModelSetting.current) }
+
+    /// Lazily load (download on first run) only the models `mode` needs, surfacing
+    /// a loading state. A no-op when already ready or a load is in flight.
+    private func prepare(mode: DictationMode) {
+        guard !isPreparing else {
+            SaymarkDiagnostics.log(.debug, "models.ui_prepare_ignored", fields: ["reason": "already_preparing", "mode": mode.rawValue])
+            return
+        }
+        guard !session.isReady(mode) else {
+            // Already warmed (e.g. onboarding loaded the selected plan into the
+            // shared session before bootstrap ran) — just go idle.
+            if case .loadingModels = state { state = .idle }
+            SaymarkDiagnostics.log(.debug, "models.ui_ready", fields: ["mode": mode.rawValue, "reused": true])
+            return
+        }
+        isPreparing = true
+        state = .loadingModels
+        Task { @MainActor in
+            defer { isPreparing = false }
+            do {
+                try await session.load(mode: mode)
+                if case .loadingModels = state { state = .idle }
+                SaymarkDiagnostics.log(.info, "models.ui_ready", fields: ["mode": mode.rawValue, "reused": false])
+            } catch {
+                SaymarkDiagnostics.log(.error, "models.ui_failed", fields: [
+                    "mode": mode.rawValue,
+                    "error_type": String(reflecting: type(of: error)),
+                    "error_description": error.localizedDescription,
+                ])
+                state = .error("model load: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Hotkey press: hold-mode starts; toggle-mode flips start/stop. Gated by the
+    /// master enable.
+    private func hotkeyDown() {
+        guard DictationEnabled.value else {
+            SaymarkDiagnostics.log(.trace, "hotkey.ignored", fields: ["reason": "dictation_disabled"])
+            return
+        }
+        switch TriggerMode.current {
+        case .hold:   beginRecording()
+        case .toggle: if state == .recording { endRecording() } else { beginRecording() }
+        }
+    }
+
+    /// Hotkey release only ends dictation in hold mode (toggle ignores release).
+    private func hotkeyUp() {
+        if TriggerMode.current == .hold { endRecording() }
+    }
+
+    private func beginRecording() {
+        let gestureStarted = ProcessInfo.processInfo.systemUptime
+        guard state != .recording, state != .transcribing else {
+            SaymarkDiagnostics.log(.trace, "hotkey.ignored", fields: ["reason": "dictation_in_flight"])
+            return
+        }
+        let modelMode = ModelSetting.current
+        // Models for this mode not loaded yet (e.g. just switched) — kick the load
+        // and skip this press; the next one records once ready.
+        guard session.isReady(modelMode) else {
+            SaymarkDiagnostics.log(.debug, "dictation.start_deferred", fields: ["reason": "models_not_ready", "mode": modelMode.rawValue])
+            prepare(mode: modelMode)
+            return
+        }
+        let insert = InsertMode.current
+        let toggle = TriggerMode.current == .toggle
+        // Give visual feedback before AVAudioEngine setup. Capture startup takes
+        // around 100 ms on this Mac; the HUD should never wait behind it.
+        hud.begin(presentation: insert == .hudOnly, lang: "Auto",
+                  interactive: toggle, onStop: { [weak self] in self?.endRecording() })
+        SaymarkDiagnostics.log(.debug, "dictation.hud_presented", fields: [
+            "latency_ms": (ProcessInfo.processInfo.systemUptime - gestureStarted) * 1_000,
+            "model_mode": modelMode.rawValue,
+        ])
+        do {
+            // The live two-tier view stays in the HUD; the field receives one paste
+            // on release (Variant B — paste is atomic, so no live-into-field typing).
+            try session.start(mode: modelMode)
+            SaymarkDiagnostics.log(.info, "dictation.ui_started", sessionID: session.activeSessionID, fields: [
+                "model_mode": modelMode.rawValue,
+                "trigger_mode": TriggerMode.current.rawValue,
+                "insert_mode": insert.rawValue,
+            ])
+            state = .recording
+            PostHogSDK.shared.capture("dictation_started", properties: [
+                "model_mode": modelMode.rawValue,
+                "trigger_mode": TriggerMode.current.rawValue,
+                "insert_mode": insert.rawValue,
+            ])
+        } catch {
+            SaymarkDiagnostics.log(.error, "dictation.ui_start_failed", sessionID: session.activeSessionID, fields: [
+                "model_mode": modelMode.rawValue,
+                "error_type": String(reflecting: type(of: error)),
+                "error_description": error.localizedDescription,
+            ])
+            state = .error(error.localizedDescription)
+            PostHogSDK.shared.capture("dictation_failed", properties: [
+                "error": error.localizedDescription,
+                "model_mode": modelMode.rawValue,
+            ])
+            hud.error("Open Privacy in Settings →")
+        }
+    }
+
+    /// Runs on the mic capture queue (via `onUpdate`). Two jobs (nothing is typed
+    /// into the field live — the field gets one paste on release):
+    ///  1. drive the HUD overlay (confirmed prefix + the fast Nemotron `⟨tail⟩`),
+    ///     hopping to the main actor since the panel is UI;
+    /// Transcript content is intentionally never written to diagnostics or stderr.
+    private nonisolated func echo(_ confirmed: String, _ partial: String) {
+        Task { @MainActor in self.hud.update(confirmed: confirmed, partial: partial) }
+    }
+
+    private func endRecording() {
+        guard state == .recording else { return }
+        state = .transcribing
+        hud.processing()
+        let modelModeAtStop = ModelSetting.current.rawValue
+        let insertModeAtStop = InsertMode.current.rawValue
+        let diagnosticSessionID = session.activeSessionID
+        SaymarkDiagnostics.log(.info, "dictation.ui_stop_requested", sessionID: diagnosticSessionID)
+        // Drain off the main thread so a slow finish never freezes the UI, then
+        // paste the final on the main thread (pasteboard + ⌘V).
+        Task.detached(priority: .userInitiated) { [session] in
+            let final = session.stop()
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if final.isEmpty {
+                    self.hud.error(
+                        title: String(localized: "No speech detected"),
+                        detail: String(localized: "Try again and speak a little longer")
+                    )
+                } else if InsertMode.current == .inField {
+                    self.insertFinal(final, sessionID: diagnosticSessionID)
+                } else {
+                    self.hud.finish(final)
+                }
+                SaymarkDiagnostics.log(.info, "dictation.ui_completed", sessionID: diagnosticSessionID, fields: [
+                    "word_count": final.split(separator: " ").count,
+                    "character_count": final.count,
+                    "is_empty": final.isEmpty,
+                    "model_mode": modelModeAtStop,
+                    "insert_mode": insertModeAtStop,
+                ])
+                PostHogSDK.shared.capture("dictation_completed", properties: [
+                    "word_count": final.split(separator: " ").count,
+                    "character_count": final.count,
+                    "is_empty": final.isEmpty,
+                    "model_mode": modelModeAtStop,
+                    "insert_mode": insertModeAtStop,
+                ])
+                self.state = .transcribed(final)
+            }
+        }
+    }
+
+    /// Paste the final transcript into the focused field (In-field mode). Posting
+    /// ⌘V needs Accessibility — if untrusted, prompt once and leave the text on the
+    /// clipboard so it's not lost. Secure input (password fields) blocks paste; we
+    /// say so in the HUD instead of dropping silently.
+    private func insertFinal(_ text: String, sessionID: String?) {
+        guard Accessibility.isTrusted else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            if !promptedAccessibility { promptedAccessibility = true; Accessibility.prompt() }
+            SaymarkDiagnostics.log(.warn, "dictation.insert_copied", sessionID: sessionID, fields: [
+                "reason": "accessibility_not_trusted",
+                "character_count": text.count,
+            ])
+            hud.error(
+                title: String(localized: "Copied to clipboard"),
+                detail: String(localized: "Enable Accessibility to paste automatically"),
+                hideAfter: 5.0
+            )
+            return
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        switch TextInjector.paste(text + " ") {
+        case .pasted:
+            SaymarkDiagnostics.log(.info, "dictation.insert_completed", sessionID: sessionID, fields: [
+                "outcome": "pasted",
+                "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
+                "character_count": text.count,
+            ])
+            hud.finish(text)
+        case .failed:
+            SaymarkDiagnostics.log(.error, "dictation.insert_completed", sessionID: sessionID, fields: [
+                "outcome": "failed",
+                "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
+                "character_count": text.count,
+            ])
+            hud.error(
+                title: String(localized: "Couldn’t paste text"),
+                detail: String(localized: "The transcript was copied — press ⌘V")
+            )
+        case .copiedSecureInput:
+            SaymarkDiagnostics.log(.warn, "dictation.insert_completed", sessionID: sessionID, fields: [
+                "outcome": "copied_secure_input",
+                "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
+                "character_count": text.count,
+            ])
+            hud.error(
+                title: String(localized: "Field is protected"),
+                detail: String(localized: "The transcript was copied — press ⌘V")
+            )
+        }
+    }
+}

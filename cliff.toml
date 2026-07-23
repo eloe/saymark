@@ -31,6 +31,6 @@ commit_parsers = [
   { message = "^release", skip = true },
 ]
 # Only commits under the release tag pattern.
-tag_pattern = "murmur-v[0-9]*"
+tag_pattern = "saymark-v[0-9]*"
 filter_commits = true
 sort_commits = "newest"
