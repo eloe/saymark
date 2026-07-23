@@ -32,15 +32,25 @@ struct SettingsView: View {
                 Text("“HUD only” never types into other apps — it shows live subtitles in the HUD, handy for presentations and demos.")
             }
 
-            Section {
-                Toggle("Share anonymous usage & crash reports", isOn: $analyticsEnabled)
-                    .onChange(of: analyticsEnabled) { _, on in
-                        AnalyticsConsent.set(on)
-                    }
-            } header: {
-                Text("Privacy")
-            } footer: {
-                Text("Helps fix bugs and improve Saymark. Only anonymous events and errors are sent — never your audio or transcripts. Dictation runs fully on-device either way.")
+            if AnalyticsConsent.isAvailable {
+                Section {
+                    Toggle("Share anonymous usage & crash reports", isOn: $analyticsEnabled)
+                        .onChange(of: analyticsEnabled) { _, on in
+                            AnalyticsConsent.set(on)
+                        }
+                } header: {
+                    Text("Privacy")
+                } footer: {
+                    Text("Helps fix bugs and improve Saymark. Only anonymous events and errors are sent — never your audio or transcripts. Dictation runs fully on-device either way.")
+                }
+            } else {
+                Section {
+                    LabeledContent("Remote analytics", value: "Not configured")
+                } header: {
+                    Text("Privacy")
+                } footer: {
+                    Text("This build does not send usage or crash reports. Diagnostic logs remain on this Mac.")
+                }
             }
 
             Section {

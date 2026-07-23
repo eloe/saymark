@@ -98,12 +98,16 @@ private struct WelcomeScreen: View {
             .padding(.top, 22)
 
             modelsNote.padding(.top, 16)
-            consentToggle.padding(.top, 12)
+            if AnalyticsConsent.isAvailable {
+                consentToggle.padding(.top, 12)
+            } else {
+                localDiagnosticsNote.padding(.top, 12)
+            }
         }
     }
 
-    /// Opt-in analytics consent (off by default). Surfaced up front so the choice is
-    /// made before any event fires; flipping it opts in/out of PostHog immediately.
+    /// Opt-in analytics consent (off by default). This is only shown in builds
+    /// configured with Saymark's own analytics project.
     private var consentToggle: some View {
         Toggle(isOn: $analyticsEnabled) {
             Text("Share anonymous usage & crash reports — never your audio or transcripts. Optional, change anytime in Settings.")
@@ -117,6 +121,21 @@ private struct WelcomeScreen: View {
         .padding(.init(top: 10, leading: 14, bottom: 10, trailing: 14))
         .background(t.line(0.04), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(t.line(0.08), lineWidth: 1))
+    }
+
+    private var localDiagnosticsNote: some View {
+        Label {
+            Text("Diagnostics stay on this Mac. This build does not send usage or crash reports.")
+                .saymarkFont(12).lineSpacing(2).foregroundStyle(t.muted(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "lock.shield")
+                .foregroundStyle(SaymarkTheme.accent)
+        }
+        .padding(.init(top: 10, leading: 14, bottom: 10, trailing: 14))
+        .background(t.line(0.04), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(t.line(0.08), lineWidth: 1))
+        .accessibilityIdentifier("onboarding.local-diagnostics")
     }
 
     private func featureCard<Badge: View>(@ViewBuilder badge: () -> Badge,

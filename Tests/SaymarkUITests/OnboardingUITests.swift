@@ -22,6 +22,8 @@ final class OnboardingUITests: XCTestCase {
         let modelNote = app.staticTexts["onboarding.model-note"]
         XCTAssertTrue(modelNote.exists)
         XCTAssertFalse(app.staticTexts["Two voice models installed"].exists)
+        XCTAssertTrue(app.otherElements["onboarding.local-diagnostics"].exists)
+        XCTAssertFalse(app.switches["Share anonymous usage & crash reports"].exists)
 
         continueButton("Get started").click()
         XCTAssertTrue(app.staticTexts["Two quick permissions"].waitForExistence(timeout: 2))

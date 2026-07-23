@@ -19,6 +19,10 @@ identifiers, app/OS versions, error categories, and randomized session IDs.
 They must not contain audio samples, transcript text, focused-field contents,
 selected text, or clipboard contents. See [`diagnostic-logging.md`](diagnostic-logging.md).
 
+Current source and local builds do not send usage or crash reports. Their
+diagnostics remain in a local file. Remote telemetry must remain disabled until
+the requirements in [`telemetry-todo.md`](telemetry-todo.md) are complete.
+
 ## Local development identity
 
 The self-signed local identity exists only to stabilize macOS trust during

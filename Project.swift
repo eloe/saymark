@@ -32,7 +32,7 @@ let project = Project(
         .remote(url: "https://github.com/sindresorhus/KeyboardShortcuts",
                 requirement: .upToNextMajor(from: "2.0.0")),
         .remote(url: "https://github.com/PostHog/posthog-ios",
-                requirement: .upToNextMajor(from: "3.0.0")),   // anonymous usage/error analytics (opt-out)
+                requirement: .upToNextMajor(from: "3.0.0")),   // future anonymous analytics; strictly opt-in
     ],
     targets: [
         .target(
@@ -52,7 +52,7 @@ let project = Project(
                 "CFBundleDevelopmentRegion": "en",
                 "NSMicrophoneUsageDescription":
                     "Saymark transcribes your speech on-device while you hold the dictation hotkey.",
-                // Analytics key injected from SAYMARK_POSTHOG_KEY (empty in source/fork builds → off).
+                // Future Saymark-owned analytics key. Empty in source/local builds → no network telemetry.
                 "PostHogAPIKey": .string(posthogAPIKey),
             ]),
             sources: ["Sources/Saymark/**/*.swift"],

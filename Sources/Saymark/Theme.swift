@@ -82,6 +82,14 @@ enum InsertMode: String, CaseIterable, Identifiable {
 /// transcripts are ever sent regardless.
 enum AnalyticsConsent {
     static let key = "saymark.analyticsEnabled"
+    /// Remote analytics is unavailable in source/local builds until Saymark has
+    /// its own PostHog project and the build injects that project's write-only key.
+    static var isAvailable: Bool {
+        guard let token = Bundle.main.object(forInfoDictionaryKey: "PostHogAPIKey") as? String else {
+            return false
+        }
+        return !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     /// Defaults to `false` (opt-in) when unset.
     static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
     /// SSOT for applying consent: persists + flips PostHog. Call from any toggle.
