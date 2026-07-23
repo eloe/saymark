@@ -3,6 +3,11 @@
 Saymark is a native macOS menu-bar application with a reusable Swift package for
 the dictation pipeline.
 
+For a complete system map, use the
+[interactive architecture page](architecture.html). Its canonical,
+machine-readable source is [`architecture.json`](architecture.json), which is
+structured as a handoff for future agents and repository tooling.
+
 ## Components
 
 - **Saymark app** (`Sources/Saymark`) owns onboarding, settings, the menu bar,

@@ -1,0 +1,1137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Saymark architecture map</title>
+  <style>
+    :root {
+      --bg: #090b0f;
+      --panel: rgba(21, 24, 31, .82);
+      --panel-solid: #15181f;
+      --raised: #1b1f28;
+      --line: rgba(255, 255, 255, .09);
+      --line-strong: rgba(255, 255, 255, .16);
+      --text: #f5f7fb;
+      --muted: #969eae;
+      --faint: #606979;
+      --blue: #0a84ff;
+      --cyan: #59d6ff;
+      --green: #32d583;
+      --purple: #a78bfa;
+      --orange: #ffb454;
+      --red: #ff6467;
+      --radius: 18px;
+      --mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 78% -10%, rgba(10,132,255,.20), transparent 31rem),
+        radial-gradient(circle at 5% 30%, rgba(89,214,255,.08), transparent 30rem),
+        var(--bg);
+      font-family: var(--sans);
+      line-height: 1.45;
+    }
+    a { color: inherit; text-decoration: none; }
+    code {
+      display: block;
+      width: fit-content;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      color: #c8d1df;
+      font: 11px/1.55 var(--mono);
+      background: rgba(255,255,255,.055);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 3px 7px;
+      margin: 4px 0;
+    }
+    .shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 28px 18px;
+      border-right: 1px solid var(--line);
+      background: rgba(9,11,15,.72);
+      backdrop-filter: blur(30px) saturate(1.25);
+      z-index: 5;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 24px; }
+    .brand-mark {
+      display: grid; place-items: center; width: 34px; height: 34px;
+      border-radius: 10px; background: var(--blue);
+      box-shadow: 0 10px 28px rgba(10,132,255,.3);
+      font-size: 17px; font-weight: 800;
+    }
+    .brand strong { display: block; font-size: 14px; }
+    .brand span { display: block; color: var(--muted); font-size: 11px; }
+    nav a {
+      display: flex; align-items: center; gap: 9px;
+      padding: 8px 10px; margin: 2px 0; border-radius: 8px;
+      color: var(--muted); font-size: 12px; transition: .16s ease;
+    }
+    nav a::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--faint); }
+    nav a:hover, nav a.active { color: var(--text); background: rgba(255,255,255,.06); }
+    nav a.active::before { background: var(--blue); box-shadow: 0 0 0 4px rgba(10,132,255,.15); }
+    .aside-meta {
+      position: absolute; bottom: 24px; left: 28px; right: 28px;
+      padding-top: 14px; border-top: 1px solid var(--line);
+      color: var(--faint); font: 10px/1.6 var(--mono);
+    }
+    main { min-width: 0; }
+    .hero {
+      min-height: 560px; display: flex; align-items: flex-end;
+      padding: 90px clamp(32px, 6vw, 88px) 68px;
+      border-bottom: 1px solid var(--line);
+    }
+    .hero-inner { max-width: 1020px; }
+    .hero h1 {
+      margin: 12px 0 20px; max-width: 900px;
+      font-size: clamp(46px, 7vw, 88px); line-height: .97;
+      letter-spacing: -.055em;
+    }
+    .hero h1 span {
+      background: linear-gradient(100deg, #fff 15%, #93d8ff 72%, #0a84ff);
+      -webkit-background-clip: text; color: transparent;
+    }
+    .hero p { max-width: 690px; margin: 0; color: var(--muted); font-size: 18px; }
+    .eyebrow {
+      display: block; color: var(--blue); text-transform: uppercase;
+      font: 700 10px/1.5 var(--mono); letter-spacing: .13em;
+    }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
+    .pill {
+      display: inline-flex; align-items: center; width: fit-content;
+      padding: 4px 8px; margin: 2px 4px 2px 0; border-radius: 999px;
+      color: var(--muted); background: rgba(255,255,255,.055);
+      border: 1px solid var(--line); font: 600 9px/1 var(--mono);
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .pill.presentation { color: var(--cyan); border-color: rgba(89,214,255,.22); }
+    .pill.core { color: var(--purple); border-color: rgba(167,139,250,.24); }
+    .pill.inference { color: var(--orange); border-color: rgba(255,180,84,.24); }
+    .pill.good { color: var(--green); border-color: rgba(50,213,131,.25); }
+    .pill.nemotron { color: var(--cyan); }
+    .pill.parakeet { color: var(--purple); }
+    section { padding: 78px clamp(32px, 6vw, 88px); border-bottom: 1px solid var(--line); }
+    .section-head {
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 440px);
+      gap: 40px; align-items: end; margin-bottom: 34px;
+    }
+    h2 { margin: 8px 0 0; font-size: clamp(30px, 4vw, 48px); letter-spacing: -.035em; line-height: 1.05; }
+    .section-head p { color: var(--muted); margin: 0; font-size: 14px; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 32px 0 44px; }
+    .stat {
+      padding: 18px; border: 1px solid var(--line); border-radius: 14px;
+      background: linear-gradient(150deg, rgba(255,255,255,.065), rgba(255,255,255,.025));
+    }
+    .stat strong { display: block; font-size: 26px; letter-spacing: -.03em; }
+    .stat span { color: var(--muted); font-size: 11px; }
+    .layers { max-width: 880px; margin: 0 auto; }
+    .layer-card {
+      display: grid; grid-template-columns: 54px 1fr; gap: 16px; align-items: start;
+      padding: 22px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 24px 70px rgba(0,0,0,.16);
+    }
+    .layer-card.presentation { border-color: rgba(89,214,255,.20); }
+    .layer-card.core { border-color: rgba(167,139,250,.22); }
+    .layer-card.inference { border-color: rgba(255,180,84,.22); }
+    .layer-icon {
+      display: grid; place-items: center; width: 46px; height: 46px;
+      border-radius: 13px; background: rgba(255,255,255,.06); color: var(--blue); font-size: 20px;
+    }
+    .layer-card h3 { margin: 3px 0 7px; font-size: 18px; }
+    .layer-card p { margin: 0; color: var(--muted); font-size: 12px; }
+    .layer-arrow { color: var(--faint); text-align: center; font-size: 20px; height: 38px; line-height: 38px; }
+    .flow {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px; overflow: hidden; border: 1px solid var(--line);
+      border-radius: var(--radius); background: var(--line);
+    }
+    .flow-step {
+      min-height: 86px; display: grid; grid-template-columns: 34px 1fr;
+      gap: 12px; align-items: start; padding: 18px; background: var(--panel-solid);
+      color: #d9deea; font-size: 12px;
+    }
+    .flow-index { color: var(--blue); font: 700 10px/1.5 var(--mono); }
+    .callout {
+      margin-top: 16px; padding: 16px 18px; border-left: 2px solid var(--blue);
+      color: var(--muted); background: rgba(10,132,255,.07); font-size: 12px;
+    }
+    .callout strong { color: var(--text); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); font-size: 12px; }
+    th, td { text-align: left; padding: 15px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font: 700 9px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    tr:last-child td { border-bottom: 0; }
+    td code { margin: 0; }
+    .memory-note {
+      display: grid; grid-template-columns: auto 1fr; gap: 14px; margin-top: 18px;
+      padding: 18px; border: 1px solid rgba(50,213,131,.19); border-radius: 14px;
+      background: rgba(50,213,131,.055);
+    }
+    .memory-note b { font-size: 20px; color: var(--green); }
+    .memory-note p { margin: 0; color: var(--muted); font-size: 12px; }
+    .lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .lane { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+    .lane > div { display: grid; grid-template-columns: 8px 1fr; column-gap: 10px; }
+    .lane-dot { grid-row: 1 / 3; margin-top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 5px rgba(10,132,255,.12); }
+    .lane h3 { margin: 0; font-size: 14px; }
+    .lane p { margin: 2px 0 0; color: var(--muted); font-size: 10px; }
+    ul { padding-left: 18px; margin: 12px 0 0; color: var(--muted); font-size: 11px; }
+    li { margin: 5px 0; }
+    .component-tools { display: flex; gap: 8px; margin-bottom: 18px; }
+    .search {
+      width: min(440px, 100%); border: 1px solid var(--line); border-radius: 10px;
+      background: rgba(255,255,255,.05); color: var(--text); outline: none;
+      padding: 10px 12px; font: 12px var(--sans);
+    }
+    .search:focus { border-color: rgba(10,132,255,.6); box-shadow: 0 0 0 3px rgba(10,132,255,.13); }
+    .component-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .component-card {
+      min-width: 0; padding: 17px; border: 1px solid var(--line); border-radius: 14px;
+      background: var(--panel); transition: border-color .18s, transform .18s;
+    }
+    .component-card:hover { transform: translateY(-2px); border-color: var(--line-strong); }
+    .component-card[hidden] { display: none; }
+    .component-topline { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .component-kind { color: var(--faint); font: 9px var(--mono); text-align: right; }
+    .component-card h3 { margin: 12px 0 9px; font-size: 15px; }
+    .depends { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; }
+    .depends > span:first-child { display: block; color: var(--faint); font: 9px var(--mono); margin-bottom: 4px; }
+    .guardrails { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .invariant {
+      display: grid; grid-template-columns: 28px 1fr; gap: 10px; padding: 16px;
+      border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+    }
+    .check { display: grid; place-items: center; width: 24px; height: 24px; color: var(--green); background: rgba(50,213,131,.1); border-radius: 50%; font-size: 12px; }
+    .invariant h3 { margin: 1px 0 5px; font-size: 12px; line-height: 1.4; }
+    .invariant p { margin: 0 0 9px; color: var(--muted); font-size: 10px; }
+    .route { border-bottom: 1px solid var(--line); }
+    .route summary {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 17px 3px; cursor: pointer; list-style: none; font-weight: 600; font-size: 13px;
+    }
+    .route summary::-webkit-details-marker { display: none; }
+    .chevron { color: var(--faint); font-size: 22px; transition: transform .2s; }
+    .route[open] .chevron { transform: rotate(90deg); }
+    .route-body {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+      padding: 4px 18px 20px; color: var(--muted);
+    }
+    .warning { grid-column: 1 / -1; color: var(--orange); font-size: 11px; }
+    .boundary-grid, .test-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .boundary, .test-card { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+    .boundary.disabled { opacity: .68; }
+    .boundary-status { color: var(--green); font: 800 9px var(--mono); }
+    .boundary.disabled .boundary-status { color: var(--red); }
+    .boundary h3, .test-card h3 { margin: 12px 0 7px; font-size: 14px; }
+    .boundary p, .boundary small { color: var(--muted); font-size: 10px; }
+    .boundary small { display: block; margin-top: 12px; }
+    .test-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    footer { padding: 36px clamp(32px, 6vw, 88px); color: var(--faint); font: 10px/1.7 var(--mono); }
+    .noscript { color: var(--orange); }
+    @media (max-width: 1050px) {
+      .component-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .boundary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 760px) {
+      .shell { display: block; }
+      aside { position: relative; width: 100%; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      nav { display: flex; overflow-x: auto; padding-bottom: 4px; }
+      nav a { white-space: nowrap; }
+      .aside-meta { display: none; }
+      .brand { padding-bottom: 12px; }
+      .hero { min-height: 460px; padding-top: 70px; }
+      .section-head { grid-template-columns: 1fr; gap: 14px; }
+      .stats, .component-grid, .guardrails, .lanes, .boundary-grid, .test-grid { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .route-body { grid-template-columns: 1fr; }
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f4f6f9; --panel: rgba(255,255,255,.82); --panel-solid: #fff;
+        --raised: #fff; --line: rgba(20,30,45,.10); --line-strong: rgba(20,30,45,.18);
+        --text: #121722; --muted: #606a79; --faint: #929aa7;
+      }
+      body { background: radial-gradient(circle at 80% 0, rgba(10,132,255,.12), transparent 30rem), var(--bg); }
+      aside { background: rgba(247,249,252,.78); }
+      code { color: #394557; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand"><div class="brand-mark">S</div><div><strong>Saymark</strong><span>Architecture map</span></div></div>
+      <nav><a href="#overview">Overview</a><a href="#flow">Runtime flow</a><a href="#models">Model policy</a><a href="#concurrency">Concurrency</a><a href="#components">Components</a><a href="#invariants">Guardrails</a><a href="#agents">Agent routing</a><a href="#boundaries">Trust boundaries</a><a href="#tests">Tests</a><a href="#files">File map</a></nav>
+      <div class="aside-meta">Schema v1<br>Based on 57f2624<br>2026-07-22</div>
+    </aside>
+    <main>
+      <header class="hero" id="overview">
+        <div class="hero-inner">
+          <span class="eyebrow">Native macOS · Local-first · Apple silicon</span>
+          <h1>The codebase, <span>explained.</span></h1>
+          <p>A native, local-first macOS menu-bar dictation app that captures speech, transcribes it on Apple silicon, and inserts final text into the focused application.</p>
+          <div class="hero-meta">
+            <span class="pill ">Swift</span>
+            <span class="pill ">SwiftUI + AppKit</span>
+            <span class="pill ">MLX</span>
+            <span class="pill ">macOS 15+</span>
+            <span class="pill ">arm64</span>
+            <span class="pill good">JSON source</span>
+          </div>
+        </div>
+      </header>
+
+      <section>
+        <div class="section-head">
+          <div><span class="eyebrow">System shape</span><h2>Three layers. One direction.</h2></div>
+          <p>Presentation may depend on SaymarkKit; SaymarkKit may depend on model and platform libraries. Model libraries must not depend on the app.</p>
+        </div>
+        <div class="stats">
+          <div class="stat"><strong>25</strong><span>mapped components</span></div>
+          <div class="stat"><strong>6</strong><span>runtime flows</span></div>
+          <div class="stat"><strong>10</strong><span>non-negotiable invariants</span></div>
+          <div class="stat"><strong>4</strong><span>verification surfaces</span></div>
+        </div>
+        <div class="layers">
+  <article class="layer-card presentation">
+    <div class="layer-icon">􀫊</div>
+    <div>
+      <span class="eyebrow">Sources/Saymark</span>
+      <h3>Application and presentation</h3>
+      <p>App lifecycle and first-run routing · Menu-bar UI and preferences · Global hotkey semantics</p>
+    </div>
+  </article>
+<div class="layer-arrow">↓</div>
+  <article class="layer-card core">
+    <div class="layer-icon">􀤆</div>
+    <div>
+      <span class="eyebrow">SaymarkKit/Sources/SaymarkKit</span>
+      <h3>Dictation orchestration core</h3>
+      <p>Microphone capture and 16 kHz mono conversion · 480 ms feed cadence · Speech gating</p>
+    </div>
+  </article>
+<div class="layer-arrow">↓</div>
+  <article class="layer-card inference">
+    <div class="layer-icon">􀇳</div>
+    <div>
+      <span class="eyebrow">Swift package dependencies and macOS frameworks</span>
+      <h3>Inference and platform dependencies</h3>
+      <p>MLX execution and memory accounting · Nemotron streaming ASR · Parakeet final ASR</p>
+    </div>
+  </article>
+</div>
+      </section>
+
+      <section id="flow">
+        <div class="section-head">
+          <div><span class="eyebrow">Critical path</span><h2>Hotkey to final text.</h2></div>
+          <p>The UI responds first. Audio and inference stay serialized. Final decoding leaves the main actor, then one atomic paste returns the result.</p>
+        </div>
+        <div class="flow">
+  <div class="flow-step">
+    <span class="flow-index">01</span>
+    <span>Reject the gesture if disabled, already active, or models are not ready</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">02</span>
+    <span>Present the HUD synchronously on the main actor</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">03</span>
+    <span>Start a fresh DictationSession and MicCapture</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">04</span>
+    <span>Capture and convert audio to 16 kHz mono</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">05</span>
+    <span>Emit 480 ms chunks on the capture queue</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">06</span>
+    <span>Serialize VAD and ASR on saymark.stt</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">07</span>
+    <span>Publish live updates to the HUD</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">08</span>
+    <span>On release, display Processing and stop capture</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">09</span>
+    <span>Finalize off the main actor</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">10</span>
+    <span>Use Parakeet final text in Efficient and Live Preview</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">11</span>
+    <span>Paste once into the focused app or leave text in the HUD</span>
+  </div>
+
+  <div class="flow-step">
+    <span class="flow-index">12</span>
+    <span>Tear down per-utterance resources and schedule HUD dismissal</span>
+  </div>
+</div>
+        <div class="callout"><strong>Final authority:</strong> Parakeet for product modes; Nemotron is live draft and empty-final fallback only</div>
+      </section>
+
+      <section id="models">
+        <div class="section-head">
+          <div><span class="eyebrow">Product policy</span><h2>Experiences, not model soup.</h2></div>
+          <p>Users choose a supported experience. The core owns which models load, which text is provisional, and which output wins.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Experience</th><th>Mode</th><th>Models</th><th>Feedback</th><th>Final authority</th><th>Notes</th></tr></thead>
+            <tbody>
+  <tr>
+    <td><strong>Efficient</strong><span class="pill good">First-run default</span></td>
+    <td><code>accurate</code></td>
+    <td><span class="pill parakeet">parakeet</span></td>
+    <td>On release</td>
+    <td>parakeet</td>
+    <td>Product mode</td>
+  </tr>
+
+  <tr>
+    <td><strong>Live Preview</strong></td>
+    <td><code>hybrid</code></td>
+    <td><span class="pill nemotron">nemotron</span><span class="pill parakeet">parakeet</span></td>
+    <td>Live</td>
+    <td>parakeet</td>
+    <td>nemotron only when Parakeet final is empty</td>
+  </tr>
+
+  <tr>
+    <td><strong>Fast</strong></td>
+    <td><code>fast</code></td>
+    <td><span class="pill nemotron">nemotron</span></td>
+    <td>Live</td>
+    <td>nemotron</td>
+    <td>Benchmarks and diagnostics only</td>
+  </tr>
+</tbody>
+          </table>
+        </div>
+        <div class="memory-note">
+          <b>18 GiB</b>
+          <p><strong>MLX safety ceiling.</strong> Model residency is process-lifetime and expected. Per-utterance capture, audio buffers, sessions, subscriptions, timers, and HUD content are not—they must be torn down after every dictation.</p>
+        </div>
+      </section>
+
+      <section id="concurrency">
+        <div class="section-head">
+          <div><span class="eyebrow">Ownership</span><h2>Concurrency has lanes.</h2></div>
+          <p>No shared inference free-for-all: UI, capture, MLX/VAD, logging, resource sampling, and finalization each have an explicit execution domain.</p>
+        </div>
+        <div class="lanes">
+  <article class="lane">
+    <div>
+      <span class="lane-dot"></span>
+      <h3>MainActor</h3>
+      <p>Actor-isolated</p>
+    </div>
+    <ul class=""><li>App lifecycle</li><li>Observable UI state</li><li>HUD and windows</li><li>Pasteboard insertion</li><li>Onboarding transitions</li></ul>
+  </article>
+
+  <article class="lane">
+    <div>
+      <span class="lane-dot"></span>
+      <h3>saymark.mic.capture</h3>
+      <p>serial DispatchQueue</p>
+    </div>
+    <ul class=""><li>Converted audio buffering</li><li>Capture metrics</li><li>480 ms chunk delivery</li></ul>
+  </article>
+
+  <article class="lane">
+    <div>
+      <span class="lane-dot"></span>
+      <h3>saymark.stt</h3>
+      <p>serial DispatchQueue</p>
+    </div>
+    <ul class=""><li>Silero streaming state</li><li>MLX model sessions</li><li>Inference ordering</li><li>Per-utterance inference metrics</li></ul>
+  </article>
+
+  <article class="lane">
+    <div>
+      <span class="lane-dot"></span>
+      <h3>saymark.diagnostics</h3>
+      <p>utility DispatchQueue</p>
+    </div>
+    <ul class=""><li>JSONL file creation, rotation, and append</li></ul>
+  </article>
+
+  <article class="lane">
+    <div>
+      <span class="lane-dot"></span>
+      <h3>saymark.resource-monitor</h3>
+      <p>utility DispatchQueue</p>
+    </div>
+    <ul class=""><li>30-second process sampling</li></ul>
+  </article>
+
+  <article class="lane">
+    <div>
+      <span class="lane-dot"></span>
+      <h3>detached finalization</h3>
+      <p>userInitiated Task</p>
+    </div>
+    <ul class=""><li>Blocking session.stop and final ASR drain</li></ul>
+  </article>
+</div>
+      </section>
+
+      <section id="components">
+        <div class="section-head">
+          <div><span class="eyebrow">Component catalog</span><h2>Find the owner before editing.</h2></div>
+          <p>Search by type, path, responsibility, or dependency. Every card states what the component owns.</p>
+        </div>
+        <div class="component-tools"><input class="search" id="component-search" type="search" placeholder="Search components, files, responsibilities…" autocomplete="off"></div>
+        <div class="component-grid" id="component-grid">
+      <article class="component-card" data-search="saymarkapp swiftui app presentation sources/saymark/saymarkapp.swift create the appdelegate expose menubarextra expose settings scene" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">SwiftUI App</span>
+        </div>
+        <h3>SaymarkApp</h3>
+        <code>Sources/Saymark/SaymarkApp.swift</code>
+        <ul class=""><li>Create the AppDelegate</li><li>Expose MenuBarExtra</li><li>Expose Settings scene</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">app-lifecycle</span><span class="pill ">menu-popover</span><span class="pill ">settings</span></div>
+      </article>
+      <article class="component-card" data-search="appdelegate mainactor application coordinator presentation sources/saymark/appdelegate.swift configure diagnostics and resource monitoring route first run to onboarding as a regular app route returning users to the menu-bar agent own the shared dictationcontroller and onboardingmodel host the persistent appkit onboarding window initialize optional telemetry only when a non-empty saymark key exists" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">MainActor application coordinator</span>
+        </div>
+        <h3>AppDelegate</h3>
+        <code>Sources/Saymark/AppDelegate.swift</code>
+        <ul class=""><li>Configure diagnostics and resource monitoring</li><li>Route first run to onboarding as a regular app</li><li>Route returning users to the menu-bar agent</li><li>Own the shared DictationController and OnboardingModel</li><li>Host the persistent AppKit onboarding window</li><li>Initialize optional telemetry only when a non-empty Saymark key exists</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">dictation-controller</span><span class="pill ">onboarding</span><span class="pill ">resource-monitor</span><span class="pill ">diagnostics</span><span class="pill ">telemetry</span></div>
+      </article>
+      <article class="component-card" data-search="menupopover swiftui view presentation sources/saymark/menupopover.swift display readiness and active state enable or disable dictation choose efficient or live preview experience choose in-field or hud-only output choose hold or toggle trigger open settings and replay onboarding" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">SwiftUI view</span>
+        </div>
+        <h3>MenuPopover</h3>
+        <code>Sources/Saymark/MenuPopover.swift</code>
+        <ul class=""><li>Display readiness and active state</li><li>Enable or disable dictation</li><li>Choose Efficient or Live Preview experience</li><li>Choose in-field or HUD-only output</li><li>Choose hold or toggle trigger</li><li>Open Settings and replay onboarding</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">dictation-controller</span><span class="pill ">preferences</span></div>
+      </article>
+      <article class="component-card" data-search="settingsview swiftui settings scene presentation sources/saymark/settingsview.swift configure global shortcut and insertion behavior configure local diagnostic verbosity reveal the local diagnostic log expose remote-analytics consent only when telemetry is configured" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">SwiftUI settings scene</span>
+        </div>
+        <h3>SettingsView</h3>
+        <code>Sources/Saymark/SettingsView.swift</code>
+        <ul class=""><li>Configure global shortcut and insertion behavior</li><li>Configure local diagnostic verbosity</li><li>Reveal the local diagnostic log</li><li>Expose remote-analytics consent only when telemetry is configured</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">preferences</span><span class="pill ">diagnostics</span><span class="pill ">telemetry</span></div>
+      </article>
+      <article class="component-card" data-search="onboarding observable coordinator plus six swiftui screens presentation sources/saymark/onboarding guide welcome, permissions, shortcut, download, try-it, and completion require microphone permission and allow accessibility to be skipped download and warm the efficient model plan reuse the production dictationsession for try-it persist completion in userdefaults" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">Observable coordinator plus six SwiftUI screens</span>
+        </div>
+        <h3>Onboarding</h3>
+        <code>Sources/Saymark/Onboarding</code>
+        <ul class=""><li>Guide welcome, permissions, shortcut, download, try-it, and completion</li><li>Require microphone permission and allow Accessibility to be skipped</li><li>Download and warm the Efficient model plan</li><li>Reuse the production DictationSession for try-it</li><li>Persist completion in UserDefaults</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">onboarding-flow</span><span class="pill ">model-downloader</span><span class="pill ">dictation-session</span><span class="pill ">permissions</span><span class="pill ">preferences</span></div>
+      </article>
+      <article class="component-card" data-search="dictationcontroller mainactor observable state machine presentation sources/saymark/dictationcontroller.swift register hotkey down and up handlers prepare the selected model mode present the hud before audio startup start and stop dictationsession bridge live transcript updates to the hud finalize off the main actor paste or retain the final transcript according to insertmode" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">MainActor observable state machine</span>
+        </div>
+        <h3>DictationController</h3>
+        <code>Sources/Saymark/DictationController.swift</code>
+        <ul class=""><li>Register hotkey down and up handlers</li><li>Prepare the selected model mode</li><li>Present the HUD before audio startup</li><li>Start and stop DictationSession</li><li>Bridge live transcript updates to the HUD</li><li>Finalize off the main actor</li><li>Paste or retain the final transcript according to InsertMode</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">dictation-session</span><span class="pill ">hud</span><span class="pill ">text-injector</span><span class="pill ">permissions</span><span class="pill ">preferences</span><span class="pill ">telemetry</span></div>
+      </article>
+      <article class="component-card" data-search="hudoverlay swiftui content hosted in a non-activating nspanel presentation sources/saymark/hudoverlay.swift appear immediately without stealing focus display provisional and finalized transcript segments show an explicit processing state after release support compact and six-line presentation layouts support a clickable stop control in toggle mode cancel stale hides and release hosted content after hiding" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">SwiftUI content hosted in a non-activating NSPanel</span>
+        </div>
+        <h3>HUDOverlay</h3>
+        <code>Sources/Saymark/HUDOverlay.swift</code>
+        <ul class=""><li>Appear immediately without stealing focus</li><li>Display provisional and finalized transcript segments</li><li>Show an explicit processing state after release</li><li>Support compact and six-line presentation layouts</li><li>Support a clickable stop control in toggle mode</li><li>Cancel stale hides and release hosted content after hiding</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="dictationsession ui-agnostic facade core saymarkkit/sources/saymarkkit/dictationsession.swift load and warm the requested dictation mode create a fresh microphone capture per utterance publish live confirmed and partial updates stop capture and flush the final transcript provide deterministic offline transcription for benchmarks" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">UI-agnostic facade</span>
+        </div>
+        <h3>DictationSession</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/DictationSession.swift</code>
+        <ul class=""><li>Load and warm the requested dictation mode</li><li>Create a fresh microphone capture per utterance</li><li>Publish live confirmed and partial updates</li><li>Stop capture and flush the final transcript</li><li>Provide deterministic offline transcription for benchmarks</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">stt-engine</span><span class="pill ">mic-capture</span><span class="pill ">update-hub</span></div>
+      </article>
+      <article class="component-card" data-search="miccapture avaudioengine adapter core saymarkkit/sources/saymarkkit/miccapture.swift capture the default audio input convert to mono float32 at 16 khz buffer and emit 7680-sample chunks flush the trailing partial chunk report numeric capture metrics" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">AVAudioEngine adapter</span>
+        </div>
+        <h3>MicCapture</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/MicCapture.swift</code>
+        <ul class=""><li>Capture the default audio input</li><li>Convert to mono Float32 at 16 kHz</li><li>Buffer and emit 7680-sample chunks</li><li>Flush the trailing partial chunk</li><li>Report numeric capture metrics</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="sttengine serialized inference coordinator core saymarkkit/sources/saymarkkit/sttengine.swift own twotierengine and silerovad serialize vad and mlx inference on saymark.stt create a fresh utterance session and speech gate apply speech gating before asr record queue, vad, inference, finish, and mlx memory metrics" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">Serialized inference coordinator</span>
+        </div>
+        <h3>STTEngine</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/STTEngine.swift</code>
+        <ul class=""><li>Own TwoTierEngine and SileroVAD</li><li>Serialize VAD and MLX inference on saymark.stt</li><li>Create a fresh utterance session and speech gate</li><li>Apply speech gating before ASR</li><li>Record queue, VAD, inference, finish, and MLX memory metrics</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">speech-gate</span><span class="pill ">two-tier-engine</span><span class="pill ">diagnostics</span></div>
+      </article>
+      <article class="component-card" data-search="speechgate per-utterance streaming vad state core saymarkkit/sources/saymarkkit/speechgate.swift evaluate silero over 512-sample frames drop leading and long trailing silence bridge short pauses with two 480 ms hangover chunks fail open if vad inference fails" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">Per-utterance streaming VAD state</span>
+        </div>
+        <h3>SpeechGate</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/SpeechGate.swift</code>
+        <ul class=""><li>Evaluate Silero over 512-sample frames</li><li>Drop leading and long trailing silence</li><li>Bridge short pauses with two 480 ms hangover chunks</li><li>Fail open if VAD inference fails</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="twotierengine model residency and composition policy core saymarkkit/sources/saymarkkit/twotierengine.swift cap mlx memory at 18 gib lazily load and memoize nemotron and parakeet vend a fresh session for fast, hybrid, or accurate mode keep product policy outside the model library" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">Model residency and composition policy</span>
+        </div>
+        <h3>TwoTierEngine</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/TwoTierEngine.swift</code>
+        <ul class=""><li>Cap MLX memory at 18 GiB</li><li>Lazily load and memoize Nemotron and Parakeet</li><li>Vend a fresh session for Fast, Hybrid, or Accurate mode</li><li>Keep product policy outside the model library</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">model-policy</span><span class="pill ">model-stack</span></div>
+      </article>
+      <article class="component-card" data-search="dictationplan and dictationmode product model policy core saymarkkit/sources/saymarkkit/dictationplan.swift saymarkkit/sources/saymarkkit/dictationmode.swift map user experiences to supported model graphs keep fast as an internal benchmark mode define parakeet as final authority for efficient and live preview" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">Product model policy</span>
+        </div>
+        <h3>DictationPlan and DictationMode</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/DictationPlan.swift</code><code>SaymarkKit/Sources/SaymarkKit/DictationMode.swift</code>
+        <ul class=""><li>Map user experiences to supported model graphs</li><li>Keep Fast as an internal benchmark mode</li><li>Define Parakeet as final authority for Efficient and Live Preview</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="twotiersession per-utterance hybrid session core saymarkkit/sources/saymarkkit/twotiersession.swift stream nemotron draft text while recording retain only speech-marked audio for finalization run one parakeet pass at stop use nemotron only as fallback when parakeet returns empty measure draft-to-final divergence clear the mlx compute cache after finalization" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">Per-utterance Hybrid session</span>
+        </div>
+        <h3>TwoTierSession</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/TwoTierSession.swift</code>
+        <ul class=""><li>Stream Nemotron draft text while recording</li><li>Retain only speech-marked audio for finalization</li><li>Run one Parakeet pass at stop</li><li>Use Nemotron only as fallback when Parakeet returns empty</li><li>Measure draft-to-final divergence</li><li>Clear the MLX compute cache after finalization</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="onboardingdownloader swift actor core saymarkkit/sources/saymarkkit/onboardingdownloader.swift resolve or download plan repositories into the hugging face cache report monotonic per-model progress to the main actor" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">Swift actor</span>
+        </div>
+        <h3>OnboardingDownloader</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/OnboardingDownloader.swift</code>
+        <ul class=""><li>Resolve or download plan repositories into the Hugging Face cache</li><li>Report monotonic per-model progress to the main actor</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">hugging-face</span></div>
+      </article>
+      <article class="component-card" data-search="textinjector macos paste and event adapter core saymarkkit/sources/saymarkkit/textinjector.swift snapshot and restore the pasteboard around atomic insertion synthesize command-v using a private cgevent source detect secure input and leave text on the clipboard avoid clobbering a user clipboard change" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">macOS paste and event adapter</span>
+        </div>
+        <h3>TextInjector</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/TextInjector.swift</code>
+        <ul class=""><li>Snapshot and restore the pasteboard around atomic insertion</li><li>Synthesize Command-V using a private CGEvent source</li><li>Detect secure input and leave text on the clipboard</li><li>Avoid clobbering a user clipboard change</li></ul>
+        <div class="depends"><span>Depends on</span><span class="pill ">permissions</span></div>
+      </article>
+      <article class="component-card" data-search="saymarkdiagnostics jsonl and unified-log sink core saymarkkit/sources/saymarkkit/diagnosticlogging.swift write privacy-safe scalar events support off through trace verbosity rotate local files at a configured size correlate dictation events with ephemeral session ids" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">JSONL and unified-log sink</span>
+        </div>
+        <h3>SaymarkDiagnostics</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/DiagnosticLogging.swift</code>
+        <ul class=""><li>Write privacy-safe scalar events</li><li>Support off through trace verbosity</li><li>Rotate local files at a configured size</li><li>Correlate dictation events with ephemeral session IDs</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="processresourcemonitor low-frequency process sampler presentation sources/saymark/processresourcemonitor.swift sample cpu, resident memory, and physical footprint every 30 seconds emit samples only when debug diagnostics are enabled" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">Low-frequency process sampler</span>
+        </div>
+        <h3>ProcessResourceMonitor</h3>
+        <code>Sources/Saymark/ProcessResourceMonitor.swift</code>
+        <ul class=""><li>Sample CPU, resident memory, and physical footprint every 30 seconds</li><li>Emit samples only when debug diagnostics are enabled</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="runtime preferences userdefaults-backed policy presentation sources/saymark/theme.swift" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">UserDefaults-backed policy</span>
+        </div>
+        <h3>Runtime preferences</h3>
+        <code>Sources/Saymark/Theme.swift</code>
+        
+        
+      </article>
+      <article class="component-card" data-search="dictationupdatehub subscription publisher core saymarkkit/sources/saymarkkit/dictationupdates.swift publish confirmed and partial transcript snapshots make cancellation explicit so ui observers do not leak" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">Subscription publisher</span>
+        </div>
+        <h3>DictationUpdateHub</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/DictationUpdates.swift</code>
+        <ul class=""><li>Publish confirmed and partial transcript snapshots</li><li>Make cancellation explicit so UI observers do not leak</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="onboardingflow pure state and transition policy core saymarkkit/sources/saymarkkit/onboardingflow.swift define hard and soft gates select efficient as the first-run model plan calculate download progress without ui dependencies" data-layer="core">
+        <div class="component-topline">
+          <span class="pill core">core</span>
+          <span class="component-kind">Pure state and transition policy</span>
+        </div>
+        <h3>OnboardingFlow</h3>
+        <code>SaymarkKit/Sources/SaymarkKit/OnboardingFlow.swift</code>
+        <ul class=""><li>Define hard and soft gates</li><li>Select Efficient as the first-run model plan</li><li>Calculate download progress without UI dependencies</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="local inference stack swift package dependencies inference mlx-audio-swift mlx-swift mlxaudiostt mlxaudiovad mlxaudiocore" data-layer="inference">
+        <div class="component-topline">
+          <span class="pill inference">inference</span>
+          <span class="component-kind">Swift package dependencies</span>
+        </div>
+        <h3>Local inference stack</h3>
+        
+        <ul class=""><li>mlx-audio-swift</li><li>mlx-swift</li><li>MLXAudioSTT</li><li>MLXAudioVAD</li><li>MLXAudioCore</li></ul>
+        
+      </article>
+      <article class="component-card" data-search="hugging face hub external artifact service inference" data-layer="inference">
+        <div class="component-topline">
+          <span class="pill inference">inference</span>
+          <span class="component-kind">External artifact service</span>
+        </div>
+        <h3>Hugging Face Hub</h3>
+        
+        
+        
+      </article>
+      <article class="component-card" data-search="optional posthog telemetry dormant external integration presentation" data-layer="presentation">
+        <div class="component-topline">
+          <span class="pill presentation">presentation</span>
+          <span class="component-kind">Dormant external integration</span>
+        </div>
+        <h3>Optional PostHog telemetry</h3>
+        
+        
+        
+      </article></div>
+      </section>
+
+      <section id="invariants">
+        <div class="section-head">
+          <div><span class="eyebrow">Regression firewall</span><h2>Rules the code must keep.</h2></div>
+          <p>These are architecture decisions born from latency, accuracy, memory, trust, and privacy failures. Changing one requires evidence.</p>
+        </div>
+        <div class="guardrails">
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Parakeet owns final text in Efficient and Live Preview; Nemotron may not overwrite a non-empty Parakeet result.</h3>
+      <p>Live drafts are provisional and may be less accurate.</p>
+      <code>final-authority</code>
+    </div>
+  </article>
+
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Present the HUD before starting AVAudioEngine or model work.</h3>
+      <p>Hotkey feedback must feel immediate.</p>
+      <code>instant-feedback</code>
+    </div>
+  </article>
+
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Run session.stop and final decoding off the MainActor.</h3>
+      <p>Finalization must not freeze UI transitions.</p>
+      <code>no-main-thread-finish</code>
+    </div>
+  </article>
+
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Serialize MLX and VAD session work on saymark.stt.</h3>
+      <p>Shared inference state is not concurrency-safe.</p>
+      <code>single-inference-domain</code>
+    </div>
+  </article>
+
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Keep the production feed at 7680 samples or re-benchmark before changing it.</h3>
+      <p>Smaller calls can push MLX real-time factor above 1 and create backlog.</p>
+      <code>bounded-feed</code>
+    </div>
+  </article>
+
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Distinguish expected process-lifetime model residency from per-utterance resources, which must be released.</h3>
+      <p>This prevents both false memory alarms and real staircase leaks.</p>
+      <code>resource-separation</code>
+    </div>
+  </article>
+
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Never log or transmit audio, transcript text, clipboard contents, selected text, or focused-field contents.</h3>
+      <p>Dictation content is sensitive user data.</p>
+      <code>privacy</code>
+    </div>
+  </article>
+
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Install development builds with the stable Saymark Local identity.</h3>
+      <p>Accessibility trust is tied to application identity.</p>
+      <code>stable-local-trust</code>
+    </div>
+  </article>
+
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Do not bootstrap the live menu app until onboarding finishes.</h3>
+      <p>Onboarding must own permission, download, and try-it sequencing without duplicate sessions.</p>
+      <code>onboarding-isolation</code>
+    </div>
+  </article>
+
+  <article class="invariant">
+    <span class="check">✓</span>
+    <div>
+      <h3>Insert the final transcript once; do not stream synthetic keystrokes into the target field.</h3>
+      <p>Atomic paste is reliable across Terminal, Electron, editors, and browsers.</p>
+      <code>atomic-paste</code>
+    </div>
+  </article>
+</div>
+      </section>
+
+      <section id="agents">
+        <div class="section-head">
+          <div><span class="eyebrow">Agent handoff</span><h2>Start here. Prove it there.</h2></div>
+          <p>A task-to-code routing table for the next contributor or coding agent. Each route pairs likely owners with the tests that should move.</p>
+        </div>
+        <div>
+  <details class="route">
+    <summary>
+      <span>App launch, onboarding window, Dock or menu-bar behavior</span>
+      <span class="chevron">›</span>
+    </summary>
+    <div class="route-body">
+      <div>
+        <span class="eyebrow">Start here</span>
+        <code>Sources/Saymark/AppDelegate.swift</code><code>Sources/Saymark/SaymarkApp.swift</code><code>Sources/Saymark/Onboarding/OnboardingModel.swift</code>
+      </div>
+      <div>
+        <span class="eyebrow">Prove it here</span>
+        <code>Tests/SaymarkUITests/OnboardingUITests.swift</code><code>SaymarkKit/Tests/SaymarkKitTests/OnboardingFlowTests.swift</code>
+      </div>
+      
+    </div>
+  </details>
+
+  <details class="route">
+    <summary>
+      <span>Hotkey, dictation state, final insertion, or HUD behavior</span>
+      <span class="chevron">›</span>
+    </summary>
+    <div class="route-body">
+      <div>
+        <span class="eyebrow">Start here</span>
+        <code>Sources/Saymark/DictationController.swift</code><code>Sources/Saymark/HUDOverlay.swift</code><code>SaymarkKit/Sources/SaymarkKit/TextInjector.swift</code>
+      </div>
+      <div>
+        <span class="eyebrow">Prove it here</span>
+        <code>Tests/SaymarkTests/HUDControllerTests.swift</code><code>Tests/SaymarkTests/HUDPanelIntegrationTests.swift</code>
+      </div>
+      
+    </div>
+  </details>
+
+  <details class="route">
+    <summary>
+      <span>ASR speed, accuracy, streaming, VAD, or memory</span>
+      <span class="chevron">›</span>
+    </summary>
+    <div class="route-body">
+      <div>
+        <span class="eyebrow">Start here</span>
+        <code>SaymarkKit/Sources/SaymarkKit/STTEngine.swift</code><code>SaymarkKit/Sources/SaymarkKit/TwoTierEngine.swift</code><code>SaymarkKit/Sources/SaymarkKit/TwoTierSession.swift</code><code>SaymarkKit/Sources/SaymarkKit/SpeechGate.swift</code>
+      </div>
+      <div>
+        <span class="eyebrow">Prove it here</span>
+        <code>SaymarkKit/Tests/SaymarkKitTests/TwoTierSessionTests.swift</code><code>SaymarkKit/Tests/SaymarkKitTests/RealModelAcceptanceTests.swift</code><code>docs/performance-acceptance.md</code>
+      </div>
+      
+    </div>
+  </details>
+
+  <details class="route">
+    <summary>
+      <span>Model choice or product mode</span>
+      <span class="chevron">›</span>
+    </summary>
+    <div class="route-body">
+      <div>
+        <span class="eyebrow">Start here</span>
+        <code>SaymarkKit/Sources/SaymarkKit/DictationPlan.swift</code><code>SaymarkKit/Sources/SaymarkKit/DictationMode.swift</code><code>Sources/Saymark/Theme.swift</code>
+      </div>
+      <div>
+        <span class="eyebrow">Prove it here</span>
+        <code>SaymarkKit/Tests/SaymarkKitTests/DictationPlanTests.swift</code><code>SaymarkKit/Tests/SaymarkKitTests/BenchmarkAcceptanceTests.swift</code>
+      </div>
+      
+    </div>
+  </details>
+
+  <details class="route">
+    <summary>
+      <span>Logging, benchmarks, CPU, or memory investigation</span>
+      <span class="chevron">›</span>
+    </summary>
+    <div class="route-body">
+      <div>
+        <span class="eyebrow">Start here</span>
+        <code>SaymarkKit/Sources/SaymarkKit/DiagnosticLogging.swift</code><code>Sources/Saymark/ProcessResourceMonitor.swift</code><code>Scripts/report-diagnostics.sh</code><code>docs/diagnostic-logging.md</code>
+      </div>
+      <div>
+        <span class="eyebrow">Prove it here</span>
+        <code>SaymarkKit/Tests/SaymarkKitTests/DiagnosticLoggingTests.swift</code><code>docs/benchmark-results.md</code>
+      </div>
+      
+    </div>
+  </details>
+
+  <details class="route">
+    <summary>
+      <span>Remote analytics or privacy</span>
+      <span class="chevron">›</span>
+    </summary>
+    <div class="route-body">
+      <div>
+        <span class="eyebrow">Start here</span>
+        <code>Sources/Saymark/AppDelegate.swift</code><code>Sources/Saymark/Theme.swift</code><code>docs/telemetry-todo.md</code><code>docs/privacy-and-security.md</code>
+      </div>
+      <div>
+        <span class="eyebrow">Prove it here</span>
+        <code>Tests/SaymarkUITests/OnboardingUITests.swift</code>
+      </div>
+      <p class="warning">Do not populate a telemetry token until every telemetry launch gate is complete.</p>
+    </div>
+  </details>
+</div>
+      </section>
+
+      <section id="boundaries">
+        <div class="section-head">
+          <div><span class="eyebrow">Privacy and platform</span><h2>Every external edge is named.</h2></div>
+          <p>Model downloads are networked. Dictation is local. Automatic insertion is gated by macOS trust. Remote analytics is dormant.</p>
+        </div>
+        <div class="boundary-grid">
+    <article class="boundary ">
+      <div class="boundary-status">ON</div>
+      <h3>Hugging Face Hub</h3>
+      <p>Outbound HTTPS · Model setup or cache miss</p>
+      <small>Repository and artifact requests; never audio or transcripts</small>
+    </article>
+    <article class="boundary disabled">
+      <div class="boundary-status">OFF</div>
+      <h3>PostHog EU</h3>
+      <p>Outbound HTTPS · Only a future configured build after explicit consent</p>
+      <small>Source and local builds embed an empty project token</small>
+    </article>
+    <article class="boundary ">
+      <div class="boundary-status">GATED</div>
+      <h3>macOS microphone</h3>
+      <p>System input · Active dictation</p>
+      <small>Requires user permission</small>
+    </article>
+    <article class="boundary ">
+      <div class="boundary-status">GATED</div>
+      <h3>Focused application</h3>
+      <p>Synthetic Command-V · Final insertion</p>
+      <small>Requires Accessibility and no secure input</small>
+    </article></div>
+      </section>
+
+      <section id="tests">
+        <div class="section-head">
+          <div><span class="eyebrow">Verification</span><h2>Four ways to catch a regression.</h2></div>
+          <p>Pure policy tests, hosted AppKit tests, XCUITest flows, and real-model benchmarks cover different failure classes.</p>
+        </div>
+        <div class="test-grid">
+  <article class="test-card">
+    <span class="eyebrow">Swift package unit and model acceptance tests</span>
+    <h3>SaymarkKitTests</h3>
+    <ul class=""><li>Model plans</li><li>Onboarding transitions</li><li>Update subscription lifecycle</li><li>Final audio buffering</li><li>Two-tier final authority and fallback</li><li>Diagnostic logging</li><li>Benchmark gates</li><li>Real model acceptance</li></ul>
+  </article>
+
+  <article class="test-card">
+    <span class="eyebrow">Hosted XCTest</span>
+    <h3>SaymarkTests</h3>
+    <ul class=""><li>HUD controller state</li><li>Panel lifecycle</li><li>Cancellation and stale-hide protection</li><li>Long transcript layout behavior</li></ul>
+  </article>
+
+  <article class="test-card">
+    <span class="eyebrow">XCUITest</span>
+    <h3>SaymarkUITests</h3>
+    <ul class=""><li>First-run onboarding without external services</li><li>Onboarding gates</li><li>Local-build privacy presentation</li><li>Welcome-screen CPU and memory metrics</li></ul>
+  </article>
+
+  <article class="test-card">
+    <span class="eyebrow">Fixed-audio benchmark harness</span>
+    <h3>saymark-cli</h3>
+    <ul class=""><li>Real-time factor</li><li>Streaming and finish compute</li><li>Step latency</li><li>Model quality against a reference</li></ul>
+  </article>
+</div>
+      </section>
+
+      <section id="files">
+        <div class="section-head">
+          <div><span class="eyebrow">Repository map</span><h2>Where the work lives.</h2></div>
+          <p>This is the coarse file index. Use the component catalog and agent routing above for task-specific entry points.</p>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Path</th><th>Role</th></tr></thead><tbody>
+  <tr>
+    <td><code>Project.swift</code></td>
+    <td>Tuist target, dependency, bundle, signing, and build-time configuration source of truth</td>
+  </tr>
+
+  <tr>
+    <td><code>SaymarkKit/Package.swift</code></td>
+    <td>Reusable core, CLI, model dependency, and package-test manifest</td>
+  </tr>
+
+  <tr>
+    <td><code>Sources/Saymark</code></td>
+    <td>macOS app lifecycle, views, settings, onboarding, hotkey controller, HUD, and resource sampling</td>
+  </tr>
+
+  <tr>
+    <td><code>SaymarkKit/Sources/SaymarkKit</code></td>
+    <td>UI-independent dictation, capture, VAD, models, insertion, diagnostics, and policy</td>
+  </tr>
+
+  <tr>
+    <td><code>SaymarkKit/Sources/saymark-cli</code></td>
+    <td>Offline real-model benchmark executable</td>
+  </tr>
+
+  <tr>
+    <td><code>Tests/SaymarkTests</code></td>
+    <td>Hosted app and HUD tests</td>
+  </tr>
+
+  <tr>
+    <td><code>Tests/SaymarkUITests</code></td>
+    <td>Native macOS XCUITest flows and resource metrics</td>
+  </tr>
+
+  <tr>
+    <td><code>SaymarkKit/Tests/SaymarkKitTests</code></td>
+    <td>Core unit, concurrency, benchmark, and real-model acceptance tests</td>
+  </tr>
+
+  <tr>
+    <td><code>Scripts</code></td>
+    <td>Signing, installation, legal validation, diagnostics, test reporting, and architecture generation</td>
+  </tr>
+
+  <tr>
+    <td><code>Benchmarks</code></td>
+    <td>Fixed quality reference material</td>
+  </tr>
+
+  <tr>
+    <td><code>docs</code></td>
+    <td>Public architecture, development, testing, performance, diagnostics, privacy, and telemetry policy</td>
+  </tr>
+
+  <tr>
+    <td><code>Branding</code></td>
+    <td>Product identity direction and visual concepts</td>
+  </tr>
+
+  <tr>
+    <td><code>ThirdPartyLicenses</code></td>
+    <td>Redistributed dependency license texts</td>
+  </tr>
+</tbody></table></div>
+      </section>
+
+      <footer>
+        Generated from <strong>docs/architecture.json</strong> by <strong>Scripts/generate-architecture-map.mjs</strong>.<br>
+        Run <strong>node Scripts/generate-architecture-map.mjs --check</strong> to detect drift.
+        <noscript><p class="noscript">JavaScript is only used for component search and active navigation; all architecture content is already in this file.</p></noscript>
+      </footer>
+    </main>
+  </div>
+  <script type="application/json" id="saymark-architecture">{"$schema":"https://json-schema.org/draft/2020-12/schema","schema_version":1,"document":{"title":"Saymark architecture map","purpose":"Machine-readable orientation for agents and contributors changing Saymark.","generated_on":"2026-07-22","based_on_revision":"57f2624","canonical_source":"docs/architecture.json","human_view":"docs/architecture.html","regenerate":"node Scripts/generate-architecture-map.mjs"},"project":{"name":"Saymark","summary":"A native, local-first macOS menu-bar dictation app that captures speech, transcribes it on Apple silicon, and inserts final text into the focused application.","platform":{"os":"macOS","minimum_version":"15.0","architectures":["arm64"],"ui":["SwiftUI","AppKit"],"language":"Swift"},"repository_root":".","build_systems":["Tuist","Xcode","Swift Package Manager","Make"],"products":[{"id":"saymark-app","name":"Saymark","kind":"macOS menu-bar application","entrypoint":"Sources/Saymark/SaymarkApp.swift","bundle_ids":{"release":"com.eloe.saymark","local":"com.eloe.saymark.local"}},{"id":"saymark-kit","name":"SaymarkKit","kind":"reusable Swift library","entrypoint":"SaymarkKit/Sources/SaymarkKit/DictationSession.swift"},{"id":"saymark-cli","name":"saymark-cli","kind":"benchmark and diagnostic executable","entrypoint":"SaymarkKit/Sources/saymark-cli/main.swift"}]},"architecture":{"style":"Layered native application with a UI-agnostic orchestration core and local model adapters.","layers":[{"id":"presentation","name":"Application and presentation","root":"Sources/Saymark","owns":["App lifecycle and first-run routing","Menu-bar UI and preferences","Global hotkey semantics","Onboarding UI and macOS permission UX","Floating HUD presentation","Mapping final transcripts to insertion or HUD-only output"],"must_not_own":["Speech model implementation","Audio resampling details","VAD state","Model repository policy duplicated outside SaymarkKit"]},{"id":"core","name":"Dictation orchestration core","root":"SaymarkKit/Sources/SaymarkKit","owns":["Microphone capture and 16 kHz mono conversion","480 ms feed cadence","Speech gating","Model plan and model lifecycle","Per-utterance sessions","Live update publication","Final transcript authority","Text injection primitive","Privacy-safe structured diagnostics","Benchmark acceptance policy"],"must_not_own":["SwiftUI views","Menu-bar state","Product-window lifecycle"]},{"id":"inference","name":"Inference and platform dependencies","root":"Swift package dependencies and macOS frameworks","owns":["MLX execution and memory accounting","Nemotron streaming ASR","Parakeet final ASR","Silero voice activity detection","Hugging Face artifact resolution and cache","AVFoundation audio input","Accessibility and CoreGraphics event delivery"]}],"dependency_rule":"Presentation may depend on SaymarkKit; SaymarkKit may depend on model and platform libraries. Model libraries must not depend on the app."},"components":[{"id":"app-entry","name":"SaymarkApp","layer":"presentation","path":"Sources/Saymark/SaymarkApp.swift","kind":"SwiftUI App","responsibilities":["Create the AppDelegate","Expose MenuBarExtra","Expose Settings scene"],"depends_on":["app-lifecycle","menu-popover","settings"]},{"id":"app-lifecycle","name":"AppDelegate","layer":"presentation","path":"Sources/Saymark/AppDelegate.swift","kind":"MainActor application coordinator","responsibilities":["Configure diagnostics and resource monitoring","Route first run to onboarding as a regular app","Route returning users to the menu-bar agent","Own the shared DictationController and OnboardingModel","Host the persistent AppKit onboarding window","Initialize optional telemetry only when a non-empty Saymark key exists"],"depends_on":["dictation-controller","onboarding","resource-monitor","diagnostics","telemetry"]},{"id":"menu-popover","name":"MenuPopover","layer":"presentation","path":"Sources/Saymark/MenuPopover.swift","kind":"SwiftUI view","responsibilities":["Display readiness and active state","Enable or disable dictation","Choose Efficient or Live Preview experience","Choose in-field or HUD-only output","Choose hold or toggle trigger","Open Settings and replay onboarding"],"depends_on":["dictation-controller","preferences"]},{"id":"settings","name":"SettingsView","layer":"presentation","path":"Sources/Saymark/SettingsView.swift","kind":"SwiftUI settings scene","responsibilities":["Configure global shortcut and insertion behavior","Configure local diagnostic verbosity","Reveal the local diagnostic log","Expose remote-analytics consent only when telemetry is configured"],"depends_on":["preferences","diagnostics","telemetry"]},{"id":"onboarding","name":"Onboarding","layer":"presentation","path":"Sources/Saymark/Onboarding","kind":"Observable coordinator plus six SwiftUI screens","responsibilities":["Guide welcome, permissions, shortcut, download, try-it, and completion","Require microphone permission and allow Accessibility to be skipped","Download and warm the Efficient model plan","Reuse the production DictationSession for try-it","Persist completion in UserDefaults"],"depends_on":["onboarding-flow","model-downloader","dictation-session","permissions","preferences"]},{"id":"dictation-controller","name":"DictationController","layer":"presentation","path":"Sources/Saymark/DictationController.swift","kind":"MainActor observable state machine","states":["loadingModels","idle","recording","transcribing","transcribed","error"],"responsibilities":["Register hotkey down and up handlers","Prepare the selected model mode","Present the HUD before audio startup","Start and stop DictationSession","Bridge live transcript updates to the HUD","Finalize off the main actor","Paste or retain the final transcript according to InsertMode"],"depends_on":["dictation-session","hud","text-injector","permissions","preferences","telemetry"]},{"id":"hud","name":"HUDOverlay","layer":"presentation","path":"Sources/Saymark/HUDOverlay.swift","kind":"SwiftUI content hosted in a non-activating NSPanel","states":["listening","transcribing","error"],"responsibilities":["Appear immediately without stealing focus","Display provisional and finalized transcript segments","Show an explicit processing state after release","Support compact and six-line presentation layouts","Support a clickable stop control in toggle mode","Cancel stale hides and release hosted content after hiding"]},{"id":"dictation-session","name":"DictationSession","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/DictationSession.swift","kind":"UI-agnostic facade","responsibilities":["Load and warm the requested dictation mode","Create a fresh microphone capture per utterance","Publish live confirmed and partial updates","Stop capture and flush the final transcript","Provide deterministic offline transcription for benchmarks"],"depends_on":["stt-engine","mic-capture","update-hub"]},{"id":"mic-capture","name":"MicCapture","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/MicCapture.swift","kind":"AVAudioEngine adapter","responsibilities":["Capture the default audio input","Convert to mono Float32 at 16 kHz","Buffer and emit 7680-sample chunks","Flush the trailing partial chunk","Report numeric capture metrics"],"invariants":["One stateful AVAudioConverter per capture preserves resampler continuity","Audio samples are never written to diagnostics","The capture tap does not inherit actor isolation"]},{"id":"stt-engine","name":"STTEngine","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/STTEngine.swift","kind":"Serialized inference coordinator","responsibilities":["Own TwoTierEngine and SileroVAD","Serialize VAD and MLX inference on saymark.stt","Create a fresh utterance session and speech gate","Apply speech gating before ASR","Record queue, VAD, inference, finish, and MLX memory metrics"],"depends_on":["speech-gate","two-tier-engine","diagnostics"]},{"id":"speech-gate","name":"SpeechGate","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/SpeechGate.swift","kind":"Per-utterance streaming VAD state","responsibilities":["Evaluate Silero over 512-sample frames","Drop leading and long trailing silence","Bridge short pauses with two 480 ms hangover chunks","Fail open if VAD inference fails"]},{"id":"two-tier-engine","name":"TwoTierEngine","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/TwoTierEngine.swift","kind":"Model residency and composition policy","responsibilities":["Cap MLX memory at 18 GiB","Lazily load and memoize Nemotron and Parakeet","Vend a fresh session for Fast, Hybrid, or Accurate mode","Keep product policy outside the model library"],"depends_on":["model-policy","model-stack"]},{"id":"model-policy","name":"DictationPlan and DictationMode","layer":"core","paths":["SaymarkKit/Sources/SaymarkKit/DictationPlan.swift","SaymarkKit/Sources/SaymarkKit/DictationMode.swift"],"kind":"Product model policy","responsibilities":["Map user experiences to supported model graphs","Keep Fast as an internal benchmark mode","Define Parakeet as final authority for Efficient and Live Preview"]},{"id":"two-tier-session","name":"TwoTierSession","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/TwoTierSession.swift","kind":"Per-utterance Hybrid session","responsibilities":["Stream Nemotron draft text while recording","Retain only speech-marked audio for finalization","Run one Parakeet pass at stop","Use Nemotron only as fallback when Parakeet returns empty","Measure draft-to-final divergence","Clear the MLX compute cache after finalization"]},{"id":"model-downloader","name":"OnboardingDownloader","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/OnboardingDownloader.swift","kind":"Swift actor","responsibilities":["Resolve or download plan repositories into the Hugging Face cache","Report monotonic per-model progress to the main actor"],"depends_on":["hugging-face"]},{"id":"text-injector","name":"TextInjector","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/TextInjector.swift","kind":"macOS paste and event adapter","responsibilities":["Snapshot and restore the pasteboard around atomic insertion","Synthesize Command-V using a private CGEvent source","Detect secure input and leave text on the clipboard","Avoid clobbering a user clipboard change"],"depends_on":["permissions"]},{"id":"diagnostics","name":"SaymarkDiagnostics","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/DiagnosticLogging.swift","kind":"JSONL and unified-log sink","responsibilities":["Write privacy-safe scalar events","Support off through trace verbosity","Rotate local files at a configured size","Correlate dictation events with ephemeral session IDs"]},{"id":"resource-monitor","name":"ProcessResourceMonitor","layer":"presentation","path":"Sources/Saymark/ProcessResourceMonitor.swift","kind":"Low-frequency process sampler","responsibilities":["Sample CPU, resident memory, and physical footprint every 30 seconds","Emit samples only when debug diagnostics are enabled"]},{"id":"preferences","name":"Runtime preferences","layer":"presentation","path":"Sources/Saymark/Theme.swift","kind":"UserDefaults-backed policy","keys":["saymark.didOnboard","saymark.enabled","saymark.triggerMode","saymark.model","saymark.insertMode","saymark.analyticsEnabled","saymark.logLevel","saymark.logMaxBytes"]},{"id":"update-hub","name":"DictationUpdateHub","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/DictationUpdates.swift","kind":"Subscription publisher","responsibilities":["Publish confirmed and partial transcript snapshots","Make cancellation explicit so UI observers do not leak"]},{"id":"onboarding-flow","name":"OnboardingFlow","layer":"core","path":"SaymarkKit/Sources/SaymarkKit/OnboardingFlow.swift","kind":"Pure state and transition policy","states":["welcome","permissions","shortcut","download","tryIt","done"],"responsibilities":["Define hard and soft gates","Select Efficient as the first-run model plan","Calculate download progress without UI dependencies"]},{"id":"permissions","name":"macOS trust boundaries","layer":"inference","kind":"System services","items":[{"name":"Microphone","required_for":"Any dictation","framework":"AVFoundation","hard_gate":true},{"name":"Accessibility","required_for":"Automatic insertion into other apps","framework":"ApplicationServices and CoreGraphics","hard_gate":false,"fallback":"Keep transcript on clipboard or use HUD-only mode"},{"name":"Secure Event Input","required_for":"Not a permission; a protected-field state","framework":"Carbon","behavior":"Never bypass; leave text on clipboard"}]},{"id":"model-stack","name":"Local inference stack","layer":"inference","kind":"Swift package dependencies","items":["mlx-audio-swift","mlx-swift","MLXAudioSTT","MLXAudioVAD","MLXAudioCore"]},{"id":"hugging-face","name":"Hugging Face Hub","layer":"inference","kind":"External artifact service","network":"Setup and first model load only when artifacts are not cached","data_out":["Model repository requests"],"prohibited_data":["Audio","Transcripts","Clipboard contents"]},{"id":"telemetry","name":"Optional PostHog telemetry","layer":"presentation","kind":"Dormant external integration","status":"Not configured in source and local builds","activation_gates":["Non-empty Saymark-owned project token","Explicit user opt-in","Requirements in docs/telemetry-todo.md"],"prohibited_data":["Audio","Transcript text","Clipboard contents","Focused-field contents","Stable device identifiers"]}],"model_policy":{"catalog":[{"id":"nemotron","repository":"mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit","role":"streaming draft","estimated_download_gb":0.6,"execution":"MLX","residency":"Memoized for the app process after the mode is prepared"},{"id":"parakeet","repository":"mlx-community/parakeet-tdt-0.6b-v3","role":"authoritative offline final","estimated_download_gb":2.5,"execution":"MLX","residency":"Memoized for the app process after the mode is prepared"},{"id":"silero","repository":"mlx-community/silero-vad","role":"speech gate","execution":"MLXAudioVAD","failure_policy":"Fail open so a VAD failure never drops speech"}],"experiences":[{"product_name":"Efficient","mode":"accurate","models":["parakeet"],"live_preview":false,"final_authority":"parakeet","first_run_default":true},{"product_name":"Live Preview","mode":"hybrid","models":["nemotron","parakeet"],"live_preview":true,"final_authority":"parakeet","fallback":"nemotron only when Parakeet final is empty"},{"product_name":"Fast","mode":"fast","models":["nemotron"],"live_preview":true,"final_authority":"nemotron","exposure":"Benchmarks and diagnostics only"}],"memory":{"mlx_limit_bytes":19327352832,"expected_behavior":"Model weights may remain resident across dictations; per-utterance audio, sessions, subscriptions, capture engines, timers, and HUD content must be released.","cache_policy":"MLX compute cache is cleared after final generation; loaded models are retained for low-latency reuse."}},"runtime_flows":[{"id":"launch-first-run","name":"First launch","trigger":"applicationDidFinishLaunching with saymark.didOnboard false","steps":["Configure local diagnostics","Start the low-frequency resource monitor","Do not initialize telemetry when the project token is empty","Run as a regular app so permission dialogs cannot bury onboarding","Present the AppKit-owned onboarding window","Defer hotkeys and model warm-up until onboarding completes"],"terminal_state":"Onboarding completion starts the menu-bar app and changes activation policy to accessory"},{"id":"launch-returning","name":"Returning launch","trigger":"applicationDidFinishLaunching with saymark.didOnboard true","steps":["Configure diagnostics and resource monitoring","Change activation policy to accessory","Register hotkey callbacks","Request cached microphone status","Prompt for Accessibility only when in-field insertion is selected and trust is absent","Load and warm only the selected model plan"],"terminal_state":"DictationController idle and ready"},{"id":"onboarding","name":"Onboarding","trigger":"First run or Setup tour","steps":["Welcome explains local-first behavior and current diagnostics status","Permissions requires microphone and allows Accessibility to be skipped","Shortcut records the global trigger","Download fetches the Efficient plan and warms Parakeet plus VAD","Try It borrows the production DictationSession","Done persists saymark.didOnboard"],"gates":{"permissions":"Microphone granted","download":"All plan model fractions equal 1","try_it":"At least one non-empty result"}},{"id":"dictation","name":"Hotkey-to-text","trigger":"Global hotkey down or toggle","steps":["Reject the gesture if disabled, already active, or models are not ready","Present the HUD synchronously on the main actor","Start a fresh DictationSession and MicCapture","Capture and convert audio to 16 kHz mono","Emit 480 ms chunks on the capture queue","Serialize VAD and ASR on saymark.stt","Publish live updates to the HUD","On release, display Processing and stop capture","Finalize off the main actor","Use Parakeet final text in Efficient and Live Preview","Paste once into the focused app or leave text in the HUD","Tear down per-utterance resources and schedule HUD dismissal"],"authoritative_output":"Parakeet for product modes; Nemotron is live draft and empty-final fallback only"},{"id":"model-switch","name":"Change dictation experience","trigger":"User changes Efficient or Live Preview in MenuPopover","steps":["Persist the product mode","Ask DictationController to prepare the current mode","Reuse any already-loaded model","Download and warm only a missing model","Use the new mode on the next utterance"]},{"id":"insertion","name":"Final text insertion","trigger":"Non-empty final transcript with InsertMode.inField","steps":["If Accessibility is absent, copy text and show an actionable HUD error","If secure input is active, copy text and do not synthesize input","Snapshot the pasteboard","Write final text and synthesize Command-V","Restore the prior pasteboard after 120 ms only if the user has not changed it"]}],"concurrency":{"domains":[{"name":"MainActor","owns":["App lifecycle","Observable UI state","HUD and windows","Pasteboard insertion","Onboarding transitions"]},{"name":"saymark.mic.capture","type":"serial DispatchQueue","owns":["Converted audio buffering","Capture metrics","480 ms chunk delivery"]},{"name":"saymark.stt","type":"serial DispatchQueue","owns":["Silero streaming state","MLX model sessions","Inference ordering","Per-utterance inference metrics"],"reason":"MLX and VAD session state are not treated as concurrency-safe"},{"name":"saymark.diagnostics","type":"utility DispatchQueue","owns":["JSONL file creation, rotation, and append"]},{"name":"saymark.resource-monitor","type":"utility DispatchQueue","owns":["30-second process sampling"]},{"name":"detached finalization","type":"userInitiated Task","owns":["Blocking session.stop and final ASR drain"],"returns_to":"MainActor for insertion and UI completion"}],"rules":["Dictation start and stop never overlap.","A new try-it utterance is blocked while the previous stop drains.","Live-update callbacks hop to MainActor before touching HUD state.","No model inference runs concurrently across the shared STTEngine."]},"state_and_storage":{"user_defaults":{"owner":"Presentation layer","contents":["Onboarding completion","Master enabled state","Trigger mode","Dictation experience","Insertion mode","Analytics consent","Diagnostic settings"]},"hugging_face_cache":{"owner":"Hugging Face Swift client","contents":["Model weights and configuration"]},"diagnostic_log":{"default_local_path":"~/Library/Logs/\u003cbundle-id>/saymark.jsonl","format":"JSON Lines","rotation":"20 MiB default, 3 retained files","contents":["Timings","Counts","Resource measurements","Model identifiers","Error categories","Ephemeral session IDs"],"forbidden":["Audio","Transcript text","Clipboard contents","Selected text","Focused-field contents"]},"pasteboard":{"lifetime":"Temporary during insertion, then restored when safe","exception":"Final text remains when automatic insertion is unavailable or secure input is active"},"audio":{"persistence":"Memory only for the active utterance","disk_writes":false}},"external_boundaries":[{"name":"Hugging Face Hub","direction":"Outbound HTTPS","when":"Model setup or cache miss","enabled":true,"payload":"Repository and artifact requests; never audio or transcripts"},{"name":"PostHog EU","direction":"Outbound HTTPS","when":"Only a future configured build after explicit consent","enabled":false,"reason":"Source and local builds embed an empty project token"},{"name":"macOS microphone","direction":"System input","when":"Active dictation","enabled":"Requires user permission"},{"name":"Focused application","direction":"Synthetic Command-V","when":"Final insertion","enabled":"Requires Accessibility and no secure input"}],"quality_gates":{"performance":{"source":"docs/performance-acceptance.md","areas":["Hotkey-to-HUD latency","Per-step latency","Finalization latency","Real-time factor","Idle CPU","Memory residency and growth","Word error rate"]},"privacy":{"source":"docs/privacy-and-security.md","non_negotiable":["Audio and transcript text stay out of diagnostics and telemetry","Remote analytics remains off without a Saymark-owned key and explicit consent","Secure input is never bypassed"]},"legal":{"command":"make legal-check","sources":["LICENSE","CREDITS.md","THIRD_PARTY_NOTICES.md","ThirdPartyLicenses"]},"architecture":{"command":"node Scripts/generate-architecture-map.mjs --check","rule":"The generated HTML must match docs/architecture.json and the generator."}},"tests":[{"target":"SaymarkKitTests","kind":"Swift package unit and model acceptance tests","covers":["Model plans","Onboarding transitions","Update subscription lifecycle","Final audio buffering","Two-tier final authority and fallback","Diagnostic logging","Benchmark gates","Real model acceptance"]},{"target":"SaymarkTests","kind":"Hosted XCTest","covers":["HUD controller state","Panel lifecycle","Cancellation and stale-hide protection","Long transcript layout behavior"]},{"target":"SaymarkUITests","kind":"XCUITest","covers":["First-run onboarding without external services","Onboarding gates","Local-build privacy presentation","Welcome-screen CPU and memory metrics"]},{"target":"saymark-cli","kind":"Fixed-audio benchmark harness","covers":["Real-time factor","Streaming and finish compute","Step latency","Model quality against a reference"]}],"agent_routing":[{"change":"App launch, onboarding window, Dock or menu-bar behavior","start_at":["Sources/Saymark/AppDelegate.swift","Sources/Saymark/SaymarkApp.swift","Sources/Saymark/Onboarding/OnboardingModel.swift"],"tests":["Tests/SaymarkUITests/OnboardingUITests.swift","SaymarkKit/Tests/SaymarkKitTests/OnboardingFlowTests.swift"]},{"change":"Hotkey, dictation state, final insertion, or HUD behavior","start_at":["Sources/Saymark/DictationController.swift","Sources/Saymark/HUDOverlay.swift","SaymarkKit/Sources/SaymarkKit/TextInjector.swift"],"tests":["Tests/SaymarkTests/HUDControllerTests.swift","Tests/SaymarkTests/HUDPanelIntegrationTests.swift"]},{"change":"ASR speed, accuracy, streaming, VAD, or memory","start_at":["SaymarkKit/Sources/SaymarkKit/STTEngine.swift","SaymarkKit/Sources/SaymarkKit/TwoTierEngine.swift","SaymarkKit/Sources/SaymarkKit/TwoTierSession.swift","SaymarkKit/Sources/SaymarkKit/SpeechGate.swift"],"tests":["SaymarkKit/Tests/SaymarkKitTests/TwoTierSessionTests.swift","SaymarkKit/Tests/SaymarkKitTests/RealModelAcceptanceTests.swift","docs/performance-acceptance.md"]},{"change":"Model choice or product mode","start_at":["SaymarkKit/Sources/SaymarkKit/DictationPlan.swift","SaymarkKit/Sources/SaymarkKit/DictationMode.swift","Sources/Saymark/Theme.swift"],"tests":["SaymarkKit/Tests/SaymarkKitTests/DictationPlanTests.swift","SaymarkKit/Tests/SaymarkKitTests/BenchmarkAcceptanceTests.swift"]},{"change":"Logging, benchmarks, CPU, or memory investigation","start_at":["SaymarkKit/Sources/SaymarkKit/DiagnosticLogging.swift","Sources/Saymark/ProcessResourceMonitor.swift","Scripts/report-diagnostics.sh","docs/diagnostic-logging.md"],"tests":["SaymarkKit/Tests/SaymarkKitTests/DiagnosticLoggingTests.swift","docs/benchmark-results.md"]},{"change":"Remote analytics or privacy","start_at":["Sources/Saymark/AppDelegate.swift","Sources/Saymark/Theme.swift","docs/telemetry-todo.md","docs/privacy-and-security.md"],"tests":["Tests/SaymarkUITests/OnboardingUITests.swift"],"warning":"Do not populate a telemetry token until every telemetry launch gate is complete."}],"invariants":[{"id":"final-authority","rule":"Parakeet owns final text in Efficient and Live Preview; Nemotron may not overwrite a non-empty Parakeet result.","why":"Live drafts are provisional and may be less accurate."},{"id":"instant-feedback","rule":"Present the HUD before starting AVAudioEngine or model work.","why":"Hotkey feedback must feel immediate."},{"id":"no-main-thread-finish","rule":"Run session.stop and final decoding off the MainActor.","why":"Finalization must not freeze UI transitions."},{"id":"single-inference-domain","rule":"Serialize MLX and VAD session work on saymark.stt.","why":"Shared inference state is not concurrency-safe."},{"id":"bounded-feed","rule":"Keep the production feed at 7680 samples or re-benchmark before changing it.","why":"Smaller calls can push MLX real-time factor above 1 and create backlog."},{"id":"resource-separation","rule":"Distinguish expected process-lifetime model residency from per-utterance resources, which must be released.","why":"This prevents both false memory alarms and real staircase leaks."},{"id":"privacy","rule":"Never log or transmit audio, transcript text, clipboard contents, selected text, or focused-field contents.","why":"Dictation content is sensitive user data."},{"id":"stable-local-trust","rule":"Install development builds with the stable Saymark Local identity.","why":"Accessibility trust is tied to application identity."},{"id":"onboarding-isolation","rule":"Do not bootstrap the live menu app until onboarding finishes.","why":"Onboarding must own permission, download, and try-it sequencing without duplicate sessions."},{"id":"atomic-paste","rule":"Insert the final transcript once; do not stream synthetic keystrokes into the target field.","why":"Atomic paste is reliable across Terminal, Electron, editors, and browsers."}],"known_work":[{"id":"telemetry","status":"blocked by launch checklist","source":"docs/telemetry-todo.md","summary":"Create a Saymark-owned account, privacy policy, event schema, payload tests, and release gates before enabling remote analytics."},{"id":"branding","status":"in progress","source":"Branding/BRAND_DIRECTION.md","summary":"Replace provisional waveform branding with the final Saymark identity."},{"id":"model-performance","status":"continuous","source":"docs/performance-acceptance.md","summary":"Use benchmark evidence for changes to model composition, chunking, live preview, or memory policy."}],"file_index":[{"path":"Project.swift","role":"Tuist target, dependency, bundle, signing, and build-time configuration source of truth"},{"path":"SaymarkKit/Package.swift","role":"Reusable core, CLI, model dependency, and package-test manifest"},{"path":"Sources/Saymark","role":"macOS app lifecycle, views, settings, onboarding, hotkey controller, HUD, and resource sampling"},{"path":"SaymarkKit/Sources/SaymarkKit","role":"UI-independent dictation, capture, VAD, models, insertion, diagnostics, and policy"},{"path":"SaymarkKit/Sources/saymark-cli","role":"Offline real-model benchmark executable"},{"path":"Tests/SaymarkTests","role":"Hosted app and HUD tests"},{"path":"Tests/SaymarkUITests","role":"Native macOS XCUITest flows and resource metrics"},{"path":"SaymarkKit/Tests/SaymarkKitTests","role":"Core unit, concurrency, benchmark, and real-model acceptance tests"},{"path":"Scripts","role":"Signing, installation, legal validation, diagnostics, test reporting, and architecture generation"},{"path":"Benchmarks","role":"Fixed quality reference material"},{"path":"docs","role":"Public architecture, development, testing, performance, diagnostics, privacy, and telemetry policy"},{"path":"Branding","role":"Product identity direction and visual concepts"},{"path":"ThirdPartyLicenses","role":"Redistributed dependency license texts"}]}</script>
+  <script>
+    const search = document.querySelector("#component-search");
+    const cards = [...document.querySelectorAll(".component-card")];
+    search?.addEventListener("input", () => {
+      const query = search.value.trim().toLowerCase();
+      cards.forEach((card) => { card.hidden = query && !card.dataset.search.includes(query); });
+    });
+
+    const links = [...document.querySelectorAll("nav a")];
+    const sections = links.map((link) => document.querySelector(link.getAttribute("href"))).filter(Boolean);
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (!visible) return;
+      links.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === "#" + visible.target.id));
+    }, { rootMargin: "-20% 0px -65% 0px", threshold: [0, .2, .6] });
+    sections.forEach((section) => observer.observe(section));
+  </script>
+</body>
+</html>

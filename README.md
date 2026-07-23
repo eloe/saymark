@@ -38,13 +38,16 @@ Useful commands:
 
 ```bash
 make legal-check
+make architecture-check
 make test-integration
 make bench-accept-efficient WAV=/path/to/fixture.wav
 make bench-accept-live WAV=/path/to/fixture.wav
 make report-diagnostics
 ```
 
-The [`docs/` index](docs/README.md) covers architecture, local development,
+The [interactive architecture map](docs/architecture.html) and
+[machine-readable agent handoff](docs/architecture.json) explain the complete
+system. The [`docs/` index](docs/README.md) also covers local development,
 automated testing, performance gates, diagnostics, and privacy/security.
 
 ## Architecture

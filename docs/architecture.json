@@ -1,0 +1,1145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema_version": 1,
+  "document": {
+    "title": "Saymark architecture map",
+    "purpose": "Machine-readable orientation for agents and contributors changing Saymark.",
+    "generated_on": "2026-07-22",
+    "based_on_revision": "57f2624",
+    "canonical_source": "docs/architecture.json",
+    "human_view": "docs/architecture.html",
+    "regenerate": "node Scripts/generate-architecture-map.mjs"
+  },
+  "project": {
+    "name": "Saymark",
+    "summary": "A native, local-first macOS menu-bar dictation app that captures speech, transcribes it on Apple silicon, and inserts final text into the focused application.",
+    "platform": {
+      "os": "macOS",
+      "minimum_version": "15.0",
+      "architectures": [
+        "arm64"
+      ],
+      "ui": [
+        "SwiftUI",
+        "AppKit"
+      ],
+      "language": "Swift"
+    },
+    "repository_root": ".",
+    "build_systems": [
+      "Tuist",
+      "Xcode",
+      "Swift Package Manager",
+      "Make"
+    ],
+    "products": [
+      {
+        "id": "saymark-app",
+        "name": "Saymark",
+        "kind": "macOS menu-bar application",
+        "entrypoint": "Sources/Saymark/SaymarkApp.swift",
+        "bundle_ids": {
+          "release": "com.eloe.saymark",
+          "local": "com.eloe.saymark.local"
+        }
+      },
+      {
+        "id": "saymark-kit",
+        "name": "SaymarkKit",
+        "kind": "reusable Swift library",
+        "entrypoint": "SaymarkKit/Sources/SaymarkKit/DictationSession.swift"
+      },
+      {
+        "id": "saymark-cli",
+        "name": "saymark-cli",
+        "kind": "benchmark and diagnostic executable",
+        "entrypoint": "SaymarkKit/Sources/saymark-cli/main.swift"
+      }
+    ]
+  },
+  "architecture": {
+    "style": "Layered native application with a UI-agnostic orchestration core and local model adapters.",
+    "layers": [
+      {
+        "id": "presentation",
+        "name": "Application and presentation",
+        "root": "Sources/Saymark",
+        "owns": [
+          "App lifecycle and first-run routing",
+          "Menu-bar UI and preferences",
+          "Global hotkey semantics",
+          "Onboarding UI and macOS permission UX",
+          "Floating HUD presentation",
+          "Mapping final transcripts to insertion or HUD-only output"
+        ],
+        "must_not_own": [
+          "Speech model implementation",
+          "Audio resampling details",
+          "VAD state",
+          "Model repository policy duplicated outside SaymarkKit"
+        ]
+      },
+      {
+        "id": "core",
+        "name": "Dictation orchestration core",
+        "root": "SaymarkKit/Sources/SaymarkKit",
+        "owns": [
+          "Microphone capture and 16 kHz mono conversion",
+          "480 ms feed cadence",
+          "Speech gating",
+          "Model plan and model lifecycle",
+          "Per-utterance sessions",
+          "Live update publication",
+          "Final transcript authority",
+          "Text injection primitive",
+          "Privacy-safe structured diagnostics",
+          "Benchmark acceptance policy"
+        ],
+        "must_not_own": [
+          "SwiftUI views",
+          "Menu-bar state",
+          "Product-window lifecycle"
+        ]
+      },
+      {
+        "id": "inference",
+        "name": "Inference and platform dependencies",
+        "root": "Swift package dependencies and macOS frameworks",
+        "owns": [
+          "MLX execution and memory accounting",
+          "Nemotron streaming ASR",
+          "Parakeet final ASR",
+          "Silero voice activity detection",
+          "Hugging Face artifact resolution and cache",
+          "AVFoundation audio input",
+          "Accessibility and CoreGraphics event delivery"
+        ]
+      }
+    ],
+    "dependency_rule": "Presentation may depend on SaymarkKit; SaymarkKit may depend on model and platform libraries. Model libraries must not depend on the app."
+  },
+  "components": [
+    {
+      "id": "app-entry",
+      "name": "SaymarkApp",
+      "layer": "presentation",
+      "path": "Sources/Saymark/SaymarkApp.swift",
+      "kind": "SwiftUI App",
+      "responsibilities": [
+        "Create the AppDelegate",
+        "Expose MenuBarExtra",
+        "Expose Settings scene"
+      ],
+      "depends_on": [
+        "app-lifecycle",
+        "menu-popover",
+        "settings"
+      ]
+    },
+    {
+      "id": "app-lifecycle",
+      "name": "AppDelegate",
+      "layer": "presentation",
+      "path": "Sources/Saymark/AppDelegate.swift",
+      "kind": "MainActor application coordinator",
+      "responsibilities": [
+        "Configure diagnostics and resource monitoring",
+        "Route first run to onboarding as a regular app",
+        "Route returning users to the menu-bar agent",
+        "Own the shared DictationController and OnboardingModel",
+        "Host the persistent AppKit onboarding window",
+        "Initialize optional telemetry only when a non-empty Saymark key exists"
+      ],
+      "depends_on": [
+        "dictation-controller",
+        "onboarding",
+        "resource-monitor",
+        "diagnostics",
+        "telemetry"
+      ]
+    },
+    {
+      "id": "menu-popover",
+      "name": "MenuPopover",
+      "layer": "presentation",
+      "path": "Sources/Saymark/MenuPopover.swift",
+      "kind": "SwiftUI view",
+      "responsibilities": [
+        "Display readiness and active state",
+        "Enable or disable dictation",
+        "Choose Efficient or Live Preview experience",
+        "Choose in-field or HUD-only output",
+        "Choose hold or toggle trigger",
+        "Open Settings and replay onboarding"
+      ],
+      "depends_on": [
+        "dictation-controller",
+        "preferences"
+      ]
+    },
+    {
+      "id": "settings",
+      "name": "SettingsView",
+      "layer": "presentation",
+      "path": "Sources/Saymark/SettingsView.swift",
+      "kind": "SwiftUI settings scene",
+      "responsibilities": [
+        "Configure global shortcut and insertion behavior",
+        "Configure local diagnostic verbosity",
+        "Reveal the local diagnostic log",
+        "Expose remote-analytics consent only when telemetry is configured"
+      ],
+      "depends_on": [
+        "preferences",
+        "diagnostics",
+        "telemetry"
+      ]
+    },
+    {
+      "id": "onboarding",
+      "name": "Onboarding",
+      "layer": "presentation",
+      "path": "Sources/Saymark/Onboarding",
+      "kind": "Observable coordinator plus six SwiftUI screens",
+      "responsibilities": [
+        "Guide welcome, permissions, shortcut, download, try-it, and completion",
+        "Require microphone permission and allow Accessibility to be skipped",
+        "Download and warm the Efficient model plan",
+        "Reuse the production DictationSession for try-it",
+        "Persist completion in UserDefaults"
+      ],
+      "depends_on": [
+        "onboarding-flow",
+        "model-downloader",
+        "dictation-session",
+        "permissions",
+        "preferences"
+      ]
+    },
+    {
+      "id": "dictation-controller",
+      "name": "DictationController",
+      "layer": "presentation",
+      "path": "Sources/Saymark/DictationController.swift",
+      "kind": "MainActor observable state machine",
+      "states": [
+        "loadingModels",
+        "idle",
+        "recording",
+        "transcribing",
+        "transcribed",
+        "error"
+      ],
+      "responsibilities": [
+        "Register hotkey down and up handlers",
+        "Prepare the selected model mode",
+        "Present the HUD before audio startup",
+        "Start and stop DictationSession",
+        "Bridge live transcript updates to the HUD",
+        "Finalize off the main actor",
+        "Paste or retain the final transcript according to InsertMode"
+      ],
+      "depends_on": [
+        "dictation-session",
+        "hud",
+        "text-injector",
+        "permissions",
+        "preferences",
+        "telemetry"
+      ]
+    },
+    {
+      "id": "hud",
+      "name": "HUDOverlay",
+      "layer": "presentation",
+      "path": "Sources/Saymark/HUDOverlay.swift",
+      "kind": "SwiftUI content hosted in a non-activating NSPanel",
+      "states": [
+        "listening",
+        "transcribing",
+        "error"
+      ],
+      "responsibilities": [
+        "Appear immediately without stealing focus",
+        "Display provisional and finalized transcript segments",
+        "Show an explicit processing state after release",
+        "Support compact and six-line presentation layouts",
+        "Support a clickable stop control in toggle mode",
+        "Cancel stale hides and release hosted content after hiding"
+      ]
+    },
+    {
+      "id": "dictation-session",
+      "name": "DictationSession",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/DictationSession.swift",
+      "kind": "UI-agnostic facade",
+      "responsibilities": [
+        "Load and warm the requested dictation mode",
+        "Create a fresh microphone capture per utterance",
+        "Publish live confirmed and partial updates",
+        "Stop capture and flush the final transcript",
+        "Provide deterministic offline transcription for benchmarks"
+      ],
+      "depends_on": [
+        "stt-engine",
+        "mic-capture",
+        "update-hub"
+      ]
+    },
+    {
+      "id": "mic-capture",
+      "name": "MicCapture",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/MicCapture.swift",
+      "kind": "AVAudioEngine adapter",
+      "responsibilities": [
+        "Capture the default audio input",
+        "Convert to mono Float32 at 16 kHz",
+        "Buffer and emit 7680-sample chunks",
+        "Flush the trailing partial chunk",
+        "Report numeric capture metrics"
+      ],
+      "invariants": [
+        "One stateful AVAudioConverter per capture preserves resampler continuity",
+        "Audio samples are never written to diagnostics",
+        "The capture tap does not inherit actor isolation"
+      ]
+    },
+    {
+      "id": "stt-engine",
+      "name": "STTEngine",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/STTEngine.swift",
+      "kind": "Serialized inference coordinator",
+      "responsibilities": [
+        "Own TwoTierEngine and SileroVAD",
+        "Serialize VAD and MLX inference on saymark.stt",
+        "Create a fresh utterance session and speech gate",
+        "Apply speech gating before ASR",
+        "Record queue, VAD, inference, finish, and MLX memory metrics"
+      ],
+      "depends_on": [
+        "speech-gate",
+        "two-tier-engine",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "speech-gate",
+      "name": "SpeechGate",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/SpeechGate.swift",
+      "kind": "Per-utterance streaming VAD state",
+      "responsibilities": [
+        "Evaluate Silero over 512-sample frames",
+        "Drop leading and long trailing silence",
+        "Bridge short pauses with two 480 ms hangover chunks",
+        "Fail open if VAD inference fails"
+      ]
+    },
+    {
+      "id": "two-tier-engine",
+      "name": "TwoTierEngine",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/TwoTierEngine.swift",
+      "kind": "Model residency and composition policy",
+      "responsibilities": [
+        "Cap MLX memory at 18 GiB",
+        "Lazily load and memoize Nemotron and Parakeet",
+        "Vend a fresh session for Fast, Hybrid, or Accurate mode",
+        "Keep product policy outside the model library"
+      ],
+      "depends_on": [
+        "model-policy",
+        "model-stack"
+      ]
+    },
+    {
+      "id": "model-policy",
+      "name": "DictationPlan and DictationMode",
+      "layer": "core",
+      "paths": [
+        "SaymarkKit/Sources/SaymarkKit/DictationPlan.swift",
+        "SaymarkKit/Sources/SaymarkKit/DictationMode.swift"
+      ],
+      "kind": "Product model policy",
+      "responsibilities": [
+        "Map user experiences to supported model graphs",
+        "Keep Fast as an internal benchmark mode",
+        "Define Parakeet as final authority for Efficient and Live Preview"
+      ]
+    },
+    {
+      "id": "two-tier-session",
+      "name": "TwoTierSession",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/TwoTierSession.swift",
+      "kind": "Per-utterance Hybrid session",
+      "responsibilities": [
+        "Stream Nemotron draft text while recording",
+        "Retain only speech-marked audio for finalization",
+        "Run one Parakeet pass at stop",
+        "Use Nemotron only as fallback when Parakeet returns empty",
+        "Measure draft-to-final divergence",
+        "Clear the MLX compute cache after finalization"
+      ]
+    },
+    {
+      "id": "model-downloader",
+      "name": "OnboardingDownloader",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/OnboardingDownloader.swift",
+      "kind": "Swift actor",
+      "responsibilities": [
+        "Resolve or download plan repositories into the Hugging Face cache",
+        "Report monotonic per-model progress to the main actor"
+      ],
+      "depends_on": [
+        "hugging-face"
+      ]
+    },
+    {
+      "id": "text-injector",
+      "name": "TextInjector",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/TextInjector.swift",
+      "kind": "macOS paste and event adapter",
+      "responsibilities": [
+        "Snapshot and restore the pasteboard around atomic insertion",
+        "Synthesize Command-V using a private CGEvent source",
+        "Detect secure input and leave text on the clipboard",
+        "Avoid clobbering a user clipboard change"
+      ],
+      "depends_on": [
+        "permissions"
+      ]
+    },
+    {
+      "id": "diagnostics",
+      "name": "SaymarkDiagnostics",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/DiagnosticLogging.swift",
+      "kind": "JSONL and unified-log sink",
+      "responsibilities": [
+        "Write privacy-safe scalar events",
+        "Support off through trace verbosity",
+        "Rotate local files at a configured size",
+        "Correlate dictation events with ephemeral session IDs"
+      ]
+    },
+    {
+      "id": "resource-monitor",
+      "name": "ProcessResourceMonitor",
+      "layer": "presentation",
+      "path": "Sources/Saymark/ProcessResourceMonitor.swift",
+      "kind": "Low-frequency process sampler",
+      "responsibilities": [
+        "Sample CPU, resident memory, and physical footprint every 30 seconds",
+        "Emit samples only when debug diagnostics are enabled"
+      ]
+    },
+    {
+      "id": "preferences",
+      "name": "Runtime preferences",
+      "layer": "presentation",
+      "path": "Sources/Saymark/Theme.swift",
+      "kind": "UserDefaults-backed policy",
+      "keys": [
+        "saymark.didOnboard",
+        "saymark.enabled",
+        "saymark.triggerMode",
+        "saymark.model",
+        "saymark.insertMode",
+        "saymark.analyticsEnabled",
+        "saymark.logLevel",
+        "saymark.logMaxBytes"
+      ]
+    },
+    {
+      "id": "update-hub",
+      "name": "DictationUpdateHub",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/DictationUpdates.swift",
+      "kind": "Subscription publisher",
+      "responsibilities": [
+        "Publish confirmed and partial transcript snapshots",
+        "Make cancellation explicit so UI observers do not leak"
+      ]
+    },
+    {
+      "id": "onboarding-flow",
+      "name": "OnboardingFlow",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/OnboardingFlow.swift",
+      "kind": "Pure state and transition policy",
+      "states": [
+        "welcome",
+        "permissions",
+        "shortcut",
+        "download",
+        "tryIt",
+        "done"
+      ],
+      "responsibilities": [
+        "Define hard and soft gates",
+        "Select Efficient as the first-run model plan",
+        "Calculate download progress without UI dependencies"
+      ]
+    },
+    {
+      "id": "permissions",
+      "name": "macOS trust boundaries",
+      "layer": "inference",
+      "kind": "System services",
+      "items": [
+        {
+          "name": "Microphone",
+          "required_for": "Any dictation",
+          "framework": "AVFoundation",
+          "hard_gate": true
+        },
+        {
+          "name": "Accessibility",
+          "required_for": "Automatic insertion into other apps",
+          "framework": "ApplicationServices and CoreGraphics",
+          "hard_gate": false,
+          "fallback": "Keep transcript on clipboard or use HUD-only mode"
+        },
+        {
+          "name": "Secure Event Input",
+          "required_for": "Not a permission; a protected-field state",
+          "framework": "Carbon",
+          "behavior": "Never bypass; leave text on clipboard"
+        }
+      ]
+    },
+    {
+      "id": "model-stack",
+      "name": "Local inference stack",
+      "layer": "inference",
+      "kind": "Swift package dependencies",
+      "items": [
+        "mlx-audio-swift",
+        "mlx-swift",
+        "MLXAudioSTT",
+        "MLXAudioVAD",
+        "MLXAudioCore"
+      ]
+    },
+    {
+      "id": "hugging-face",
+      "name": "Hugging Face Hub",
+      "layer": "inference",
+      "kind": "External artifact service",
+      "network": "Setup and first model load only when artifacts are not cached",
+      "data_out": [
+        "Model repository requests"
+      ],
+      "prohibited_data": [
+        "Audio",
+        "Transcripts",
+        "Clipboard contents"
+      ]
+    },
+    {
+      "id": "telemetry",
+      "name": "Optional PostHog telemetry",
+      "layer": "presentation",
+      "kind": "Dormant external integration",
+      "status": "Not configured in source and local builds",
+      "activation_gates": [
+        "Non-empty Saymark-owned project token",
+        "Explicit user opt-in",
+        "Requirements in docs/telemetry-todo.md"
+      ],
+      "prohibited_data": [
+        "Audio",
+        "Transcript text",
+        "Clipboard contents",
+        "Focused-field contents",
+        "Stable device identifiers"
+      ]
+    }
+  ],
+  "model_policy": {
+    "catalog": [
+      {
+        "id": "nemotron",
+        "repository": "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
+        "role": "streaming draft",
+        "estimated_download_gb": 0.6,
+        "execution": "MLX",
+        "residency": "Memoized for the app process after the mode is prepared"
+      },
+      {
+        "id": "parakeet",
+        "repository": "mlx-community/parakeet-tdt-0.6b-v3",
+        "role": "authoritative offline final",
+        "estimated_download_gb": 2.5,
+        "execution": "MLX",
+        "residency": "Memoized for the app process after the mode is prepared"
+      },
+      {
+        "id": "silero",
+        "repository": "mlx-community/silero-vad",
+        "role": "speech gate",
+        "execution": "MLXAudioVAD",
+        "failure_policy": "Fail open so a VAD failure never drops speech"
+      }
+    ],
+    "experiences": [
+      {
+        "product_name": "Efficient",
+        "mode": "accurate",
+        "models": [
+          "parakeet"
+        ],
+        "live_preview": false,
+        "final_authority": "parakeet",
+        "first_run_default": true
+      },
+      {
+        "product_name": "Live Preview",
+        "mode": "hybrid",
+        "models": [
+          "nemotron",
+          "parakeet"
+        ],
+        "live_preview": true,
+        "final_authority": "parakeet",
+        "fallback": "nemotron only when Parakeet final is empty"
+      },
+      {
+        "product_name": "Fast",
+        "mode": "fast",
+        "models": [
+          "nemotron"
+        ],
+        "live_preview": true,
+        "final_authority": "nemotron",
+        "exposure": "Benchmarks and diagnostics only"
+      }
+    ],
+    "memory": {
+      "mlx_limit_bytes": 19327352832,
+      "expected_behavior": "Model weights may remain resident across dictations; per-utterance audio, sessions, subscriptions, capture engines, timers, and HUD content must be released.",
+      "cache_policy": "MLX compute cache is cleared after final generation; loaded models are retained for low-latency reuse."
+    }
+  },
+  "runtime_flows": [
+    {
+      "id": "launch-first-run",
+      "name": "First launch",
+      "trigger": "applicationDidFinishLaunching with saymark.didOnboard false",
+      "steps": [
+        "Configure local diagnostics",
+        "Start the low-frequency resource monitor",
+        "Do not initialize telemetry when the project token is empty",
+        "Run as a regular app so permission dialogs cannot bury onboarding",
+        "Present the AppKit-owned onboarding window",
+        "Defer hotkeys and model warm-up until onboarding completes"
+      ],
+      "terminal_state": "Onboarding completion starts the menu-bar app and changes activation policy to accessory"
+    },
+    {
+      "id": "launch-returning",
+      "name": "Returning launch",
+      "trigger": "applicationDidFinishLaunching with saymark.didOnboard true",
+      "steps": [
+        "Configure diagnostics and resource monitoring",
+        "Change activation policy to accessory",
+        "Register hotkey callbacks",
+        "Request cached microphone status",
+        "Prompt for Accessibility only when in-field insertion is selected and trust is absent",
+        "Load and warm only the selected model plan"
+      ],
+      "terminal_state": "DictationController idle and ready"
+    },
+    {
+      "id": "onboarding",
+      "name": "Onboarding",
+      "trigger": "First run or Setup tour",
+      "steps": [
+        "Welcome explains local-first behavior and current diagnostics status",
+        "Permissions requires microphone and allows Accessibility to be skipped",
+        "Shortcut records the global trigger",
+        "Download fetches the Efficient plan and warms Parakeet plus VAD",
+        "Try It borrows the production DictationSession",
+        "Done persists saymark.didOnboard"
+      ],
+      "gates": {
+        "permissions": "Microphone granted",
+        "download": "All plan model fractions equal 1",
+        "try_it": "At least one non-empty result"
+      }
+    },
+    {
+      "id": "dictation",
+      "name": "Hotkey-to-text",
+      "trigger": "Global hotkey down or toggle",
+      "steps": [
+        "Reject the gesture if disabled, already active, or models are not ready",
+        "Present the HUD synchronously on the main actor",
+        "Start a fresh DictationSession and MicCapture",
+        "Capture and convert audio to 16 kHz mono",
+        "Emit 480 ms chunks on the capture queue",
+        "Serialize VAD and ASR on saymark.stt",
+        "Publish live updates to the HUD",
+        "On release, display Processing and stop capture",
+        "Finalize off the main actor",
+        "Use Parakeet final text in Efficient and Live Preview",
+        "Paste once into the focused app or leave text in the HUD",
+        "Tear down per-utterance resources and schedule HUD dismissal"
+      ],
+      "authoritative_output": "Parakeet for product modes; Nemotron is live draft and empty-final fallback only"
+    },
+    {
+      "id": "model-switch",
+      "name": "Change dictation experience",
+      "trigger": "User changes Efficient or Live Preview in MenuPopover",
+      "steps": [
+        "Persist the product mode",
+        "Ask DictationController to prepare the current mode",
+        "Reuse any already-loaded model",
+        "Download and warm only a missing model",
+        "Use the new mode on the next utterance"
+      ]
+    },
+    {
+      "id": "insertion",
+      "name": "Final text insertion",
+      "trigger": "Non-empty final transcript with InsertMode.inField",
+      "steps": [
+        "If Accessibility is absent, copy text and show an actionable HUD error",
+        "If secure input is active, copy text and do not synthesize input",
+        "Snapshot the pasteboard",
+        "Write final text and synthesize Command-V",
+        "Restore the prior pasteboard after 120 ms only if the user has not changed it"
+      ]
+    }
+  ],
+  "concurrency": {
+    "domains": [
+      {
+        "name": "MainActor",
+        "owns": [
+          "App lifecycle",
+          "Observable UI state",
+          "HUD and windows",
+          "Pasteboard insertion",
+          "Onboarding transitions"
+        ]
+      },
+      {
+        "name": "saymark.mic.capture",
+        "type": "serial DispatchQueue",
+        "owns": [
+          "Converted audio buffering",
+          "Capture metrics",
+          "480 ms chunk delivery"
+        ]
+      },
+      {
+        "name": "saymark.stt",
+        "type": "serial DispatchQueue",
+        "owns": [
+          "Silero streaming state",
+          "MLX model sessions",
+          "Inference ordering",
+          "Per-utterance inference metrics"
+        ],
+        "reason": "MLX and VAD session state are not treated as concurrency-safe"
+      },
+      {
+        "name": "saymark.diagnostics",
+        "type": "utility DispatchQueue",
+        "owns": [
+          "JSONL file creation, rotation, and append"
+        ]
+      },
+      {
+        "name": "saymark.resource-monitor",
+        "type": "utility DispatchQueue",
+        "owns": [
+          "30-second process sampling"
+        ]
+      },
+      {
+        "name": "detached finalization",
+        "type": "userInitiated Task",
+        "owns": [
+          "Blocking session.stop and final ASR drain"
+        ],
+        "returns_to": "MainActor for insertion and UI completion"
+      }
+    ],
+    "rules": [
+      "Dictation start and stop never overlap.",
+      "A new try-it utterance is blocked while the previous stop drains.",
+      "Live-update callbacks hop to MainActor before touching HUD state.",
+      "No model inference runs concurrently across the shared STTEngine."
+    ]
+  },
+  "state_and_storage": {
+    "user_defaults": {
+      "owner": "Presentation layer",
+      "contents": [
+        "Onboarding completion",
+        "Master enabled state",
+        "Trigger mode",
+        "Dictation experience",
+        "Insertion mode",
+        "Analytics consent",
+        "Diagnostic settings"
+      ]
+    },
+    "hugging_face_cache": {
+      "owner": "Hugging Face Swift client",
+      "contents": [
+        "Model weights and configuration"
+      ]
+    },
+    "diagnostic_log": {
+      "default_local_path": "~/Library/Logs/<bundle-id>/saymark.jsonl",
+      "format": "JSON Lines",
+      "rotation": "20 MiB default, 3 retained files",
+      "contents": [
+        "Timings",
+        "Counts",
+        "Resource measurements",
+        "Model identifiers",
+        "Error categories",
+        "Ephemeral session IDs"
+      ],
+      "forbidden": [
+        "Audio",
+        "Transcript text",
+        "Clipboard contents",
+        "Selected text",
+        "Focused-field contents"
+      ]
+    },
+    "pasteboard": {
+      "lifetime": "Temporary during insertion, then restored when safe",
+      "exception": "Final text remains when automatic insertion is unavailable or secure input is active"
+    },
+    "audio": {
+      "persistence": "Memory only for the active utterance",
+      "disk_writes": false
+    }
+  },
+  "external_boundaries": [
+    {
+      "name": "Hugging Face Hub",
+      "direction": "Outbound HTTPS",
+      "when": "Model setup or cache miss",
+      "enabled": true,
+      "payload": "Repository and artifact requests; never audio or transcripts"
+    },
+    {
+      "name": "PostHog EU",
+      "direction": "Outbound HTTPS",
+      "when": "Only a future configured build after explicit consent",
+      "enabled": false,
+      "reason": "Source and local builds embed an empty project token"
+    },
+    {
+      "name": "macOS microphone",
+      "direction": "System input",
+      "when": "Active dictation",
+      "enabled": "Requires user permission"
+    },
+    {
+      "name": "Focused application",
+      "direction": "Synthetic Command-V",
+      "when": "Final insertion",
+      "enabled": "Requires Accessibility and no secure input"
+    }
+  ],
+  "quality_gates": {
+    "performance": {
+      "source": "docs/performance-acceptance.md",
+      "areas": [
+        "Hotkey-to-HUD latency",
+        "Per-step latency",
+        "Finalization latency",
+        "Real-time factor",
+        "Idle CPU",
+        "Memory residency and growth",
+        "Word error rate"
+      ]
+    },
+    "privacy": {
+      "source": "docs/privacy-and-security.md",
+      "non_negotiable": [
+        "Audio and transcript text stay out of diagnostics and telemetry",
+        "Remote analytics remains off without a Saymark-owned key and explicit consent",
+        "Secure input is never bypassed"
+      ]
+    },
+    "legal": {
+      "command": "make legal-check",
+      "sources": [
+        "LICENSE",
+        "CREDITS.md",
+        "THIRD_PARTY_NOTICES.md",
+        "ThirdPartyLicenses"
+      ]
+    },
+    "architecture": {
+      "command": "node Scripts/generate-architecture-map.mjs --check",
+      "rule": "The generated HTML must match docs/architecture.json and the generator."
+    }
+  },
+  "tests": [
+    {
+      "target": "SaymarkKitTests",
+      "kind": "Swift package unit and model acceptance tests",
+      "covers": [
+        "Model plans",
+        "Onboarding transitions",
+        "Update subscription lifecycle",
+        "Final audio buffering",
+        "Two-tier final authority and fallback",
+        "Diagnostic logging",
+        "Benchmark gates",
+        "Real model acceptance"
+      ]
+    },
+    {
+      "target": "SaymarkTests",
+      "kind": "Hosted XCTest",
+      "covers": [
+        "HUD controller state",
+        "Panel lifecycle",
+        "Cancellation and stale-hide protection",
+        "Long transcript layout behavior"
+      ]
+    },
+    {
+      "target": "SaymarkUITests",
+      "kind": "XCUITest",
+      "covers": [
+        "First-run onboarding without external services",
+        "Onboarding gates",
+        "Local-build privacy presentation",
+        "Welcome-screen CPU and memory metrics"
+      ]
+    },
+    {
+      "target": "saymark-cli",
+      "kind": "Fixed-audio benchmark harness",
+      "covers": [
+        "Real-time factor",
+        "Streaming and finish compute",
+        "Step latency",
+        "Model quality against a reference"
+      ]
+    }
+  ],
+  "agent_routing": [
+    {
+      "change": "App launch, onboarding window, Dock or menu-bar behavior",
+      "start_at": [
+        "Sources/Saymark/AppDelegate.swift",
+        "Sources/Saymark/SaymarkApp.swift",
+        "Sources/Saymark/Onboarding/OnboardingModel.swift"
+      ],
+      "tests": [
+        "Tests/SaymarkUITests/OnboardingUITests.swift",
+        "SaymarkKit/Tests/SaymarkKitTests/OnboardingFlowTests.swift"
+      ]
+    },
+    {
+      "change": "Hotkey, dictation state, final insertion, or HUD behavior",
+      "start_at": [
+        "Sources/Saymark/DictationController.swift",
+        "Sources/Saymark/HUDOverlay.swift",
+        "SaymarkKit/Sources/SaymarkKit/TextInjector.swift"
+      ],
+      "tests": [
+        "Tests/SaymarkTests/HUDControllerTests.swift",
+        "Tests/SaymarkTests/HUDPanelIntegrationTests.swift"
+      ]
+    },
+    {
+      "change": "ASR speed, accuracy, streaming, VAD, or memory",
+      "start_at": [
+        "SaymarkKit/Sources/SaymarkKit/STTEngine.swift",
+        "SaymarkKit/Sources/SaymarkKit/TwoTierEngine.swift",
+        "SaymarkKit/Sources/SaymarkKit/TwoTierSession.swift",
+        "SaymarkKit/Sources/SaymarkKit/SpeechGate.swift"
+      ],
+      "tests": [
+        "SaymarkKit/Tests/SaymarkKitTests/TwoTierSessionTests.swift",
+        "SaymarkKit/Tests/SaymarkKitTests/RealModelAcceptanceTests.swift",
+        "docs/performance-acceptance.md"
+      ]
+    },
+    {
+      "change": "Model choice or product mode",
+      "start_at": [
+        "SaymarkKit/Sources/SaymarkKit/DictationPlan.swift",
+        "SaymarkKit/Sources/SaymarkKit/DictationMode.swift",
+        "Sources/Saymark/Theme.swift"
+      ],
+      "tests": [
+        "SaymarkKit/Tests/SaymarkKitTests/DictationPlanTests.swift",
+        "SaymarkKit/Tests/SaymarkKitTests/BenchmarkAcceptanceTests.swift"
+      ]
+    },
+    {
+      "change": "Logging, benchmarks, CPU, or memory investigation",
+      "start_at": [
+        "SaymarkKit/Sources/SaymarkKit/DiagnosticLogging.swift",
+        "Sources/Saymark/ProcessResourceMonitor.swift",
+        "Scripts/report-diagnostics.sh",
+        "docs/diagnostic-logging.md"
+      ],
+      "tests": [
+        "SaymarkKit/Tests/SaymarkKitTests/DiagnosticLoggingTests.swift",
+        "docs/benchmark-results.md"
+      ]
+    },
+    {
+      "change": "Remote analytics or privacy",
+      "start_at": [
+        "Sources/Saymark/AppDelegate.swift",
+        "Sources/Saymark/Theme.swift",
+        "docs/telemetry-todo.md",
+        "docs/privacy-and-security.md"
+      ],
+      "tests": [
+        "Tests/SaymarkUITests/OnboardingUITests.swift"
+      ],
+      "warning": "Do not populate a telemetry token until every telemetry launch gate is complete."
+    }
+  ],
+  "invariants": [
+    {
+      "id": "final-authority",
+      "rule": "Parakeet owns final text in Efficient and Live Preview; Nemotron may not overwrite a non-empty Parakeet result.",
+      "why": "Live drafts are provisional and may be less accurate."
+    },
+    {
+      "id": "instant-feedback",
+      "rule": "Present the HUD before starting AVAudioEngine or model work.",
+      "why": "Hotkey feedback must feel immediate."
+    },
+    {
+      "id": "no-main-thread-finish",
+      "rule": "Run session.stop and final decoding off the MainActor.",
+      "why": "Finalization must not freeze UI transitions."
+    },
+    {
+      "id": "single-inference-domain",
+      "rule": "Serialize MLX and VAD session work on saymark.stt.",
+      "why": "Shared inference state is not concurrency-safe."
+    },
+    {
+      "id": "bounded-feed",
+      "rule": "Keep the production feed at 7680 samples or re-benchmark before changing it.",
+      "why": "Smaller calls can push MLX real-time factor above 1 and create backlog."
+    },
+    {
+      "id": "resource-separation",
+      "rule": "Distinguish expected process-lifetime model residency from per-utterance resources, which must be released.",
+      "why": "This prevents both false memory alarms and real staircase leaks."
+    },
+    {
+      "id": "privacy",
+      "rule": "Never log or transmit audio, transcript text, clipboard contents, selected text, or focused-field contents.",
+      "why": "Dictation content is sensitive user data."
+    },
+    {
+      "id": "stable-local-trust",
+      "rule": "Install development builds with the stable Saymark Local identity.",
+      "why": "Accessibility trust is tied to application identity."
+    },
+    {
+      "id": "onboarding-isolation",
+      "rule": "Do not bootstrap the live menu app until onboarding finishes.",
+      "why": "Onboarding must own permission, download, and try-it sequencing without duplicate sessions."
+    },
+    {
+      "id": "atomic-paste",
+      "rule": "Insert the final transcript once; do not stream synthetic keystrokes into the target field.",
+      "why": "Atomic paste is reliable across Terminal, Electron, editors, and browsers."
+    }
+  ],
+  "known_work": [
+    {
+      "id": "telemetry",
+      "status": "blocked by launch checklist",
+      "source": "docs/telemetry-todo.md",
+      "summary": "Create a Saymark-owned account, privacy policy, event schema, payload tests, and release gates before enabling remote analytics."
+    },
+    {
+      "id": "branding",
+      "status": "in progress",
+      "source": "Branding/BRAND_DIRECTION.md",
+      "summary": "Replace provisional waveform branding with the final Saymark identity."
+    },
+    {
+      "id": "model-performance",
+      "status": "continuous",
+      "source": "docs/performance-acceptance.md",
+      "summary": "Use benchmark evidence for changes to model composition, chunking, live preview, or memory policy."
+    }
+  ],
+  "file_index": [
+    {
+      "path": "Project.swift",
+      "role": "Tuist target, dependency, bundle, signing, and build-time configuration source of truth"
+    },
+    {
+      "path": "SaymarkKit/Package.swift",
+      "role": "Reusable core, CLI, model dependency, and package-test manifest"
+    },
+    {
+      "path": "Sources/Saymark",
+      "role": "macOS app lifecycle, views, settings, onboarding, hotkey controller, HUD, and resource sampling"
+    },
+    {
+      "path": "SaymarkKit/Sources/SaymarkKit",
+      "role": "UI-independent dictation, capture, VAD, models, insertion, diagnostics, and policy"
+    },
+    {
+      "path": "SaymarkKit/Sources/saymark-cli",
+      "role": "Offline real-model benchmark executable"
+    },
+    {
+      "path": "Tests/SaymarkTests",
+      "role": "Hosted app and HUD tests"
+    },
+    {
+      "path": "Tests/SaymarkUITests",
+      "role": "Native macOS XCUITest flows and resource metrics"
+    },
+    {
+      "path": "SaymarkKit/Tests/SaymarkKitTests",
+      "role": "Core unit, concurrency, benchmark, and real-model acceptance tests"
+    },
+    {
+      "path": "Scripts",
+      "role": "Signing, installation, legal validation, diagnostics, test reporting, and architecture generation"
+    },
+    {
+      "path": "Benchmarks",
+      "role": "Fixed quality reference material"
+    },
+    {
+      "path": "docs",
+      "role": "Public architecture, development, testing, performance, diagnostics, privacy, and telemetry policy"
+    },
+    {
+      "path": "Branding",
+      "role": "Product identity direction and visual concepts"
+    },
+    {
+      "path": "ThirdPartyLicenses",
+      "role": "Redistributed dependency license texts"
+    }
+  ]
+}

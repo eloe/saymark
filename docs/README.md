@@ -2,6 +2,8 @@
 
 Start with the documents that match the work you are doing:
 
+- [`architecture.html`](architecture.html) — interactive, single-page system map
+- [`architecture.json`](architecture.json) — machine-readable handoff for agents and tooling
 - [`architecture.md`](architecture.md) — app boundaries and the dictation lifecycle
 - [`development.md`](development.md) — local setup, build, signing, and installation
 - [`integration-testing.md`](integration-testing.md) — automated macOS application tests

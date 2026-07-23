@@ -12,7 +12,7 @@ XCB = tuist xcodebuild build -workspace $(WORKSPACE) -scheme $(SCHEME) \
 	-configuration Release -destination 'generic/platform=macOS' -allowProvisioningUpdates \
 	ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO
 
-.PHONY: legal-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
+.PHONY: legal-check architecture architecture-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
 	test-unit test-integration model-fixture prepare-model-tests test-model-efficient test-model-live \
 	test-model-parakeet-int8 test-model-live-parakeet-int8 report-diagnostics
 
@@ -23,6 +23,12 @@ LOCAL_DERIVED_DATA ?= /tmp/saymark-local-build
 
 legal-check:
 	Scripts/check-legal-notices.sh
+
+architecture:
+	node Scripts/generate-architecture-map.mjs
+
+architecture-check:
+	node Scripts/generate-architecture-map.mjs --check
 
 gen: legal-check
 	tuist generate --no-open
