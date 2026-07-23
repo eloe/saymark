@@ -27,19 +27,21 @@ jobs:
       - name: Install pinned tools
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
-        with:
-          languages: swift
-          build-mode: manual
-          queries: security-extended
-
       - name: Generate the local project
         env:
           TUIST_SAYMARK_LOCAL_BUILD: "1"
           TUIST_APP_VERSION: "0.1.1"
           TUIST_APP_BUILD: ${{ github.run_number }}
         run: tuist generate --no-open
+
+      # Initialize only after Tuist runs. CodeQL's DYLD tracer prevents Tuist
+      # from locating its bundled ProjectDescription resource on hosted macOS.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+        with:
+          languages: swift
+          build-mode: manual
+          queries: security-extended
 
       - name: Build traced Swift targets
         run: |
