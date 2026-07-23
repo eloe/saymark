@@ -17,7 +17,8 @@ final class TwoTierSessionTests: XCTestCase {
             fastStep: { _ in draft = "nemotron draft" },
             fastText: { draft },
             fastFinish: {},
-            accurateText: { _ in "parakeet final" }
+            accurateText: { _ in "parakeet final" },
+            releaseModelCache: {}
         )
 
         _ = session.step([0.1, 0.2], processLiveDraft: true)
@@ -31,11 +32,28 @@ final class TwoTierSessionTests: XCTestCase {
             fastStep: { _ in draft = "nemotron draft survives" },
             fastText: { draft },
             fastFinish: {},
-            accurateText: { _ in "  \n " }
+            accurateText: { _ in "  \n " },
+            releaseModelCache: {}
         )
 
         _ = session.step([0.1, 0.2], processLiveDraft: true)
 
         XCTAssertEqual(session.finish().confirmed, "nemotron draft survives")
+    }
+
+    func testFinishReleasesTheModelCache() {
+        var releaseCount = 0
+        let session = TwoTierSession(
+            fastStep: { _ in },
+            fastText: { "draft" },
+            fastFinish: {},
+            accurateText: { _ in "final" },
+            releaseModelCache: { releaseCount += 1 }
+        )
+
+        _ = session.step([0.1], processLiveDraft: true)
+        _ = session.finish()
+
+        XCTAssertEqual(releaseCount, 1)
     }
 }

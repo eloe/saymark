@@ -18,3 +18,21 @@ graph.*
 build/
 *.dSYM/
 .env
+.env.*
+!.env.example
+
+# Credentials, certificates, provisioning profiles, and local keychains
+*.key
+*.pem
+*.p12
+*.pfx
+*.cer
+*.crt
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
+Secrets.xcconfig
+*.xcconfig.local
+credentials.json
+auth.json

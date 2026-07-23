@@ -38,6 +38,7 @@ Useful commands:
 
 ```bash
 make legal-check
+make security-check
 make architecture-check
 make test-integration
 make bench-accept-efficient WAV=/path/to/fixture.wav

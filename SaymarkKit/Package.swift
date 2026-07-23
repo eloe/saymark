@@ -6,7 +6,7 @@ import PackageDescription
 // dictation orchestrator.
 //
 // STT + VAD come from the fork `beshkenadze/mlx-audio-swift` as a normal external
-// dependency over HTTPS, pinned to `main` (which already carries the merged
+// dependency over HTTPS, pinned to the reviewed commit that carries the merged
 // Nemotron streaming + Parakeet refinement + Silero VAD, all public, no dev-only
 // tooling). The two-tier composition itself lives here in SaymarkKit, not the
 // library — it's application policy (which models, how to merge, memory budget).
@@ -18,7 +18,10 @@ let package = Package(
         .executable(name: "saymark-cli", targets: ["saymark-cli"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/beshkenadze/mlx-audio-swift.git", branch: "main"),
+        .package(
+            url: "https://github.com/beshkenadze/mlx-audio-swift.git",
+            revision: "6671490176d24bc962f0b8cd50dbf24e2427e387"
+        ),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.31.4")),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1")),
     ],

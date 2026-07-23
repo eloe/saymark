@@ -1,0 +1,62 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "31 14 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Swift security analysis
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+        with:
+          languages: swift
+          build-mode: manual
+          queries: security-extended
+
+      - name: Generate the local project
+        env:
+          TUIST_SAYMARK_LOCAL_BUILD: "1"
+          TUIST_APP_VERSION: "0.1.1"
+          TUIST_APP_BUILD: ${{ github.run_number }}
+        run: tuist generate --no-open
+
+      - name: Build traced Swift targets
+        run: |
+          xcodebuild build \
+            -workspace Saymark.xcworkspace \
+            -scheme Saymark \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/codeql-derived-data" \
+            -skipPackagePluginValidation \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+        with:
+          category: /language:swift

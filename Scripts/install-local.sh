@@ -8,7 +8,9 @@ destination="/Applications/Saymark.app"
 # the login keychain, where a revoked Apple Development certificate may appear.
 identity="${SAYMARK_LOCAL_SIGN_IDENTITY:-Saymark Local Development}"
 keychain="${SAYMARK_LOCAL_SIGN_KEYCHAIN:-$HOME/Library/Keychains/saymark-local-signing.keychain-db}"
-security unlock-keychain -p "" "$keychain"
+source "${0:A:h}/local-signing-password.sh"
+keychain_password="$(saymark_local_signing_password "$keychain")"
+security unlock-keychain -p "$keychain_password" "$keychain"
 fingerprint="$(security find-identity -v -p codesigning "$keychain" | awk -v name="\"$identity\"" 'index($0, name) { print $2; exit }')"
 if [[ -z "$fingerprint" ]]; then
   print -u2 "No usable $identity identity in $keychain"
