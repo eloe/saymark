@@ -34,6 +34,12 @@ jobs:
           TUIST_APP_BUILD: ${{ github.run_number }}
         run: tuist generate --no-open
 
+      # macos-26 runners do not include this optional Xcode component, but the
+      # MLX Swift dependency compiles Metal sources. Install it before CodeQL
+      # enables its DYLD tracer so xcodebuild's component action is untraced.
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
       # Initialize only after Tuist runs. CodeQL's DYLD tracer prevents Tuist
       # from locating its bundled ProjectDescription resource on hosted macOS.
       - name: Initialize CodeQL
