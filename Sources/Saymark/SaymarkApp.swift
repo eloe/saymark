@@ -27,10 +27,12 @@ struct SaymarkApp: App {
         }
     }
 
-    /// A native template symbol that automatically adapts to the menu bar.
+    /// Saymark's monochrome template mark automatically adapts to the menu bar.
     private static let menuIcon: NSImage = {
-        let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Saymark")
+        let image = NSImage(named: "SaymarkMenuBar")
+            ?? NSImage(systemSymbolName: "waveform", accessibilityDescription: "Saymark")
             ?? NSImage()
+        image.accessibilityDescription = "Saymark"
         image.isTemplate = true
         image.size = NSSize(width: 18, height: 18)
         return image

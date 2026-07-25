@@ -122,7 +122,6 @@ final class DictationController {
                 SaymarkDiagnostics.log(.error, "models.ui_failed", fields: [
                     "mode": mode.rawValue,
                     "error_type": String(reflecting: type(of: error)),
-                    "error_description": error.localizedDescription,
                 ])
                 state = .error("model load: \(error.localizedDescription)")
             }
@@ -190,11 +189,10 @@ final class DictationController {
             SaymarkDiagnostics.log(.error, "dictation.ui_start_failed", sessionID: session.activeSessionID, fields: [
                 "model_mode": modelMode.rawValue,
                 "error_type": String(reflecting: type(of: error)),
-                "error_description": error.localizedDescription,
             ])
             state = .error(error.localizedDescription)
             PostHogSDK.shared.capture("dictation_failed", properties: [
-                "error": error.localizedDescription,
+                "error_type": String(reflecting: type(of: error)),
                 "model_mode": modelMode.rawValue,
             ])
             hud.error("Open Privacy in Settings →")
@@ -217,6 +215,7 @@ final class DictationController {
         let modelModeAtStop = ModelSetting.current.rawValue
         let insertModeAtStop = InsertMode.current.rawValue
         let diagnosticSessionID = session.activeSessionID
+        let stopStarted = ProcessInfo.processInfo.systemUptime
         SaymarkDiagnostics.log(.info, "dictation.ui_stop_requested", sessionID: diagnosticSessionID)
         // Drain off the main thread so a slow finish never freezes the UI, then
         // paste the final on the main thread (pasteboard + ⌘V).
@@ -240,6 +239,7 @@ final class DictationController {
                     "is_empty": final.isEmpty,
                     "model_mode": modelModeAtStop,
                     "insert_mode": insertModeAtStop,
+                    "stop_to_complete_ms": (ProcessInfo.processInfo.systemUptime - stopStarted) * 1_000,
                 ])
                 PostHogSDK.shared.capture("dictation_completed", properties: [
                     "word_count": final.split(separator: " ").count,
@@ -257,7 +257,31 @@ final class DictationController {
     /// ⌘V needs Accessibility — if untrusted, prompt once and leave the text on the
     /// clipboard so it's not lost. Secure input (password fields) blocks paste; we
     /// say so in the HUD instead of dropping silently.
-    private func insertFinal(_ text: String, sessionID: String?) {
+    private func insertFinal(
+        _ text: String,
+        sessionID: String?,
+        uiTestCompletion: ((String) -> Void)? = nil
+    ) {
+        #if DEBUG
+        if RuntimeEnvironment.isDailyDriverUITesting {
+            switch RuntimeEnvironment.dailyDriverOutcome {
+            case "fallback":
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                hud.error(
+                    title: String(localized: "Copied to clipboard"),
+                    detail: String(localized: "Enable Accessibility to paste automatically"),
+                    hideAfter: 2.0
+                )
+                uiTestCompletion?("copied")
+            default:
+                hud.finish(text)
+                uiTestCompletion?("inserted")
+            }
+            return
+        }
+        #endif
+
         guard Accessibility.isTrusted else {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
@@ -304,4 +328,113 @@ final class DictationController {
             )
         }
     }
+
+    #if DEBUG
+    /// Drives the real HUD and final-delivery state machine without touching the
+    /// microphone or model stack. It is inert unless the dedicated XCUITest
+    /// environment is active.
+    func runDailyDriverUITest(
+        finalText: String,
+        onStatus: @escaping (String) -> Void
+    ) {
+        guard RuntimeEnvironment.isDailyDriverUITesting else { return }
+        guard state != .recording, state != .transcribing else { return }
+
+        state = .recording
+        hud.begin(presentation: true, lang: "Auto")
+        onStatus(hud.panel != nil && hud.hasAttachedViewTree
+            ? "L"
+            : "LX")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, self.state == .recording else { return }
+            let sentences = finalText.split(separator: ".", omittingEmptySubsequences: true)
+            let confirmed = sentences.prefix(2).map(String.init).joined(separator: ".") + "."
+            let partial = sentences.dropFirst(2).map(String.init).joined(separator: ".") + "."
+            self.hud.update(confirmed: confirmed, partial: partial)
+            let visible = [self.hud.model.confirmed, self.hud.model.partial]
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            let visibleSentenceCount =
+                visible.split(separator: ".", omittingEmptySubsequences: true).count
+            let fullTranscript = visible.replacingOccurrences(of: " ", with: "") ==
+                finalText.replacingOccurrences(of: " ", with: "")
+            let panelState = self.hud.panel != nil && self.hud.hasAttachedViewTree
+            let signature = Self.dailyDriverSignature(finalText)
+            onStatus(
+                visibleSentenceCount == 3 && fullTranscript && panelState
+                    ? "V3F1\(signature)"
+                    : "VX"
+            )
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+            guard let self, self.state == .recording else { return }
+            self.state = .transcribing
+            self.hud.processing()
+            let isProcessing =
+                self.hud.model.phase == .transcribing &&
+                self.hud.model.confirmed.isEmpty &&
+                self.hud.model.partial.isEmpty &&
+                !self.hud.model.recording
+            let panelAttached = self.hud.panel != nil && self.hud.hasAttachedViewTree
+            onStatus(isProcessing && panelAttached ? "P" : "PX")
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [weak self] in
+            guard let self, self.state == .transcribing else { return }
+            var deliveryCount = 0
+            self.insertFinal(finalText, sessionID: "ui-test") { outcome in
+                deliveryCount += 1
+                let clipboardMatched =
+                    outcome == "copied" &&
+                    NSPasteboard.general.string(forType: .string) == finalText
+                let outcomeCode = outcome == "copied" ? "F" : "I"
+                let clipboardCode = clipboardMatched ? "1" : "0"
+                onStatus(
+                    "D\(deliveryCount)\(outcomeCode)C\(clipboardCode)\(Self.dailyDriverSignature(finalText))"
+                )
+                self.waitForDailyDriverHUDTeardown(
+                    outcome: outcome,
+                    deliveryCount: deliveryCount,
+                    clipboardMatched: clipboardMatched,
+                    attemptsRemaining: 40,
+                    onStatus: onStatus
+                )
+            }
+            self.state = .transcribed(finalText)
+        }
+    }
+
+    private func waitForDailyDriverHUDTeardown(
+        outcome: String,
+        deliveryCount: Int,
+        clipboardMatched: Bool,
+        attemptsRemaining: Int,
+        onStatus: @escaping (String) -> Void
+    ) {
+        if hud.panel == nil && !hud.hasAttachedViewTree {
+            onStatus("TRR")
+            return
+        }
+        guard attemptsRemaining > 0 else {
+            onStatus("TXX")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.waitForDailyDriverHUDTeardown(
+                outcome: outcome,
+                deliveryCount: deliveryCount,
+                clipboardMatched: clipboardMatched,
+                attemptsRemaining: attemptsRemaining - 1,
+                onStatus: onStatus
+            )
+        }
+    }
+
+    private static func dailyDriverSignature(_ text: String) -> String {
+        let checksum = text.utf8.reduce(0) { (($0 * 31) + Int($1)) % 100_000 }
+        return "N\(text.count)H\(checksum)"
+    }
+    #endif
 }

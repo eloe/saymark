@@ -12,7 +12,7 @@ XCB = tuist xcodebuild build -workspace $(WORKSPACE) -scheme $(SCHEME) \
 	-configuration Release -destination 'generic/platform=macOS' -allowProvisioningUpdates \
 	ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO
 
-.PHONY: legal-check security-check architecture architecture-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
+.PHONY: legal-check security-check dependency-check dependencies architecture architecture-check daily-driver-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
 	test-unit test-integration model-fixture prepare-model-tests test-model-efficient test-model-live \
 	test-model-parakeet-int8 test-model-live-parakeet-int8 report-diagnostics
 
@@ -25,8 +25,15 @@ LOCAL_DERIVED_DATA ?= /tmp/saymark-local-build
 legal-check:
 	Scripts/check-legal-notices.sh
 
-security-check:
+security-check: dependency-check
 	Scripts/security-audit.sh
+
+dependency-check:
+	node Scripts/check-app-dependencies.mjs
+
+dependencies:
+	DEVELOPER_DIR="$(DEVELOPER_DIR)" tuist install --force-resolved-versions
+	$(MAKE) dependency-check
 
 architecture:
 	node Scripts/generate-architecture-map.mjs
@@ -34,10 +41,10 @@ architecture:
 architecture-check:
 	node Scripts/generate-architecture-map.mjs --check
 
-gen: legal-check
+gen: legal-check dependency-check
 	tuist generate --no-open
 
-gen-local: legal-check
+gen-local: legal-check dependency-check
 	DEVELOPER_DIR="$(DEVELOPER_DIR)" TUIST_SAYMARK_LOCAL_BUILD=1 \
 		TUIST_APP_VERSION=0.1.1 TUIST_APP_BUILD="$(LOCAL_BUILD)" tuist generate --no-open
 
@@ -149,6 +156,9 @@ test-model-live-parakeet-int8: model-fixture prepare-model-tests
 
 report-diagnostics:
 	Scripts/report-diagnostics.sh "$(DIAGNOSTIC_LOG)"
+
+daily-driver-check:
+	node Scripts/check-daily-driver-diagnostics.mjs "$(DIAGNOSTIC_LOG)"
 
 # Fast app/HUD suite against an optimized arm64 build. Testability is enabled
 # only for this invocation, never for the normal distributable Release build.

@@ -5,8 +5,8 @@ import ProjectDescription
 // .xcodeproj, so bundle id and signing MUST live here (Xcode edits get clobbered).
 //
 // The app is a thin UI over SaymarkKit, the shared dictation core it builds from
-// the local `SaymarkKit/` Swift package (which pulls STT from the fork's
-// `dev/nemo-mic` worktree). The same SaymarkKit powers `saymark-cli`. The global
+// the local `SaymarkKit/` Swift package (which pulls STT from an immutable
+// reviewed fork revision). The same SaymarkKit powers `saymark-cli`. The global
 // hotkey uses Carbon `RegisterEventHotKey` (KeyboardShortcuts) — no Accessibility.
 
 // PostHog ingestion key injected at generation time. Tuist only forwards TUIST_-prefixed env
@@ -48,6 +48,7 @@ let project = Project(
                 "LSApplicationCategoryType": "public.app-category.productivity",
                 "CFBundleDisplayName": .string(appDisplayName),
                 "CFBundleName": .string(appDisplayName),
+                "CFBundleIconName": "AppIcon",
                 "CFBundleLocalizations": ["en", "ru"],
                 "CFBundleDevelopmentRegion": "en",
                 "NSMicrophoneUsageDescription":
@@ -62,6 +63,7 @@ let project = Project(
                 "THIRD_PARTY_NOTICES.md",
                 "ThirdPartyLicenses/**",
             ],
+            entitlements: .file(path: "Saymark.entitlements"),
             dependencies: [
                 .package(product: "SaymarkKit"),
                 .package(product: "KeyboardShortcuts"),
@@ -69,10 +71,15 @@ let project = Project(
             ],
             settings: .settings(base: [
                 "SWIFT_VERSION": "5.0",
+                "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
                 // Source builds are ad-hoc. The installer applies Saymark's stable
                 // local identity so the Accessibility grant persists across builds.
                 "CODE_SIGN_STYLE": "Manual",
                 "CODE_SIGN_IDENTITY": "-",
+                // Developer ID notarization requires Hardened Runtime. The
+                // isolated local identity disables it so hosted XCTest bundles
+                // with a different ad-hoc Team ID can load; release CI overrides YES.
+                "ENABLE_HARDENED_RUNTIME": isLocalBuild ? "NO" : "YES",
             ])
         ),
         .target(

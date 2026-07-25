@@ -120,6 +120,10 @@ if let wavIdx = args.firstIndex(of: "--wav"), wavIdx + 1 < args.count {
 
     FileHandle.standardError.write(Data("loading \(mode.rawValue) model(s) (warming up MLX)…\n".utf8))
     try await session.load(mode: mode)
+    // Force lazy MLX kernels and execution paths to compile before the measured
+    // runs. The acceptance policy explicitly excludes first-compilation cost.
+    _ = session.transcribeOffline(samples, mode: mode)
+    Memory.clearCache()
     let settledMemoryBaseline = Memory.activeMemory + Memory.cacheMemory
     FileHandle.standardError.write(Data(
         String(format: "transcribing %.1fs of audio in %@ mode, %d run(s) (480 ms chunks)…\n",

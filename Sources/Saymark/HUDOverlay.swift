@@ -2,9 +2,9 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// Floating dictation HUD (design: Saymark.dc.html). A non-activating, click-through
-/// borderless NSPanel (we type into another app's field at the same time) hosting a
-/// SwiftUI glass pill that adapts to light/dark. Three states — listening,
+/// Floating dictation HUD. A non-activating, click-through borderless NSPanel (we
+/// type into another app's field at the same time) hosting a SwiftUI glass pill
+/// that adapts to light/dark. Three states — listening,
 /// transcribing (two-tier coloured text), error — plus a larger "presentation"
 /// subtitle variant for HUD-only mode.
 
@@ -34,14 +34,15 @@ private struct LevelBars: View {
     var color: Color
     var count: Int = 4
     var barHeight: CGFloat = 13
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var up = false
     var body: some View {
         HStack(spacing: 2) {
             ForEach(0 ..< count, id: \.self) { i in
                 Capsule().fill(color)
                     .frame(width: 2.5, height: barHeight)
-                    .scaleEffect(y: up ? 1 : 0.32, anchor: .center)
-                    .animation(.easeInOut(duration: 0.45).repeatForever(autoreverses: true)
+                    .scaleEffect(y: (up || reduceMotion) ? 1 : 0.32, anchor: .center)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.45).repeatForever(autoreverses: true)
                         .delay(Double(i) * 0.12), value: up)
             }
         }
@@ -49,16 +50,12 @@ private struct LevelBars: View {
     }
 }
 
-/// Pulsing status dot (`murpulse`).
-private struct PulseDot: View {
+/// Static status dot; the adjacent level bars carry the listening motion.
+private struct StatusDot: View {
     var color: Color
     var size: CGFloat = 8
-    @State private var on = false
     var body: some View {
         Circle().fill(color).frame(width: size, height: size)
-            .opacity(on ? 0.4 : 1).scaleEffect(on ? 0.78 : 1)
-            .animation(.easeInOut(duration: 0.75).repeatForever(autoreverses: true), value: on)
-            .onAppear { on = true }
     }
 }
 
@@ -134,7 +131,7 @@ private struct HUDView: View {
         .padding(.horizontal, big ? 24 : 16)
         .padding(.vertical, big ? 18 : 13)
         .frame(maxWidth: big ? 820 : 460, alignment: .leading)
-        .murPill(scheme, radius: big ? 18 : 16, border: borderColor)
+        .saymarkPill(scheme, radius: big ? 18 : 16, border: borderColor)
     }
 
     private var transcript: Text {
@@ -159,14 +156,14 @@ private struct HUDView: View {
 
     private var listeningPill: some View {
         HStack(spacing: 13) {
-            PulseDot(color: SaymarkTheme.accent, size: 8)
+            StatusDot(color: SaymarkTheme.accent, size: 8)
             Text("Listening…").font(.system(size: 15))
                 .foregroundStyle(scheme == .dark ? Color.white.opacity(0.92) : SaymarkTheme.ink)
             LevelBars(color: SaymarkTheme.accent, count: 5, barHeight: 16)
             if model.showStop { stopButton } else { hotkeyBadge }
         }
         .padding(.horizontal, 17).padding(.vertical, 11)
-        .murPill(scheme, radius: 14, border: borderColor)
+        .saymarkPill(scheme, radius: 14, border: borderColor)
     }
 
     private var errorPill: some View {
@@ -184,7 +181,7 @@ private struct HUDView: View {
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
-        .murPill(scheme, radius: 14, border: SaymarkTheme.error.opacity(0.4))
+        .saymarkPill(scheme, radius: 14, border: SaymarkTheme.error.opacity(0.4))
     }
 
     private var hotkeyBadge: some View {
@@ -204,15 +201,14 @@ private struct HUDView: View {
     }
 }
 
-/// Glass-pill background: blurred material + neutral tint + hairline border + shadow.
+/// Native material pill with a hairline border and shallow separation shadow.
 private extension View {
-    func murPill(_ scheme: ColorScheme, radius: CGFloat, border: Color) -> some View {
+    func saymarkPill(_ scheme: ColorScheme, radius: CGFloat, border: Color) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return self
-            .background(SaymarkTheme.glass(scheme), in: shape)
-            .background(.ultraThinMaterial, in: shape)
+            .background(.regularMaterial, in: shape)
             .overlay(shape.strokeBorder(border, lineWidth: 1))
-            .shadow(color: .black.opacity(scheme == .dark ? 0.42 : 0.18), radius: 22, y: 14)
+            .shadow(color: .black.opacity(scheme == .dark ? 0.28 : 0.12), radius: 8, y: 3)
     }
 }
 
@@ -284,6 +280,7 @@ final class HUDController {
     private let animator: any HUDAnimating
     private let normalSize = NSSize(width: 940, height: 260)
     private let presentationSize = NSSize(width: 940, height: 380)
+    var hasAttachedViewTree: Bool { panel?.contentView != nil }
 
     convenience init() {
         self.init(scheduler: DispatchHUDHideScheduler(), animator: AppKitHUDAnimator())

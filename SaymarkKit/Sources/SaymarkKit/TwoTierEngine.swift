@@ -68,6 +68,9 @@ public final class TwoTierEngine {
             return nemotron
         }
         return try await loadModel(lane: "nemotron", repository: nemotronRepo) {
+            if nemotronRepo == Self.defaultNemotronRepo {
+                _ = try await PinnedModelStore.shared.ensure(SaymarkModelCatalog.nemotron.artifactSet)
+            }
             let model = try await NemotronASRModel.fromPretrained(nemotronRepo)
             nemotron = model
             return model
@@ -80,6 +83,9 @@ public final class TwoTierEngine {
             return parakeet
         }
         return try await loadModel(lane: "parakeet", repository: parakeetRepo) {
+            if parakeetRepo == Self.defaultParakeetRepo {
+                _ = try await PinnedModelStore.shared.ensure(SaymarkModelCatalog.parakeet.artifactSet)
+            }
             let model = try await ParakeetModel.fromPretrained(parakeetRepo)
             parakeet = model
             return model
@@ -115,7 +121,6 @@ public final class TwoTierEngine {
                 "repository": repository,
                 "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
                 "error_type": String(reflecting: type(of: error)),
-                "error_description": error.localizedDescription,
             ])
             throw error
         }

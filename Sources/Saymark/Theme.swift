@@ -2,20 +2,12 @@ import SaymarkKit
 import PostHog
 import SwiftUI
 
-/// Provisional native macOS tokens. The final palette will follow Saymark's
-/// dedicated brand system; these deliberately remove the inherited warm theme.
+/// Native macOS-aligned Saymark tokens. The palette stays neutral and lets the
+/// system appearance provide surfaces; blue is reserved for active/selected UI.
 enum SaymarkTheme {
     static let accent = Color(red: 0x0A / 255, green: 0x84 / 255, blue: 0xFF / 255)
     static let ink    = Color(red: 0x1C / 255, green: 0x1C / 255, blue: 0x1E / 255)
     static let error  = Color(red: 0xFF / 255, green: 0x45 / 255, blue: 0x3A / 255)
-    static let cream  = Color(red: 0xF2 / 255, green: 0xF2 / 255, blue: 0xF7 / 255)
-
-    /// Glass pill background per appearance.
-    static func glass(_ scheme: ColorScheme) -> Color {
-        scheme == .dark
-            ? Color.black.opacity(0.78)
-            : Color.white.opacity(0.86)
-    }
 
     /// Crisp (finalized) transcript ink per appearance.
     static func crisp(_ scheme: ColorScheme) -> Color {
@@ -155,7 +147,6 @@ enum DiagnosticLogSetting {
         configure()
         SaymarkDiagnostics.log(.info, "logging.configuration_changed", fields: [
             "configured_level": current.name,
-            "file": fileURL.path,
             "max_file_bytes": maxFileBytes,
         ])
     }

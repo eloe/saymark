@@ -39,11 +39,13 @@ Useful commands:
 ```bash
 make legal-check
 make security-check
+make dependency-check
 make architecture-check
 make test-integration
 make bench-accept-efficient WAV=/path/to/fixture.wav
 make bench-accept-live WAV=/path/to/fixture.wav
 make report-diagnostics
+make daily-driver-check
 ```
 
 The [interactive architecture map](docs/architecture.html) and

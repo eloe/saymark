@@ -3,9 +3,9 @@ import SaymarkKit
 import PostHog
 import SwiftUI
 
-/// The menu-bar dropdown (design: Saymark.dc.html) shown as a `.window`-style
-/// MenuBarExtra: native glyph + master toggle, live status + hotkey, a mic meter, the
-/// Model / Insert / Hotkey segmented controls, and a Settings/Quit footer.
+/// The native menu-bar dropdown shown as a `.window`-style MenuBarExtra: native
+/// glyph + master toggle, live status + hotkey, a mic meter, the Model / Insert /
+/// Hotkey segmented controls, and a Settings/Quit footer.
 struct MenuPopover: View {
     let dictation: DictationController
     /// Re-open the onboarding window (resets to Welcome + presents it).
@@ -29,9 +29,7 @@ struct MenuPopover: View {
             footer
         }
         .frame(width: 300)
-        .background(scheme == .dark
-            ? Color(red: 36 / 255, green: 31 / 255, blue: 28 / 255)
-            : SaymarkTheme.cream)
+        .background(Color(nsColor: .windowBackgroundColor))
         // Switching model loads the newly selected mode's models (lazy by mode).
         .onChange(of: modelRaw) { oldValue, newValue in
             dictation.prepareCurrentMode()
@@ -87,17 +85,17 @@ struct MenuPopover: View {
     private var settings: some View {
         VStack(alignment: .leading, spacing: 0) {
             label("Model")
-            MurSegment(selection: $modelRaw,
-                       options: [(DictationMode.accurate.rawValue, "Efficient"),
-                                 (DictationMode.hybrid.rawValue, "Live Preview")])
+            SaymarkSegment("Model", selection: $modelRaw,
+                           options: [(DictationMode.accurate.rawValue, "Efficient"),
+                                     (DictationMode.hybrid.rawValue, "Live Preview")])
             label("Insert").padding(.top, 11)
-            MurSegment(selection: $insertRaw,
-                       options: [(InsertMode.inField.rawValue, "In field"),
-                                 (InsertMode.hudOnly.rawValue, "HUD only")])
+            SaymarkSegment("Insert", selection: $insertRaw,
+                           options: [(InsertMode.inField.rawValue, "In field"),
+                                     (InsertMode.hudOnly.rawValue, "HUD only")])
             label("Hotkey").padding(.top, 11)
-            MurSegment(selection: $triggerRaw,
-                       options: [(TriggerMode.hold.rawValue, "Hold"),
-                                 (TriggerMode.toggle.rawValue, "Toggle")])
+            SaymarkSegment("Hotkey", selection: $triggerRaw,
+                           options: [(TriggerMode.hold.rawValue, "Hold"),
+                                     (TriggerMode.toggle.rawValue, "Toggle")])
             if dictation.needsAccessibilityToType, insertRaw == InsertMode.inField.rawValue {
                 Button { dictation.requestAccessibility() } label: {
                     Text("Grant Accessibility to type…")
@@ -161,35 +159,28 @@ struct MenuPopover: View {
     private var fieldBG: Color { scheme == .dark ? Color.white.opacity(0.1) : SaymarkTheme.ink.opacity(0.07) }
 }
 
-/// Pill segmented control matching the handoff (selected: white/accent fill).
-private struct MurSegment: View {
+/// System segmented control so sizing, contrast, focus, and interaction follow
+/// the user's current macOS appearance and accessibility settings.
+private struct SaymarkSegment: View {
+    let title: String
     @Binding var selection: String
     let options: [(value: String, label: String)]
-    @Environment(\.colorScheme) private var scheme
+
+    init(_ title: String, selection: Binding<String>, options: [(value: String, label: String)]) {
+        self.title = title
+        _selection = selection
+        self.options = options
+    }
 
     var body: some View {
-        HStack(spacing: 2) {
+        Picker(title, selection: $selection) {
             ForEach(options, id: \.value) { opt in
-                let sel = selection == opt.value
-                Text(opt.label)
-                    .font(.system(size: 12, weight: sel ? .semibold : .regular))
-                    .foregroundStyle(sel ? (scheme == .dark ? SaymarkTheme.ink : SaymarkTheme.accent)
-                                         : (scheme == .dark ? Color.white.opacity(0.6) : SaymarkTheme.ink.opacity(0.65)))
-                    .frame(maxWidth: .infinity).padding(.vertical, 5)
-                    .background {
-                        if sel {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(scheme == .dark ? SaymarkTheme.accent : Color.white)
-                                .shadow(color: scheme == .dark ? .clear : SaymarkTheme.ink.opacity(0.12), radius: 1, y: 1)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture { selection = opt.value }
+                Text(opt.label).tag(opt.value)
             }
         }
-        .padding(2)
-        .background(scheme == .dark ? Color.white.opacity(0.07) : SaymarkTheme.ink.opacity(0.06),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .controlSize(.small)
     }
 }
 

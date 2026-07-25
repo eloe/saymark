@@ -11,4 +11,33 @@ enum RuntimeEnvironment {
         false
         #endif
     }
+
+    static var isDailyDriverUITesting: Bool {
+        #if DEBUG
+        isUITesting &&
+            ProcessInfo.processInfo.environment["SAYMARK_UI_TESTING_DAILY_DRIVER"] == "1"
+        #else
+        false
+        #endif
+    }
+
+    /// Keeps external services deterministic while presenting the ungranted
+    /// Accessibility state for design review and walkthrough recording.
+    static var isOnboardingReview: Bool {
+        #if DEBUG
+        isUITesting &&
+            ProcessInfo.processInfo.environment["SAYMARK_ONBOARDING_REVIEW"] == "1"
+        #else
+        false
+        #endif
+    }
+
+    static var dailyDriverOutcome: String? {
+        #if DEBUG
+        guard isDailyDriverUITesting else { return nil }
+        return ProcessInfo.processInfo.environment["SAYMARK_UI_TESTING_DELIVERY"]
+        #else
+        nil
+        #endif
+    }
 }

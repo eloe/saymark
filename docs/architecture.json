@@ -4,8 +4,8 @@
   "document": {
     "title": "Saymark architecture map",
     "purpose": "Machine-readable orientation for agents and contributors changing Saymark.",
-    "generated_on": "2026-07-23",
-    "based_on_revision": "89c5876",
+    "generated_on": "2026-07-24",
+    "based_on_revision": "working tree based on 66478f4",
     "canonical_source": "docs/architecture.json",
     "human_view": "docs/architecture.html",
     "regenerate": "node Scripts/generate-architecture-map.mjs"
@@ -392,8 +392,24 @@
       "path": "SaymarkKit/Sources/SaymarkKit/OnboardingDownloader.swift",
       "kind": "Swift actor",
       "responsibilities": [
-        "Resolve or download plan repositories into the Hugging Face cache",
+        "Request pinned, verified plan repositories from PinnedModelStore",
         "Report monotonic per-model progress to the main actor"
+      ],
+      "depends_on": [
+        "pinned-model-store"
+      ]
+    },
+    {
+      "id": "pinned-model-store",
+      "name": "PinnedModelStore",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/PinnedModelStore.swift",
+      "kind": "Model artifact trust actor",
+      "responsibilities": [
+        "Download production models by immutable Hugging Face commit",
+        "Verify critical model artifacts against checked-in SHA-256 hashes",
+        "Reject or replace untrusted cached model bytes",
+        "Rehash critical artifacts once per process and reuse only actor-owned in-process attestation"
       ],
       "depends_on": [
         "hugging-face"
@@ -522,6 +538,8 @@
       "items": [
         "mlx-audio-swift",
         "mlx-swift",
+        "swift-huggingface",
+        "HuggingFace",
         "MLXAudioSTT",
         "MLXAudioVAD",
         "MLXAudioCore"
@@ -567,6 +585,7 @@
       {
         "id": "nemotron",
         "repository": "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
+        "revision": "7279359e4481b5e9e185a318bd618e429c6d86cd",
         "role": "streaming draft",
         "estimated_download_gb": 0.6,
         "execution": "MLX",
@@ -575,6 +594,7 @@
       {
         "id": "parakeet",
         "repository": "mlx-community/parakeet-tdt-0.6b-v3",
+        "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
         "role": "authoritative offline final",
         "estimated_download_gb": 2.5,
         "execution": "MLX",
@@ -583,9 +603,11 @@
       {
         "id": "silero",
         "repository": "mlx-community/silero-vad",
+        "revision": "7bc17f22d3c0451bd3a6cd71e759b009271ff49a",
         "role": "speech gate",
         "execution": "MLXAudioVAD",
-        "failure_policy": "Fail open so a VAD failure never drops speech"
+        "failure_policy": "Fail open so a VAD failure never drops speech",
+        "supply_chain": "Immutable revisions and critical artifact SHA-256 values are checked in and verified before load"
       }
     ],
     "experiences": [
@@ -860,6 +882,11 @@
   "quality_gates": {
     "performance": {
       "source": "docs/performance-acceptance.md",
+      "commands": [
+        "make bench-accept-efficient",
+        "make bench-accept-live",
+        "make daily-driver-check"
+      ],
       "areas": [
         "Hotkey-to-HUD latency",
         "Per-step latency",
@@ -886,6 +913,8 @@
         "Current-tree and full-history credential-pattern scans",
         "GitHub secret scanning and push protection",
         "Pinned GitHub Actions with Gitleaks and CodeQL",
+        "Immutable model revisions with checked-in critical artifact SHA-256 values",
+        "Protected release environment with Developer ID, notarization, stapling, and Gatekeeper gates",
         "Dependabot alerts and security updates",
         "Private vulnerability reporting"
       ]
@@ -1065,6 +1094,11 @@
       "why": "Dictation content is sensitive user data."
     },
     {
+      "id": "pinned-models",
+      "rule": "Production ASR and VAD models must load only from immutable revisions whose critical artifacts match checked-in SHA-256 values.",
+      "why": "Model weights are executable content and must not change independently of a reviewed Saymark source change."
+    },
+    {
       "id": "stable-local-trust",
       "rule": "Install development builds with the stable Saymark Local identity.",
       "why": "Accessibility trust is tied to application identity."
@@ -1089,9 +1123,9 @@
     },
     {
       "id": "branding",
-      "status": "in progress",
+      "status": "implemented; release validation pending",
       "source": "Branding/BRAND_DIRECTION.md",
-      "summary": "Replace provisional waveform branding with the final Saymark identity."
+      "summary": "Keep the production Saymark identity consistent across compiled and release artifacts."
     },
     {
       "id": "model-performance",

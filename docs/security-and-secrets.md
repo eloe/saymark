@@ -5,8 +5,9 @@ every GitHub Actions log as public information.
 
 ## Current secret inventory
 
-Saymark currently requires **no repository, Actions, Dependabot, Codespaces, or
-environment secrets**.
+Source builds, local builds, and ordinary CI require **no repository, Actions,
+Dependabot, Codespaces, or environment secrets**. Signed distribution requires
+the protected `release` environment secrets documented below.
 
 - Local builds are ad-hoc signed, then signed with a self-generated
   `Saymark Local Development` identity stored only in the developer's local
@@ -40,19 +41,22 @@ GitHub secret scanning, and push protection form multiple independent controls.
 
 ## Future release secrets
 
-When signed distribution begins, create a protected GitHub Environment named
-`release`. Store release material only as environment secrets, restrict the
-environment to `main` and version tags, and require approval before deployment.
-Public binaries are blocked until the app target attaches its reviewed
-entitlements, enables Hardened Runtime, and the release job notarizes, staples,
-and verifies the artifact (tracked in
-[`#2`](https://github.com/eloe/saymark/issues/2)).
+Signed distribution uses the protected GitHub Environment named `release`.
+Store release material only as environment secrets, restrict the environment
+to protected branches and `saymark-v*` tags, and require approval before
+deployment. The app target attaches its reviewed entitlements and enables
+Hardened Runtime; `.github/workflows/release.yml` notarizes, staples, verifies,
+and Gatekeeper-assesses an artifact before publication. See
+[`releasing.md`](releasing.md). The owner-supplied credentials remain tracked in
+[`#2`](https://github.com/eloe/saymark/issues/2).
 Expected names are:
 
 | Secret | Purpose |
 | --- | --- |
 | `SAYMARK_DEVELOPER_ID_APPLICATION_P12` | Base64-encoded Developer ID Application identity |
 | `SAYMARK_DEVELOPER_ID_APPLICATION_PASSWORD` | Password protecting the imported PKCS#12 |
+| `SAYMARK_DEVELOPER_TEAM_ID` | Expected 10-character Apple Team ID |
+| `SAYMARK_DEVELOPER_CERT_SHA256` | Expected leaf Developer ID certificate SHA-256 fingerprint |
 | `SAYMARK_BUILD_KEYCHAIN_PASSWORD` | Ephemeral CI keychain password |
 | `SAYMARK_NOTARY_KEY_ID` | App Store Connect API key identifier |
 | `SAYMARK_NOTARY_ISSUER_ID` | App Store Connect issuer identifier |
@@ -66,25 +70,44 @@ it a repository variable or place it in an `.xcconfig`.
 Dependabot secrets are only for credentials required to fetch private package
 registries. Saymark currently uses public packages and needs none.
 
-`SaymarkKit` dependencies and GitHub Actions have Dependabot coverage. The
-app-only KeyboardShortcuts and PostHog packages are exact-version pinned in the
-Tuist manifest, but are not yet represented by a committed GitHub-readable
-lockfile; closing that dependency-graph gap is tracked in
-[`#3`](https://github.com/eloe/saymark/issues/3).
+`SaymarkKit`, app-only packages, and GitHub Actions have Dependabot coverage.
+KeyboardShortcuts and PostHog remain exact-version pinned in `Project.swift`,
+which is the app build source of truth. `Tuist/Package.swift` mirrors those
+requirements and produces the committed, GitHub-readable
+`Tuist/Package.resolved`. `make dependency-check` fails if the Tuist build
+manifest, security manifest, and lockfile drift.
 
-## Known model supply-chain risk
+To update an app-only package:
 
-The Swift package dependencies are locked to reviewed versions or commits.
-Downloaded Hugging Face model repositories are not yet equivalently immutable:
-the inherited MLX audio downloader resolves their `main` branch. A repository
-owner could therefore change model weights without a Saymark source change.
+1. Change its exact version in both `Project.swift` and `Tuist/Package.swift`.
+2. Run `make dependencies` to update the reviewed lockfile deterministically.
+3. Run `make test-unit`, `make test-integration`, `make security-check`, and the
+   relevant performance acceptance benchmark before merging.
 
-Before a public release, Saymark must pin an immutable Hugging Face commit for
-every shipped model, verify the downloaded snapshot and critical files against a
-checked-in manifest, and make model upgrades an explicit reviewed change. Until
-that work lands, model downloads should be treated as third-party executable
-content rather than trusted release artifacts. This release blocker is tracked
-in [`#1`](https://github.com/eloe/saymark/issues/1).
+## Model supply-chain trust
+
+Every production Hugging Face model is pinned to an immutable 40-character
+commit in `SaymarkModelCatalog`. `PinnedModelStore` downloads that revision,
+hashes the critical weights, configuration, and vocabulary against the
+checked-in manifest, and only then moves the snapshot into the directory that
+MLX loads. The first ensure in every app process rehashes each critical artifact;
+the metadata manifest is an audit record and never an authorization shortcut.
+That trust check costs one full multi-gigabyte read per model per process.
+Repeated onboarding/load handoffs reuse only the actor-owned in-process
+attestation; every restart pays the hash cost again. A mismatch removes the
+untrusted cache and fails closed if a verified redownload is unavailable.
+
+Model upgrades are source changes:
+
+1. Review the upstream repository and select an immutable commit.
+2. Download that exact revision and independently calculate SHA-256 for every
+   critical runtime artifact.
+3. Update the catalog revision and hashes in one pull request.
+4. Run unit, privacy, real-model accuracy, latency, CPU, and memory gates.
+5. Record the model revision with the accepted benchmark result.
+
+Explicit repository overrides remain available only to the CLI benchmark path
+for candidate evaluation; shipped default models always use the pinned store.
 
 ## Required checks
 

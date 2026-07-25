@@ -2,6 +2,11 @@
 
 These are exploratory raster previews generated for direction-setting. They are not production masters and should not be placed in the asset catalog without a geometric redraw, small-size testing, and an App Store similarity review.
 
+The selected wave-to-caret direction has now been redrawn as deterministic
+geometry in [`../Production/SaymarkAppIcon.svg`](../Production/SaymarkAppIcon.svg).
+That source generates the complete macOS AppIcon set. The matching monochrome
+menu-bar master and GitHub preview source live alongside it.
+
 ## Concept 01 — Wave to caret
 
 ![Wave to caret](saymark-concept-01-wave-to-caret.png)
@@ -35,4 +40,3 @@ All three previews were generated with the built-in image-generation workflow as
 ### Concept 03
 
 > Create an original premium macOS app icon with a continuous abstract speech glyph: a cool-blue circular sound ripple opens on the right and terminates as a slim vertical text caret, suggesting live speech flowing into the cursor. Use a deep graphite frosted-glass tile, satin aluminum, restrained depth, and a simple centered silhouette. No text, mascot, microphone, sparkles, warm colors, loud neon, power-button resemblance, or competitor resemblance.
-

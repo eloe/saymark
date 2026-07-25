@@ -1,189 +1,119 @@
+import KeyboardShortcuts
 import SwiftUI
 
-/// Step 4 — Try it (design: Saymark Onboarding.dc.html STEP 4). A real in-window
-/// Dictation using the onboarding plan: hold the button, speak, and the final
-/// transcript appears in our own field on release (no Accessibility needed). The
-/// field reuses the HUD colour rule (confirmed crisp + newest-word accent flash,
-/// partial in draft). Releasing flushes the final and marks `flow.didTry`, which
-/// unlocks Continue. Leaving the step stops the session and cancels this screen's
-/// independent transcript subscription (`model.tryEnd()` is idempotent).
+/// Exercises the configured global shortcut against the real warmed pipeline.
+/// Completion is intentionally gated on using that shortcut so onboarding
+/// teaches the same interaction the user will use after setup.
 struct TryItScreen: View {
     @Bindable var model: OnboardingModel
     @Environment(\.colorScheme) private var scheme
 
-    /// Local press latch so the drag gesture fires `tryStart` once on press and
-    /// `tryEnd` once on release, regardless of intermediate `.onChanged` ticks.
-    @State private var pressed = false
-
-    private var t: OnTheme { OnTheme(scheme) }
     private var ready: Bool { model.tryReady }
 
+    private var instruction: String {
+        switch TriggerMode.current {
+        case .hold:
+            return "Hold \(model.shortcutLabel) and say a sentence."
+        case .toggle:
+            return "Press \(model.shortcutLabel) to start, then press it again to finish."
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Try it")
-                    .tracking(1.4).saymarkFont(11, weight: .bold)
-                    .foregroundStyle(SaymarkTheme.accent)
-                Text("Give me a sentence")
-                    .saymarkFont(32, weight: .semibold, design: .serif)
-                    .foregroundStyle(t.ink).padding(.top, 10)
-                Text("Hold the button below and say anything. When you release it, your final transcript appears here.")
-                    .saymarkFont(14.5).lineSpacing(4)
-                    .foregroundStyle(t.muted(0.66))
-                    .frame(maxWidth: 444, alignment: .leading).padding(.top, 11)
+        VStack(alignment: .leading, spacing: 20) {
+            if model.flow.didTry {
+                successHeader
+            } else {
+                Text("Try your shortcut")
+                    .font(.system(size: 26, weight: .semibold))
+                Text(instruction)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("onboarding.shortcut-instruction")
             }
 
-            testField.padding(.top, 22)
-            statusLine.padding(.top, 14)
-            holdButton.padding(.top, 16)
+            GroupBox {
+                transcript
+                    .font(.body)
+                    .lineSpacing(5)
+                    .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
+                    .padding(8)
+            } label: {
+                Label("Live transcript", systemImage: model.tryListening ? "waveform" : "text.cursor")
+                    .foregroundStyle(model.tryListening ? SaymarkTheme.accent : Color.secondary)
+            }
+            .accessibilityIdentifier("onboarding.try-transcript")
+
+            status
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Leaving the step (Continue while held, Back, or window close) must stop
-        // the session and cancel this screen's subscription; tryEnd is a no-op when
-        // not listening.
+        .task {
+            for await event in KeyboardShortcuts.events(for: .dictate) {
+                switch (TriggerMode.current, event) {
+                case (.hold, .keyDown):
+                    model.tryStart()
+                case (.hold, .keyUp):
+                    model.tryEnd()
+                case (.toggle, .keyDown):
+                    model.tryToggle()
+                case (.toggle, .keyUp):
+                    break
+                }
+            }
+        }
         .onDisappear { model.tryEnd() }
     }
 
-    // MARK: - Bordered test field (two-tier transcript)
+    private var successHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label {
+                Text("Shortcut works.")
+                    .font(.system(size: 26, weight: .semibold))
+            } icon: {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
 
-    private var testField: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            transcript
-                .font(.system(size: 18)).lineSpacing(6)
-                .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
-                .fixedSize(horizontal: false, vertical: true)
+            Text("Saymark is ready to dictate in any app.")
+                .font(.title3)
+                .foregroundStyle(.secondary)
         }
-        .padding(.init(top: 18, leading: 18, bottom: 18, trailing: 18))
-        .background(t.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(model.tryListening ? SaymarkTheme.accent : SaymarkTheme.accent.opacity(0.35),
-                              lineWidth: model.tryListening ? 2 : 1.5))
     }
 
-    /// Two-tier coloured transcript, identical rule to the HUD: confirmed words in
-    /// crisp ink with the newest one flashing accent, provisional words in draft.
-    /// Empty → placeholder.
     private var transcript: Text {
-        let crisp = SaymarkTheme.crisp(scheme), draft = SaymarkTheme.draft(scheme)
-        let conf = Self.words(model.tryConfirmed)
-        let part = Self.words(model.tryPartial)
-        if conf.isEmpty, part.isEmpty {
-            return Text("Hold the button below and speak…").foregroundColor(draft)
+        let confirmed = Self.words(model.tryConfirmed)
+        let partial = Self.words(model.tryPartial)
+        guard !confirmed.isEmpty || !partial.isEmpty else {
+            return Text("Your words will appear here as you speak.")
+                .foregroundColor(.secondary)
         }
-        var out = Text("")
-        for (i, w) in conf.enumerated() {
-            let hot = i == conf.count - 1
-            out = out + Text(w).foregroundColor(hot ? SaymarkTheme.accent : crisp).fontWeight(.medium) + Text(" ")
+
+        var output = Text("")
+        for word in confirmed {
+            output = output + Text(word).foregroundColor(SaymarkTheme.crisp(scheme)) + Text(" ")
         }
-        for w in part {
-            out = out + Text(w).foregroundColor(draft).fontWeight(.regular) + Text(" ")
+        for word in partial {
+            output = output + Text(word).foregroundColor(SaymarkTheme.draft(scheme)) + Text(" ")
         }
-        return out
+        return output
     }
 
-    // MARK: - Status line
-
-    @ViewBuilder private var statusLine: some View {
+    @ViewBuilder private var status: some View {
         if model.tryListening {
-            label("Listening…", color: SaymarkTheme.accent)
-        } else if model.flow.didTry {
-            HStack(spacing: 12) {
-                label("Got it — that’s exactly what I said.", color: t.ok)
-                Button { model.tryReset() } label: {
-                    Text("Try again")
-                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(SaymarkTheme.accent)
-                }
-                .buttonStyle(.plain)
-            }
+            Label("Listening — speak naturally", systemImage: "waveform")
+                .foregroundStyle(SaymarkTheme.accent)
+                .accessibilityIdentifier("onboarding.try-listening")
         } else if !ready {
-            label("Warming up the models…", color: t.muted(0.5))
-        } else {
-            label("Ready when you are.", color: t.muted(0.5))
+            ProgressView("Warming up dictation…")
+                .controlSize(.small)
+        } else if !model.flow.didTry {
+            Label("Shortcut ready", systemImage: "keyboard")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 
-    private func label(_ key: LocalizedStringKey, color: Color) -> some View {
-        Text(key).saymarkFont(13, weight: .medium).foregroundStyle(color)
-    }
-
-    // MARK: - Hold-to-talk button
-
-    private var holdButton: some View {
-        HStack(spacing: 11) {
-            if model.tryListening {
-                LevelBars(color: OnTheme.rgb(26, 18, 12))
-                Text("Listening…").font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(OnTheme.rgb(26, 18, 12))
-            } else {
-                Text("Hold to talk").font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(ready ? OnTheme.rgb(26, 18, 12) : t.muted(0.4))
-            }
-        }
-        .padding(.horizontal, 22).frame(height: 46)
-        .background(buttonFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .scaleEffect(pressed ? 0.97 : 1)
-        .animation(.easeOut(duration: 0.12), value: pressed)
-        .gesture(holdGesture)
-        .disabled(!ready)
-        .accessibilityElement(children: .ignore)
-        .accessibilityIdentifier("onboarding.try-dictation")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("Hold to talk")
-        .accessibilityHint(ready
-            ? "Double-tap to start dictation, double-tap again to stop"
-            : "Models are still loading")
-        .accessibilityValue(model.tryListening ? "Listening" : "")
-        .accessibilityAction { if ready { model.tryToggle() } }
-    }
-
-    private var buttonFill: AnyShapeStyle {
-        guard ready else { return AnyShapeStyle(t.line(0.1)) }
-        return AnyShapeStyle(model.tryListening ? SaymarkTheme.accent : SaymarkTheme.accent.opacity(0.92))
-    }
-
-    /// Press-and-hold: `.onChanged` (first tick) latches `pressed` and starts the
-    /// dictation once; `.onEnded` (release) clears it and ends once. `minimumDistance:
-    /// 0` makes a simple press register without needing to drag.
-    private var holdGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { _ in
-                guard ready, !pressed else { return }
-                pressed = true
-                model.tryStart()
-            }
-            .onEnded { _ in
-                guard pressed else { return }
-                pressed = false
-                model.tryEnd()
-            }
-    }
-
-    private static func words(_ s: String) -> [String] {
-        s.split(whereSeparator: { $0 == " " || $0 == "\n" }).map(String.init)
-    }
-}
-
-/// Animated level bars for the listening button (mirrors the HUD's `murbar`).
-private struct LevelBars: View {
-    var color: Color
-    var count: Int = 4
-    var barHeight: CGFloat = 14
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var up = false
-
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(0 ..< count, id: \.self) { i in
-                Capsule().fill(color)
-                    .frame(width: 2.5, height: barHeight)
-                    .scaleEffect(y: (up || reduceMotion) ? 1 : 0.32, anchor: .center)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.45).repeatForever(autoreverses: true)
-                        .delay(Double(i) * 0.12), value: up)
-            }
-        }
-        .accessibilityHidden(true)   // decorative meter
-        .onAppear { up = true }
+    private static func words(_ text: String) -> [String] {
+        text.split(whereSeparator: { $0 == " " || $0 == "\n" }).map(String.init)
     }
 }

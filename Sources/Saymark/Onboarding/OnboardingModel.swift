@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Foundation
 import KeyboardShortcuts
@@ -47,7 +48,7 @@ final class OnboardingModel {
     var canContinue: Bool { OnboardingFlow.canContinue(flow) }
     var showBack: Bool { flow.step != .welcome && !finished }
 
-    /// The current push-to-talk shortcut, for the Done screen's chips.
+    /// The configured dictation shortcut shown and exercised on Try It.
     var shortcutLabel: String {
         KeyboardShortcuts.getShortcut(for: .dictate)?.description ?? "⌃⌥Space"
     }
@@ -55,7 +56,11 @@ final class OnboardingModel {
     func next() {
         guard canContinue else { return }
         if flow.step == .permissions { stopAccessibilityPolling() }
-        if flow.step == .tryIt { tryEnd() }                   // stop + restore onUpdate on leave
+        if flow.step == .tryIt {
+            tryEnd()
+            finish()
+            return
+        }
         if flow.step == .done { finish(); return }
         // Download starts when the Download step itself appears (DownloadScreen
         // .onAppear) — no preemptive background load during earlier steps.
@@ -74,6 +79,7 @@ final class OnboardingModel {
         UserDefaults.standard.set(true, forKey: Self.didOnboardKey)
         finished = true
         onFinished?()                 // boot the live menu app (mic granted, models cached)
+        NSApp.keyWindow?.orderOut(nil)
     }
     func replay() {
         flow = OnboardingFlow.State(); finished = false; downloadError = nil
@@ -111,7 +117,9 @@ final class OnboardingModel {
     /// poll until the user flips it on — there's no AX-trust notification.
     func promptAccessibility() {
         if RuntimeEnvironment.isUITesting {
-            flow.accessibilityGranted = true
+            if !RuntimeEnvironment.isOnboardingReview {
+                flow.accessibilityGranted = true
+            }
             return
         }
         _ = Accessibility.prompt()
@@ -123,7 +131,7 @@ final class OnboardingModel {
     func refreshPermissions() {
         if RuntimeEnvironment.isUITesting {
             flow.micGranted = true
-            flow.accessibilityGranted = true
+            flow.accessibilityGranted = !RuntimeEnvironment.isOnboardingReview
             return
         }
         flow.micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
@@ -189,7 +197,7 @@ final class OnboardingModel {
                 self.downloadError = error.localizedDescription
                 self.downloadStarted = false                 // allow Retry
                 PostHogSDK.shared.capture("model_download_failed", properties: [
-                    "error": error.localizedDescription,
+                    "error_type": String(reflecting: type(of: error)),
                 ])
             }
         }
@@ -267,7 +275,7 @@ final class OnboardingModel {
         guard tryListening else { return }
         tryListening = false
         if RuntimeEnvironment.isUITesting {
-            tryConfirmed = "Saymark integration test"
+            tryConfirmed = "Write with your voice anywhere."
             tryPartial = ""
             flow.didTry = true
             return

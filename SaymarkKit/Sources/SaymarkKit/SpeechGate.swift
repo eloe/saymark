@@ -49,7 +49,6 @@ final class SpeechGate {
                 didLogInferenceError = true
                 SaymarkDiagnostics.log(.warn, "vad.inference_failed", fields: [
                     "error_type": String(reflecting: type(of: error)),
-                    "error_description": error.localizedDescription,
                     "behavior": "fail_open",
                 ])
             }

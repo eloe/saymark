@@ -45,7 +45,6 @@ public final class DictationSession: @unchecked Sendable {
             SaymarkDiagnostics.log(.error, "models.prepare_failed", fields: [
                 "mode": mode.rawValue,
                 "error_type": String(reflecting: type(of: error)),
-                "error_description": error.localizedDescription,
             ])
             throw error
         }
@@ -80,7 +79,6 @@ public final class DictationSession: @unchecked Sendable {
         } catch {
             SaymarkDiagnostics.log(.error, "microphone.capture_failed", sessionID: sessionID, fields: [
                 "error_type": String(reflecting: type(of: error)),
-                "error_description": error.localizedDescription,
             ])
             throw error
         }

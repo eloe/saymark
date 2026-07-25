@@ -58,3 +58,24 @@ Scripts/report-diagnostics.sh /path/to/saymark.jsonl
 
 The report validates every JSON line and summarizes resource samples, model
 loads, and completed dictations without displaying user content.
+
+Caller-supplied diagnostic fields cross a strict allowlist at the logger
+boundary. Unknown fields and content-bearing names are discarded, and raw
+localized error descriptions are not recorded; add any new metric name to the
+reviewed allowlist and its privacy tests before relying on it.
+
+## Daily-driver acceptance
+
+After one or more real dictations, turn the same local events into a red/green
+acceptance result:
+
+```bash
+make daily-driver-check
+node Scripts/check-daily-driver-diagnostics.mjs /path/to/saymark.jsonl --min-sessions 10
+```
+
+This enforces the observed hotkey-to-HUD, stop-to-final, per-mode RTF and step
+latency, MLX peak-memory, insertion-success, and diagnostic privacy gates. It
+fails when required measurements are missing rather than treating absent data
+as a pass. Idle CPU and settled-memory growth remain separate sampled checks
+because a diagnostic log cannot reliably infer that the user left the app idle.
