@@ -87,10 +87,11 @@ To update an app-only package:
 ## Model supply-chain trust
 
 Every production Hugging Face model is pinned to an immutable 40-character
-commit in `SaymarkModelCatalog`. `PinnedModelStore` downloads that revision,
-hashes the critical weights, configuration, and vocabulary against the
-checked-in manifest, and only then moves the snapshot into the directory that
-MLX loads. The first ensure in every app process rehashes each critical artifact;
+commit in `SaymarkModelCatalog`. The reviewed catalog records every critical
+file's exact byte size and SHA-256 digest. `PinnedModelStore` downloads that
+revision, rejects a missing or unexpectedly sized file, hashes the critical
+weights, configuration, and vocabulary, and only then moves the snapshot into
+the directory that MLX loads. The first ensure in every app process rehashes each critical artifact;
 the metadata manifest is an audit record and never an authorization shortcut.
 That trust check costs one full multi-gigabyte read per model per process.
 Repeated onboarding/load handoffs reuse only the actor-owned in-process
@@ -102,7 +103,7 @@ Model upgrades are source changes:
 1. Review the upstream repository and select an immutable commit.
 2. Download that exact revision and independently calculate SHA-256 for every
    critical runtime artifact.
-3. Update the catalog revision and hashes in one pull request.
+3. Update the catalog revision, exact byte sizes, and hashes in one pull request.
 4. Run unit, privacy, real-model accuracy, latency, CPU, and memory gates.
 5. Record the model revision with the accepted benchmark result.
 

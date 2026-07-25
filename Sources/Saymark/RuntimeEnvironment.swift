@@ -40,4 +40,15 @@ enum RuntimeEnvironment {
         nil
         #endif
     }
+
+    static var dailyDriverScenario: String {
+        #if DEBUG
+        guard isDailyDriverUITesting else { return "disabled" }
+        return ProcessInfo.processInfo.environment["SAYMARK_UI_TESTING_SCENARIO"]
+            ?? dailyDriverOutcome
+            ?? "success"
+        #else
+        return "disabled"
+        #endif
+    }
 }

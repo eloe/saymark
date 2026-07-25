@@ -118,10 +118,13 @@ final class HUDControllerTests: XCTestCase {
         normal.begin(presentation: false, lang: "Auto", interactive: true)
         normal.finish("final words")
 
-        XCTAssertEqual(normalScheduler.entries.last?.delay, 1.6)
+        XCTAssertEqual(normalScheduler.entries.last?.delay, 3.2)
         XCTAssertEqual(normal.model.confirmed, "final words")
         XCTAssertEqual(normal.model.partial, "")
         XCTAssertEqual(normal.model.phase, .transcribing)
+        XCTAssertTrue(normal.model.showingFinal)
+        XCTAssertTrue(normal.model.usesScrollableTranscript)
+        XCTAssertNil(normal.model.transcriptLineLimit)
         XCTAssertFalse(normal.model.recording)
         XCTAssertFalse(normal.model.showStop)
 
@@ -131,6 +134,43 @@ final class HUDControllerTests: XCTestCase {
         presentation.finish("")
         XCTAssertEqual(presentationScheduler.entries.last?.delay, 4.0)
         XCTAssertEqual(presentation.model.phase, .listening)
+    }
+
+    func testLongFinalTranscriptIsCompleteExpandedScrollableAndReadable() {
+        let (controller, scheduler, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        let sentence = "Saymark keeps every dictated word available in the final transcript without clipping it."
+        let finalText = Array(repeating: sentence, count: 18).joined(separator: " ")
+        controller.begin(presentation: false, lang: "Auto")
+
+        controller.finish(finalText)
+
+        XCTAssertEqual(controller.model.confirmed, finalText)
+        XCTAssertEqual(controller.model.transcriptAccessibilityLabel, finalText)
+        XCTAssertTrue(controller.model.showingFinal)
+        XCTAssertTrue(controller.model.requiresExpandedFinal)
+        XCTAssertTrue(controller.model.usesScrollableTranscript)
+        XCTAssertNil(controller.model.transcriptLineLimit)
+        XCTAssertEqual(controller.panel?.frame.height, CGFloat(410))
+        XCTAssertFalse(controller.panel?.ignoresMouseEvents ?? true)
+        XCTAssertEqual(scheduler.entries.last?.delay, 12.0)
+    }
+
+    func testNewUtteranceStopsFinalModeAndRestoresCompactNonInteractiveHUD() {
+        let (controller, _, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        let finalText = Array(repeating: "A complete sentence for the expanded result.", count: 12)
+            .joined(separator: " ")
+        controller.begin(presentation: false, lang: "Auto")
+        controller.finish(finalText)
+
+        controller.begin(presentation: false, lang: "Auto")
+
+        XCTAssertFalse(controller.model.showingFinal)
+        XCTAssertFalse(controller.model.usesScrollableTranscript)
+        XCTAssertEqual(controller.model.transcriptLineLimit, 3)
+        XCTAssertEqual(controller.panel?.frame.height, CGFloat(260))
+        XCTAssertTrue(controller.panel?.ignoresMouseEvents ?? false)
     }
 
     func testProcessingMakesReleaseTransitionExplicitWithoutSchedulingHide() {
@@ -213,6 +253,19 @@ final class HUDControllerTests: XCTestCase {
         scheduler.fire(0, evenIfCancelled: true)
         XCTAssertTrue(animator.hiddenPanels.isEmpty)
         XCTAssertNotNil(controller.panel?.contentView)
+    }
+
+    func testBeginPublishesConfiguredShortcutLabel() {
+        let (controller, _, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+
+        controller.begin(
+            presentation: false,
+            lang: "Auto",
+            shortcutLabel: "⇧⌘D"
+        )
+
+        XCTAssertEqual(controller.model.shortcutLabel, "⇧⌘D")
     }
 
     func testErrorCancelsPendingFinishAndInvalidatesItsAction() {

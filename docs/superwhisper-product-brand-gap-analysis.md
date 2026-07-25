@@ -124,7 +124,7 @@ This is a stronger foundation than a generic “privacy-first” claim.
 
 ### 3. The two-tier transcript is a distinctive interaction
 
-The engine already publishes a live draft roughly every 480 ms, then uses a
+The engine publishes a live draft roughly every 160 ms, then uses a
 high-accuracy final model when recording stops. The HUD currently distinguishes
 draft and final states; this provides the recognition foundation for moving the
 same lifecycle into the active field.
@@ -212,9 +212,9 @@ Naturalness depends on what the person sees, not just model real-time factor or
 the duration of an inference call. Saymark should treat human response
 thresholds as product acceptance criteria.
 
-The current 480 ms audio feed creates only about 2.1 update opportunities per
-second. Batching alone adds an average 240 ms wait and as much as 480 ms before
-inference and field mutation. The resulting half-second bursts are likely to
+The original 480 ms audio feed created only about 2.1 update opportunities per
+second. Batching alone added an average 240 ms wait and as much as 480 ms before
+inference and field mutation. Those half-second bursts were likely to
 feel like delayed captioning rather than writing.
 
 Use this initial perception budget:
@@ -238,10 +238,10 @@ continuous interactions, especially when timing is inconsistent. Speech adds a
 necessary acoustic-context delay, so smooth, predictable token emission matters
 more than pretending every sound can produce immediate text.
 
-The streaming model is already configured around a 160 ms internal chunk, while
-microphone capture currently batches 480 ms before calling it. Benchmark 160,
-240, and 320 ms production feeds. Accept a smaller feed only if inference keeps
-up without backlog, quality regression, excess power use, or unstable
+The streaming model is configured around a 160 ms internal chunk. A 20-run
+160/240/320/480 ms experiment selected a 160 ms microphone feed after it kept
+up without backlog, quality regression, or memory growth. Continue to reject
+future cadence changes that add excess power use or unstable
 revisions.
 
 Measure perception separately from compute:

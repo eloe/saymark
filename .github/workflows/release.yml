@@ -6,18 +6,57 @@ on:
       - "saymark-v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  quality:
+    name: Required source gates
+    uses: ./.github/workflows/quality.yml
+    permissions:
+      contents: read
+
+  provenance:
+    name: Protected main release provenance
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require an annotated tag reachable from origin/main
+        run: |
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] ||
+            { echo "Release workflow must run from a tag" >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" =~ ^saymark-v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+            { echo "Tag must be saymark-vX.Y.Z" >&2; exit 1; }
+          [[ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" == "tag" ]] ||
+            { echo "Release tags must be annotated, not lightweight" >&2; exit 1; }
+          tag_commit="$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")"
+          [[ "$tag_commit" == "$GITHUB_SHA" ]] ||
+            { echo "Checked-out commit does not match the release tag" >&2; exit 1; }
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+          git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main ||
+            { echo "Release tag commit is not reachable from origin/main" >&2; exit 1; }
+
   release:
     name: Sign, notarize, and publish
+    needs: provenance
     runs-on: macos-26
     timeout-minutes: 90
     environment: release
+    permissions:
+      contents: write
     steps:
       - name: Check out the tagged source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -136,6 +175,11 @@ jobs:
             --team-id "$EXPECTED_TEAM_ID" \
             --cert-sha256 "$EXPECTED_CERT_SHA256"
 
+      - name: Verify bundled legal notices
+        run: |
+          Scripts/check-legal-notices.sh \
+            "$RUNNER_TEMP/Saymark.xcarchive/Products/Applications/Saymark.app"
+
       - name: Notarize, staple, and assess
         env:
           NOTARY_KEY_ID: ${{ secrets.SAYMARK_NOTARY_KEY_ID }}
@@ -165,9 +209,13 @@ jobs:
       - name: Package verified artifact
         run: |
           app="$RUNNER_TEMP/Saymark.xcarchive/Products/Applications/Saymark.app"
-          artifact="$RUNNER_TEMP/Saymark-${GITHUB_REF_NAME#saymark-v}-arm64.zip"
+          artifact_name="Saymark-${GITHUB_REF_NAME#saymark-v}-arm64.zip"
+          artifact="$RUNNER_TEMP/$artifact_name"
           ditto -c -k --keepParent "$app" "$artifact"
-          shasum -a 256 "$artifact" > "${artifact}.sha256"
+          (
+            cd "$RUNNER_TEMP"
+            shasum -a 256 "$artifact_name" > "${artifact_name}.sha256"
+          )
 
       - name: Publish GitHub release
         env:
@@ -181,3 +229,12 @@ jobs:
             --verify-tag \
             --generate-notes \
             --title "Saymark ${version}"
+
+      - name: Remove ephemeral signing material
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/saymark-release.keychain-db" 2>/dev/null || true
+          rm -f \
+            "$RUNNER_TEMP/saymark-release.p12" \
+            "$RUNNER_TEMP/saymark-release-certificate.pem" \
+            "$RUNNER_TEMP"/AuthKey_*.p8

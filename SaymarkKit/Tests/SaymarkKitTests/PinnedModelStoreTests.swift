@@ -28,6 +28,7 @@ final class PinnedModelStoreTests: XCTestCase {
             XCTAssertFalse(descriptor.revision.contains("main"))
             XCTAssertTrue(descriptor.artifacts.contains { $0.path == "model.safetensors" })
             XCTAssertTrue(descriptor.artifacts.contains { $0.path == "config.json" })
+            XCTAssertTrue(descriptor.artifacts.allSatisfy { $0.size > 0 })
             XCTAssertTrue(descriptor.artifacts.allSatisfy { $0.sha256.count == 64 })
         }
     }
@@ -52,13 +53,34 @@ final class PinnedModelStoreTests: XCTestCase {
 
     func test_verifyAndRecordRejectsChangedArtifact() throws {
         let descriptor = try fixtureDescriptor(contents: ["model.safetensors": "trusted", "config.json": "{}"])
-        try write("tampered", to: "model.safetensors")
+        try write("changed", to: "model.safetensors")
         try write("{}", to: "config.json")
 
         XCTAssertThrowsError(try PinnedModelStore.verifyAndRecord(descriptor, at: directory)) {
             guard case PinnedModelStore.Error.hashMismatch("model.safetensors") = $0 else {
                 return XCTFail("Unexpected error: \($0)")
             }
+        }
+    }
+
+    func test_verifyAndRecordRejectsUnexpectedArtifactSizeBeforeHashing() throws {
+        let descriptor = try fixtureDescriptor(contents: [
+            "model.safetensors": "trusted",
+            "config.json": "{}",
+        ])
+        try write("longer than trusted", to: "model.safetensors")
+        try write("{}", to: "config.json")
+
+        XCTAssertThrowsError(try PinnedModelStore.verifyAndRecord(descriptor, at: directory)) {
+            guard case let PinnedModelStore.Error.sizeMismatch(
+                "model.safetensors",
+                expected,
+                actual
+            ) = $0 else {
+                return XCTFail("Unexpected error: \($0)")
+            }
+            XCTAssertEqual(expected, 7)
+            XCTAssertEqual(actual, 19)
         }
     }
 
@@ -121,7 +143,11 @@ final class PinnedModelStoreTests: XCTestCase {
             repository: "example/model",
             revision: String(repeating: "a", count: 40),
             artifacts: contents.map { path, contents in
-                PinnedModelArtifact(path: path, sha256: sha256(contents))
+                PinnedModelArtifact(
+                    path: path,
+                    size: UInt64(Data(contents.utf8).count),
+                    sha256: sha256(contents)
+                )
             }.sorted { $0.path < $1.path }
         )
     }

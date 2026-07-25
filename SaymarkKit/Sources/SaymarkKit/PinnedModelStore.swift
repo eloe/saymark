@@ -18,6 +18,7 @@ public actor PinnedModelStore {
     public enum Error: Swift.Error, Equatable {
         case badRepository(String)
         case missingArtifact(String)
+        case sizeMismatch(String, expected: UInt64, actual: UInt64)
         case hashMismatch(String)
         case unreadableArtifact(String)
     }
@@ -107,10 +108,17 @@ public actor PinnedModelStore {
             try metadata(for: $0.path, in: directory)
         }
 
-        for artifact in descriptor.artifacts {
+        for (artifact, currentFile) in zip(descriptor.artifacts, currentFiles) {
             let url = directory.appendingPathComponent(artifact.path)
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw Error.missingArtifact(artifact.path)
+            }
+            guard currentFile.size == artifact.size else {
+                throw Error.sizeMismatch(
+                    artifact.path,
+                    expected: artifact.size,
+                    actual: currentFile.size
+                )
             }
             guard let actual = try? sha256(of: url) else {
                 throw Error.unreadableArtifact(artifact.path)

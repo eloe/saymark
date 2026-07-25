@@ -1,7 +1,7 @@
 import Foundation
 
 /// The UI-agnostic dictation pipeline shared by the menu-bar app and the CLI:
-/// load the two-tier models (with warm-up), capture the mic in 480 ms chunks,
+/// load the two-tier models (with warm-up), capture the mic in 160 ms chunks,
 /// stream `(confirmed, partial)` updates, and flush a final transcript on stop.
 ///
 /// No SwiftUI, no hotkey library, no text injection — callers wire those. The
@@ -72,8 +72,8 @@ public final class DictationSession: @unchecked Sendable {
         do {
             try mic.start()
             SaymarkDiagnostics.log(.info, "microphone.capture_started", sessionID: sessionID, fields: [
-                "feed_samples": 7_680,
-                "feed_interval_ms": 480,
+                "feed_samples": MicCapture.feedSamples,
+                "feed_interval_ms": MicCapture.feedIntervalMilliseconds,
                 "target_sample_rate": 16_000,
             ])
         } catch {
@@ -106,9 +106,13 @@ public final class DictationSession: @unchecked Sendable {
     }
 
     /// Offline transcription of pre-loaded 16 kHz mono samples, feeding the same
-    /// 480 ms chunks the mic path uses and timing the STT compute. For
+    /// 160 ms chunks the mic path uses and timing the STT compute. For
     /// benchmarking against the CLI on a fixed file (no mic involved).
-    public func transcribeOffline(_ samples: [Float], chunkSamples: Int = 7680, mode: DictationMode = .hybrid) -> OfflineResult {
+    public func transcribeOffline(
+        _ samples: [Float],
+        chunkSamples: Int = 2_560,
+        mode: DictationMode = .hybrid
+    ) -> OfflineResult {
         _ = engine.begin(language: nil, mode: mode)
         let wall0 = ProcessInfo.processInfo.systemUptime
         var streamCompute = 0.0

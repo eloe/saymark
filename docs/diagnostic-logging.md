@@ -29,7 +29,7 @@ open "/Applications/Saymark.app"
 
 Levels are `off`, `error`, `warn`, `info`, `debug`, and `trace`. Local builds
 default to `debug`; official builds default to `info`. Debug includes a process
-CPU/memory sample every 30 seconds. Trace additionally records each 480 ms audio
+CPU/memory sample every 30 seconds. Trace additionally records each 160 ms audio
 processing step.
 
 ## Recorded measurements

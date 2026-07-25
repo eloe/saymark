@@ -14,7 +14,8 @@ XCB = tuist xcodebuild build -workspace $(WORKSPACE) -scheme $(SCHEME) \
 
 .PHONY: legal-check security-check dependency-check dependencies architecture architecture-check daily-driver-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
 	test-unit test-integration model-fixture prepare-model-tests test-model-efficient test-model-live \
-	test-model-parakeet-int8 test-model-live-parakeet-int8 report-diagnostics
+	test-model-parakeet-int8 test-model-live-parakeet-int8 prepare-corpus prepare-corpus-tests \
+	test-corpus-efficient test-corpus-live report-diagnostics
 
 DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 SWIFT = DEVELOPER_DIR="$(DEVELOPER_DIR)" xcrun swift
@@ -95,6 +96,8 @@ WAV ?= /path/to/clip.wav
 REFERENCE ?= Benchmarks/saymark-performance-reference.txt
 MODEL_BENCHMARK_WAV ?= /tmp/saymark-performance.aiff
 MODEL_BENCHMARK_RUNS ?= 20
+CORPUS_SOURCE_MANIFEST ?= Benchmarks/Corpus/saymark-english-v1.json
+CORPUS_DIRECTORY ?= Benchmarks/Corpus/local
 DIAGNOSTIC_LOG ?= $(HOME)/Library/Logs/com.eloe.saymark.local/saymark.jsonl
 bench: cli
 	"$(KIT_REL)/saymark-cli" --wav "$(WAV)"
@@ -153,6 +156,29 @@ test-model-live-parakeet-int8: model-fixture prepare-model-tests
 		SAYMARK_MODEL_BENCHMARK_RUNS="$(MODEL_BENCHMARK_RUNS)" \
 		$(SWIFT) test -c release --skip-build \
 		--filter RealModelAcceptanceTests/testSelectedModelProfileMeetsAcceptanceBudget
+
+# Downloads only the ten immutable, redistributable LibriSpeech source clips,
+# verifies their SHA-256 values, then creates normalized/noisy/long local WAVs.
+# Generated audio and accuracy reports remain ignored by Git.
+prepare-corpus:
+	node Scripts/prepare-benchmark-corpus.mjs \
+		--manifest "$(CORPUS_SOURCE_MANIFEST)" --output "$(CORPUS_DIRECTORY)"
+
+prepare-corpus-tests: prepare-corpus prepare-model-tests
+
+test-corpus-efficient: prepare-corpus-tests
+	cd SaymarkKit && SAYMARK_CORPUS_PROFILE=efficient \
+		SAYMARK_CORPUS_MANIFEST="$(abspath $(CORPUS_DIRECTORY))/corpus.json" \
+		SAYMARK_CORPUS_RESULTS="$(abspath $(CORPUS_DIRECTORY))/results-efficient.json" \
+		$(SWIFT) test -c release --skip-build \
+		--filter PublicCorpusAccuracyTests/testSelectedModelMeetsPublicCorpusAccuracyBudget
+
+test-corpus-live: prepare-corpus-tests
+	cd SaymarkKit && SAYMARK_CORPUS_PROFILE=live-preview \
+		SAYMARK_CORPUS_MANIFEST="$(abspath $(CORPUS_DIRECTORY))/corpus.json" \
+		SAYMARK_CORPUS_RESULTS="$(abspath $(CORPUS_DIRECTORY))/results-live-preview.json" \
+		$(SWIFT) test -c release --skip-build \
+		--filter PublicCorpusAccuracyTests/testSelectedModelMeetsPublicCorpusAccuracyBudget
 
 report-diagnostics:
 	Scripts/report-diagnostics.sh "$(DIAGNOSTIC_LOG)"

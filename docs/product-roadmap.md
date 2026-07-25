@@ -50,9 +50,10 @@ The current source already contains:
   transcript counts;
 - unit, app/HUD, XCUITest, and opt-in real-model benchmark targets.
 
-The checked-in benchmark is a useful performance result, but its synthetic audio
-is not a broad accuracy corpus. Saymark therefore does not yet make a general
-accuracy claim.
+The checked-in public English corpus now provides a reproducible clean, harder
+acoustic, noisy, and 30–120-second baseline. It does not yet cover spoken
+numbers, punctuation commands, conversational dictation, or multiple promoted
+languages, so Saymark still does not make a general accuracy claim.
 
 ## Release discipline
 
@@ -91,10 +92,12 @@ Deliverables:
   state;
 - one command that produces a red/green acceptance report from app diagnostics.
 
-Initial implementation: `make daily-driver-check` now enforces the observed
-HUD, stop-to-final, inference, memory, insertion, and privacy gates from real
-local diagnostics. The remaining Slice 1 fixtures and compatibility targets
-stay release-blocking work rather than being inferred from synthetic tests.
+Implementation status: `make daily-driver-check` enforces the observed HUD,
+stop-to-final, inference, memory, insertion, and privacy gates. The deterministic
+XCUITest harness covers the real registered shortcut, all delivery outcomes,
+and ten exact-once repetitions for each compatibility target. A final unlocked
+interactive-session run remains required before Slice 1 is promoted; macOS
+correctly disables HID/UI automation while the user session is locked.
 
 Acceptance gates:
 

@@ -85,8 +85,9 @@ counts, and outcome categories.
 
 ### Feed-cadence experiment
 
-Before changing the current 480 ms production feed, benchmark the same fixtures
-at 160, 240, and 320 ms, retaining 480 ms as the baseline. Record:
+The production feed is 160 ms. It was selected from a 160, 240, 320, and 480 ms
+same-fixture experiment recorded in `benchmark-results.md`. Repeat that full
+experiment before changing the cadence. Record:
 
 - speech-to-visible-word p50 and p95;
 - hypothesis-to-field-mutation p50 and p95;
@@ -108,7 +109,8 @@ repository/revision, fixture revision, and whether the first compilation run was
 ## Quality corpus
 
 The checked-in synthetic fixture is a smoke test, not an accuracy claim. A model
-decision requires a versioned, consented corpus with reference transcripts:
+decision requires a versioned corpus of redistributable public audio or
+explicitly consented local recordings with reference transcripts:
 
 - At least 10 English clips: clean, noisy, accented, numbers, and punctuation.
 - At least 5 Russian clips if Russian remains a supported product language.
@@ -119,6 +121,38 @@ decision requires a versioned, consented corpus with reference transcripts:
 Never commit private user recordings. Store only redistributable fixtures or a
 manifest pointing to locally held consented audio.
 
+### Public English v1
+
+`Benchmarks/Corpus/saymark-english-v1.json` pins ten complete CC BY 4.0
+LibriSpeech utterances by dataset revision, row identity, speaker, reference
+transcript, duration, and raw SHA-256. The preparation recipe creates:
+
+- 10 unmodified short cases from ten speakers: 5 `test.clean` and 5
+  `test.other`;
+- 2 deterministic pink-noise cases; and
+- 5 long-form composites at 30, 45, 60, 90, and 120 seconds.
+
+Generated audio is local and ignored by Git. Preparation must fail if the
+upstream revision, row, transcript, duration, or source bytes differ.
+Long-form cases must use every selected unique utterance before repetition when
+the duration permits. The 90- and 120-second cases use a separately ordered
+second cycle so repeated content is not adjacent or mechanically periodic.
+
+The opt-in runner loads the selected model stack once and reports every case,
+macro WER, scenario WER, and locale WER as JSON. Acceptance requires:
+
+- macro WER <= 8%;
+- every scenario macro WER <= 12%;
+- every locale macro WER <= 12%; and
+- with `SAYMARK_CORPUS_BASELINE` set, no scenario or locale may regress by more
+  than 1 absolute WER point from the accepted result.
+
+This revision covers multiple speakers, both LibriSpeech acoustic conditions,
+noise, and long-form behavior. It does not yet satisfy the full spoken-number
+and punctuation-command coverage requirement above; model promotion remains
+blocked on adding those public or consented fixtures and recording a passing
+result.
+
 ## Commands
 
 ```bash
@@ -128,6 +162,9 @@ make test-model-efficient
 make test-model-live
 make test-model-parakeet-int8
 make test-model-live-parakeet-int8
+make prepare-corpus
+make test-corpus-efficient
+make test-corpus-live
 Scripts/check-app-resources.sh "/Applications/Saymark.app"
 ```
 

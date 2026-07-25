@@ -82,17 +82,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         didStartMenuApp = true
+        #if DEBUG
+        // A returning-user daily-driver UI test must remain a foreground app so
+        // XCTest can focus its window and emit the real registered shortcut.
+        // Production still transitions to `.accessory` immediately below.
+        if RuntimeEnvironment.isDailyDriverUITesting {
+            NSApp.setActivationPolicy(.regular)
+            SaymarkDiagnostics.log(.debug, "app.menu_started", fields: ["ui_testing": true])
+            let harness = DailyDriverUITestHarness(dictation: dictation)
+            dailyDriverUITestHarness = harness
+            harness.present()
+            return
+        }
+        #endif
         NSApp.setActivationPolicy(.accessory)
         guard !RuntimeEnvironment.isUITesting else {
             SaymarkDiagnostics.log(.debug, "app.menu_started", fields: ["ui_testing": true])
-            #if DEBUG
-            if RuntimeEnvironment.isDailyDriverUITesting {
-                NSApp.setActivationPolicy(.regular)
-                let harness = DailyDriverUITestHarness(dictation: dictation)
-                dailyDriverUITestHarness = harness
-                harness.present()
-            }
-            #endif
             return
         }
         SaymarkDiagnostics.log(.info, "app.menu_started", fields: ["ui_testing": false])

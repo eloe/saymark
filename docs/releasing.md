@@ -25,8 +25,8 @@ workflow files, local `.env` files, or build configuration files.
 
 1. Merge only after unit, integration, performance, legal, dependency, secret,
    and CodeQL gates pass.
-2. Confirm the model revisions and hashes in `SaymarkModelCatalog` match the
-   accepted benchmark result.
+2. Confirm the model revisions, exact byte sizes, and hashes in
+   `SaymarkModelCatalog` match the accepted benchmark result.
 3. Create an annotated `saymark-vX.Y.Z` tag from protected `main` and push it.
 4. Review and approve the `release` environment deployment.
 5. The workflow must archive with Developer ID, enforce Hardened Runtime,

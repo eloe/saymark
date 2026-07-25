@@ -77,7 +77,7 @@ struct SettingsView: View {
             } header: {
                 Text("Diagnostics")
             } footer: {
-                Text("Machine-readable local logs contain timings, resource measurements, and counts—never audio or transcript text. Trace records each 480 ms processing step.")
+                Text("Machine-readable local logs contain timings, resource measurements, and counts—never audio or transcript text. Trace records each 160 ms processing step.")
             }
         }
         .formStyle(.grouped)
