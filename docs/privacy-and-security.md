@@ -32,6 +32,5 @@ official release.
 
 ## Reporting vulnerabilities
 
-Until a public security contact is configured, avoid publishing exploit details
-in a public issue. Repository maintainers should add a private GitHub security
-advisory workflow before the first public binary release.
+Do not publish suspected vulnerabilities in a public issue. Use the repository's
+private **Report a vulnerability** flow described in [`SECURITY.md`](../SECURITY.md).

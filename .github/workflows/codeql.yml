@@ -1,0 +1,91 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "31 14 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Swift security analysis
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+
+      - name: Generate the local project
+        env:
+          TUIST_SAYMARK_LOCAL_BUILD: "1"
+          TUIST_APP_VERSION: "0.1.1"
+          TUIST_APP_BUILD: ${{ github.run_number }}
+        run: tuist generate --no-open
+
+      # macos-26 runners do not include this optional Xcode component, but the
+      # MLX Swift dependency compiles Metal sources. Install it before CodeQL
+      # enables its DYLD tracer so xcodebuild's component action is untraced.
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      # Initialize only after Tuist runs. CodeQL's DYLD tracer prevents Tuist
+      # from locating its bundled ProjectDescription resource on hosted macOS.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+        with:
+          languages: swift
+          build-mode: manual
+          queries: security-extended
+
+      # Xcode 26 ships `metal` as a shim that discovers a separately mounted
+      # toolchain. CodeQL's DYLD tracer prevents that discovery even after the
+      # component is installed. Swift must remain traced; Metal need not be
+      # traced for a Swift database, so route only this compiler directly to the
+      # root-owned mounted toolchain without inheriting the tracer.
+      - name: Make the mounted Metal compiler available to the traced build
+        run: |
+          real_metal="$(
+            find /var/run/com.apple.security.cryptexd/mnt \
+              -path '*/Metal.xctoolchain/usr/bin/metal' \
+              -type f -print -quit 2>/dev/null
+          )"
+          [[ -n "$real_metal" && -x "$real_metal" ]] ||
+            { echo "Mounted Metal compiler not found" >&2; exit 1; }
+          metal_shim="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/bin/metal"
+          sudo mv "$metal_shim" "${metal_shim}.saymark-original"
+          printf '#!/bin/bash\nunset DYLD_INSERT_LIBRARIES\nexec %q "$@"\n' "$real_metal" |
+            sudo tee "$metal_shim" >/dev/null
+          sudo chmod 0755 "$metal_shim"
+          "$metal_shim" --version
+
+      - name: Build traced Swift
+        run: |
+          xcodebuild build \
+            -workspace Saymark.xcworkspace \
+            -scheme Saymark \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/codeql-derived-data" \
+            -skipPackagePluginValidation \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+        with:
+          category: /language:swift

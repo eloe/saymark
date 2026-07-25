@@ -14,6 +14,7 @@ public final class TwoTierSession {
     private let fastText: () -> String
     private let fastFinish: () -> Void
     private let accurateText: ([Float]) -> String
+    private let releaseModelCache: () -> Void
 
     private var finalAudio = FinalAudioBuffer()
     private var finalText = ""
@@ -22,12 +23,14 @@ public final class TwoTierSession {
         fastStep: @escaping ([Float]) -> Void,
         fastText: @escaping () -> String,
         fastFinish: @escaping () -> Void,
-        accurateText: @escaping ([Float]) -> String
+        accurateText: @escaping ([Float]) -> String,
+        releaseModelCache: @escaping () -> Void = { Memory.clearCache() }
     ) {
         self.fastStep = fastStep
         self.fastText = fastText
         self.fastFinish = fastFinish
         self.accurateText = accurateText
+        self.releaseModelCache = releaseModelCache
     }
 
     public convenience init(
@@ -103,7 +106,7 @@ public final class TwoTierSession {
                 "parakeet_empty": candidateIsEmpty,
             ])
         }
-        Memory.clearCache()
+        releaseModelCache()
         return (finalText, "")
     }
 }

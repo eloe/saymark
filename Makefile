@@ -12,17 +12,21 @@ XCB = tuist xcodebuild build -workspace $(WORKSPACE) -scheme $(SCHEME) \
 	-configuration Release -destination 'generic/platform=macOS' -allowProvisioningUpdates \
 	ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO
 
-.PHONY: legal-check architecture architecture-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
+.PHONY: legal-check security-check architecture architecture-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
 	test-unit test-integration model-fixture prepare-model-tests test-model-efficient test-model-live \
 	test-model-parakeet-int8 test-model-live-parakeet-int8 report-diagnostics
 
 DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
+SWIFT = DEVELOPER_DIR="$(DEVELOPER_DIR)" xcrun swift
 UI_TEST_DERIVED_DATA ?= /tmp/saymark-ui-tests
 LOCAL_BUILD ?= 1001
 LOCAL_DERIVED_DATA ?= /tmp/saymark-local-build
 
 legal-check:
 	Scripts/check-legal-notices.sh
+
+security-check:
+	Scripts/security-audit.sh
 
 architecture:
 	node Scripts/generate-architecture-map.mjs
@@ -70,7 +74,7 @@ CMLX_SRC := $(firstword \
 	$(wildcard /Volumes/DATA/mlx-audio-swift/.build/arm64-apple-macosx/debug/$(CMLX_BUNDLE)))
 
 cli:
-	cd SaymarkKit && swift build -c release --product saymark-cli
+	cd SaymarkKit && $(SWIFT) build -c release --product saymark-cli
 	@if [ ! -e "$(KIT_REL)/$(CMLX_BUNDLE)/Contents/Resources/default.metallib" ]; then \
 		if [ -n "$(CMLX_SRC)" ]; then cp -R "$(CMLX_SRC)" "$(KIT_REL)/" && echo "→ copied metallib bundle next to saymark-cli"; \
 		else echo "WARN: no metallib bundle found — run 'make build' (the app) once to produce it"; fi; \
@@ -102,9 +106,9 @@ model-fixture:
 	fi
 
 prepare-model-tests:
-	cd SaymarkKit && DEVELOPER_DIR="$(DEVELOPER_DIR)" swift test -c release \
+	cd SaymarkKit && $(SWIFT) test -c release \
 		--filter RealModelAcceptanceTests/testSelectedModelProfileMeetsAcceptanceBudget
-	@bin="$$(cd SaymarkKit && DEVELOPER_DIR="$(DEVELOPER_DIR)" swift build -c release --show-bin-path)"; \
+	@bin="$$(cd SaymarkKit && $(SWIFT) build -c release --show-bin-path)"; \
 		mkdir -p "$$bin/SaymarkKitPackageTests.xctest/Contents/Resources"; \
 		ditto "$$bin/$(CMLX_BUNDLE)" \
 			"$$bin/SaymarkKitPackageTests.xctest/Contents/Resources/$(CMLX_BUNDLE)"
@@ -114,7 +118,7 @@ test-model-efficient: model-fixture prepare-model-tests
 		SAYMARK_MODEL_BENCHMARK_WAV="$(MODEL_BENCHMARK_WAV)" \
 		SAYMARK_MODEL_BENCHMARK_REFERENCE="$(abspath $(REFERENCE))" \
 		SAYMARK_MODEL_BENCHMARK_RUNS="$(MODEL_BENCHMARK_RUNS)" \
-		DEVELOPER_DIR="$(DEVELOPER_DIR)" swift test -c release --skip-build \
+		$(SWIFT) test -c release --skip-build \
 		--filter RealModelAcceptanceTests/testSelectedModelProfileMeetsAcceptanceBudget
 
 test-model-live: model-fixture prepare-model-tests
@@ -122,7 +126,7 @@ test-model-live: model-fixture prepare-model-tests
 		SAYMARK_MODEL_BENCHMARK_WAV="$(MODEL_BENCHMARK_WAV)" \
 		SAYMARK_MODEL_BENCHMARK_REFERENCE="$(abspath $(REFERENCE))" \
 		SAYMARK_MODEL_BENCHMARK_RUNS="$(MODEL_BENCHMARK_RUNS)" \
-		DEVELOPER_DIR="$(DEVELOPER_DIR)" swift test -c release --skip-build \
+		$(SWIFT) test -c release --skip-build \
 		--filter RealModelAcceptanceTests/testSelectedModelProfileMeetsAcceptanceBudget
 
 test-model-parakeet-int8: model-fixture prepare-model-tests
@@ -131,7 +135,7 @@ test-model-parakeet-int8: model-fixture prepare-model-tests
 		SAYMARK_MODEL_BENCHMARK_WAV="$(MODEL_BENCHMARK_WAV)" \
 		SAYMARK_MODEL_BENCHMARK_REFERENCE="$(abspath $(REFERENCE))" \
 		SAYMARK_MODEL_BENCHMARK_RUNS="$(MODEL_BENCHMARK_RUNS)" \
-		DEVELOPER_DIR="$(DEVELOPER_DIR)" swift test -c release --skip-build \
+		$(SWIFT) test -c release --skip-build \
 		--filter RealModelAcceptanceTests/testSelectedModelProfileMeetsAcceptanceBudget
 
 test-model-live-parakeet-int8: model-fixture prepare-model-tests
@@ -140,7 +144,7 @@ test-model-live-parakeet-int8: model-fixture prepare-model-tests
 		SAYMARK_MODEL_BENCHMARK_WAV="$(MODEL_BENCHMARK_WAV)" \
 		SAYMARK_MODEL_BENCHMARK_REFERENCE="$(abspath $(REFERENCE))" \
 		SAYMARK_MODEL_BENCHMARK_RUNS="$(MODEL_BENCHMARK_RUNS)" \
-		DEVELOPER_DIR="$(DEVELOPER_DIR)" swift test -c release --skip-build \
+		$(SWIFT) test -c release --skip-build \
 		--filter RealModelAcceptanceTests/testSelectedModelProfileMeetsAcceptanceBudget
 
 report-diagnostics:

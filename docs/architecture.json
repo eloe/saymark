@@ -4,8 +4,8 @@
   "document": {
     "title": "Saymark architecture map",
     "purpose": "Machine-readable orientation for agents and contributors changing Saymark.",
-    "generated_on": "2026-07-22",
-    "based_on_revision": "57f2624",
+    "generated_on": "2026-07-23",
+    "based_on_revision": "89c5876",
     "canonical_source": "docs/architecture.json",
     "human_view": "docs/architecture.html",
     "regenerate": "node Scripts/generate-architecture-map.mjs"
@@ -878,6 +878,18 @@
         "Secure input is never bypassed"
       ]
     },
+    "security": {
+      "command": "make security-check",
+      "source": "docs/security-and-secrets.md",
+      "controls": [
+        "No tracked private keys, certificates, provisioning profiles, keychains, or credentials",
+        "Current-tree and full-history credential-pattern scans",
+        "GitHub secret scanning and push protection",
+        "Pinned GitHub Actions with Gitleaks and CodeQL",
+        "Dependabot alerts and security updates",
+        "Private vulnerability reporting"
+      ]
+    },
     "legal": {
       "command": "make legal-check",
       "sources": [
@@ -1122,8 +1134,12 @@
       "role": "Core unit, concurrency, benchmark, and real-model acceptance tests"
     },
     {
+      "path": ".github",
+      "role": "Pinned security workflows, Dependabot configuration, and repository automation"
+    },
+    {
       "path": "Scripts",
-      "role": "Signing, installation, legal validation, diagnostics, test reporting, and architecture generation"
+      "role": "Signing, installation, security and legal validation, diagnostics, test reporting, and architecture generation"
     },
     {
       "path": "Benchmarks",

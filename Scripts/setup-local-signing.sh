@@ -3,6 +3,8 @@ set -euo pipefail
 
 identity="Saymark Local Development"
 keychain="$HOME/Library/Keychains/saymark-local-signing.keychain-db"
+source "${0:A:h}/local-signing-password.sh"
+keychain_password="$(saymark_local_signing_password "$keychain" 1)"
 
 ensure_search_list() {
   if ! security list-keychains -d user | grep -Fq "\"$keychain\""; then
@@ -13,7 +15,7 @@ ensure_search_list() {
 }
 
 if [[ -f "$keychain" ]]; then
-    security unlock-keychain -p "" "$keychain"
+  security unlock-keychain -p "$keychain_password" "$keychain"
   ensure_search_list
   if security find-identity -v -p codesigning "$keychain" | grep -Fq "\"$identity\""; then
     print "Local signing identity is ready: $identity"
@@ -40,14 +42,15 @@ openssl pkcs12 -export -legacy -name "$identity" \
   -passout "pass:$password" -out "$work/identity.p12"
 
 # This isolated keychain contains only the non-distribution Saymark Local key.
-# Its empty password allows repeatable local builds without storing a credential.
-security create-keychain -p "" "$keychain"
+# Its random password is stored in the user's login Keychain, not on disk.
+security create-keychain -p "$keychain_password" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
-security unlock-keychain -p "" "$keychain"
+security unlock-keychain -p "$keychain_password" "$keychain"
 ensure_search_list
 security import "$work/identity.p12" -k "$keychain" -f pkcs12 \
   -P "$password" -T /usr/bin/codesign >/dev/null
-security set-key-partition-list -S apple-tool:,apple: -s -k "" "$keychain" >/dev/null
+security set-key-partition-list -S apple-tool:,apple: -s \
+  -k "$keychain_password" "$keychain" >/dev/null
 
 # User-domain trust only. This identity cannot produce an official/notarized app.
 security add-trusted-cert -r trustRoot -p codeSign \
