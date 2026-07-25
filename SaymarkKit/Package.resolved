@@ -1,5 +1,5 @@
 {
-  "originHash" : "8870e1f486e4de15f966b620b0cf06fc9dc737e7c8aa99c00a6c76d31900a0bb",
+  "originHash" : "29dc30ddfd0f283c6577cd154abfd91d4f6d138a062875c8f489046a0f6b7df0",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -15,7 +15,6 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/beshkenadze/mlx-audio-swift.git",
       "state" : {
-        "branch" : "main",
         "revision" : "6671490176d24bc962f0b8cd50dbf24e2427e387"
       }
     },
@@ -24,8 +23,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ml-explore/mlx-swift.git",
       "state" : {
-        "revision" : "dc43e62d7055353c7f99fa071a4e71d29dfddc44",
-        "version" : "0.31.4"
+        "revision" : "0bb916c67f4b9e5c682cbe02a42c701c93ab5021",
+        "version" : "0.31.6"
       }
     },
     {
@@ -35,6 +34,15 @@
       "state" : {
         "revision" : "1c05248bb0899e2a7a4962b84d319cf12f4e12aa",
         "version" : "3.31.3"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
       }
     },
     {

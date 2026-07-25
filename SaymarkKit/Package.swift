@@ -22,7 +22,7 @@ let package = Package(
             url: "https://github.com/beshkenadze/mlx-audio-swift.git",
             revision: "6671490176d24bc962f0b8cd50dbf24e2427e387"
         ),
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.31.4")),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.31.6")),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1")),
     ],
     targets: [
