@@ -40,6 +40,25 @@ jobs:
       - name: Install the Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
+      # Build MLX and its Metal shaders before CodeQL injects its DYLD tracer.
+      # The tracer prevents Xcode's dynamically mounted Metal toolchain from
+      # being recognized. Reusing this DerivedData lets the traced build below
+      # compile only Saymark-owned Swift instead of rebuilding third parties.
+      - name: Prebuild third-party dependencies
+        run: |
+          xcodebuild build \
+            -workspace Saymark.xcworkspace \
+            -scheme Saymark \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/codeql-derived-data" \
+            -skipPackagePluginValidation \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
       # Initialize only after Tuist runs. CodeQL's DYLD tracer prevents Tuist
       # from locating its bundled ProjectDescription resource on hosted macOS.
       - name: Initialize CodeQL
@@ -49,7 +68,10 @@ jobs:
           build-mode: manual
           queries: security-extended
 
-      - name: Build traced Swift targets
+      - name: Invalidate first-party Swift objects
+        run: find Sources/Saymark SaymarkKit/Sources/SaymarkKit -name '*.swift' -exec touch {} +
+
+      - name: Build traced first-party Swift
         run: |
           xcodebuild build \
             -workspace Saymark.xcworkspace \
