@@ -26,7 +26,7 @@ enum TriggerMode: String, CaseIterable, Identifiable {
     case toggle    // tap to start, tap again (or the HUD Stop button) to stop
 
     var id: String { rawValue }
-    var label: String { self == .hold ? "Hold to talk" : "Tap on / off" }
+    var label: String { self == .hold ? "Hold to Dictate" : "Press to Start/Stop" }
 
     static let defaultsKey = "saymark.triggerMode"
     static var current: TriggerMode {

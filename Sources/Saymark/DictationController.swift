@@ -45,7 +45,10 @@ final class DictationController {
     var statusLine: String {
         switch state {
         case .loadingModels: return "Loading models…"
-        case .idle: return "Idle — hold \(shortcutLabel)"
+        case .idle:
+            return TriggerMode.current == .hold
+                ? "Idle — hold \(shortcutLabel)"
+                : "Idle — press \(shortcutLabel) to start"
         case .recording: return "Listening…"
         case .transcribing: return "Transcribing…"
         case let .transcribed(t): return t.isEmpty ? "…(no speech detected)" : t

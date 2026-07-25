@@ -10,7 +10,7 @@ struct ShortcutScreen: View {
             Text("Choose how to start dictation")
                 .font(.system(size: 26, weight: .semibold))
 
-            Text("Set a global shortcut, then choose whether to hold it while speaking or press it once to start and again to stop.")
+            Text("Set a global shortcut, then choose whether to hold it while speaking or press it to start and press it again to stop.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -25,12 +25,12 @@ struct ShortcutScreen: View {
 
                     LabeledContent("Behavior") {
                         Picker("Behavior", selection: $triggerMode) {
-                            Text("Hold to Talk").tag(TriggerMode.hold.rawValue)
-                            Text("Press Once").tag(TriggerMode.toggle.rawValue)
+                            Text("Hold to Dictate").tag(TriggerMode.hold.rawValue)
+                            Text("Press to Start/Stop").tag(TriggerMode.toggle.rawValue)
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
-                        .frame(width: 205)
+                        .frame(width: 300)
                         .accessibilityIdentifier("onboarding.trigger-mode")
                     }
                 }

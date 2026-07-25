@@ -34,6 +34,7 @@ final class DailyDriverLoopUITests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.windows["Saymark Daily Driver Test"].waitForExistence(timeout: 5))
+        app.activate()
     }
 
     private func runAndAssertHUDLifecycle(outcome: String, clipboard: String) {
@@ -45,14 +46,22 @@ final class DailyDriverLoopUITests: XCTestCase {
 
         let signature = Self.signature(Self.transcript)
         let expected = "L|V3F1\(signature)|P|D1\(outcome)C\(clipboard)\(signature)|TRR"
-        XCTAssertTrue(
-            status(expected).waitForExistence(timeout: 10),
-            "Ordered history must prove live 3-sentence HUD, processing, exact-once delivery, and teardown"
+        let status = app.staticTexts["daily-driver.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 2))
+        let completed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label == %@ OR value == %@",
+                expected,
+                expected
+            ),
+            object: status
         )
-    }
-
-    private func status(_ text: String) -> XCUIElement {
-        app.staticTexts[text]
+        let result = XCTWaiter.wait(for: [completed], timeout: 10)
+        XCTAssertEqual(
+            result,
+            .completed,
+            "Ordered history label/value was \(status.label)/\(String(describing: status.value)); expected \(expected)"
+        )
     }
 
     private static func signature(_ text: String) -> String {

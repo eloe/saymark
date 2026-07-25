@@ -15,7 +15,16 @@ struct TryItScreen: View {
         case .hold:
             return "Hold \(model.shortcutLabel) and say a sentence."
         case .toggle:
-            return "Press \(model.shortcutLabel) to start, then press it again to finish."
+            return "Press \(model.shortcutLabel) to start dictation."
+        }
+    }
+
+    private var listeningInstruction: String {
+        switch TriggerMode.current {
+        case .hold:
+            return "Listening — release \(model.shortcutLabel) to stop"
+        case .toggle:
+            return "Listening — press \(model.shortcutLabel) again to stop"
         }
     }
 
@@ -100,7 +109,7 @@ struct TryItScreen: View {
 
     @ViewBuilder private var status: some View {
         if model.tryListening {
-            Label("Listening — speak naturally", systemImage: "waveform")
+            Label(listeningInstruction, systemImage: "waveform")
                 .foregroundStyle(SaymarkTheme.accent)
                 .accessibilityIdentifier("onboarding.try-listening")
         } else if !ready {

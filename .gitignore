@@ -13,6 +13,7 @@ Derived/
 .tuist/
 Tuist/.build/
 graph.*
+Artifacts/
 
 # Xcode build output
 build/

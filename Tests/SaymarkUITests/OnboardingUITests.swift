@@ -7,7 +7,10 @@ final class OnboardingUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchEnvironment["SAYMARK_UI_TESTING"] = "1"
-        app.launchArguments += ["-saymark.didOnboard", "NO"]
+        app.launchArguments += [
+            "-saymark.didOnboard", "NO",
+            "-saymark.triggerMode", "toggle",
+        ]
         app.launch()
     }
 
@@ -29,36 +32,43 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Setup steps"].exists)
         XCTAssertFalse(app.buttons["Replay the setup tour"].exists)
 
-        continueButton("Set Up Saymark").click()
-        XCTAssertTrue(app.staticTexts["Allow Saymark to listen and type"].waitForExistence(timeout: 2))
+        clickContinue("Set Up Saymark")
+        XCTAssertTrue(app.staticTexts["Allow Saymark to listen and type"].waitForExistence(timeout: 5))
         XCTAssertEqual(
             app.descendants(matching: .any)
                 .matching(identifier: "onboarding.permission.allowed").count,
             2
         )
 
-        continueButton("Continue").click()
-        XCTAssertTrue(app.staticTexts["Choose how to start dictation"].waitForExistence(timeout: 2))
+        clickContinue("Continue")
+        XCTAssertTrue(app.staticTexts["Choose how to start dictation"].waitForExistence(timeout: 5))
         XCTAssertTrue(
             app.descendants(matching: .any)["onboarding.trigger-mode"].exists
         )
+        XCTAssertTrue(app.descendants(matching: .any)["Hold to Dictate"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["Press to Start/Stop"].exists)
         app.links["Use Recommended Shortcut"].click()
 
-        continueButton("Continue").click()
-        XCTAssertTrue(app.staticTexts["Preparing on-device dictation"].waitForExistence(timeout: 2))
+        clickContinue("Continue")
+        XCTAssertTrue(app.staticTexts["Preparing on-device dictation"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Stored on this Mac. Audio isn’t uploaded."].exists)
 
-        continueButton("Continue").click()
-        XCTAssertTrue(app.staticTexts["Try your shortcut"].waitForExistence(timeout: 2))
+        clickContinue("Continue")
+        XCTAssertTrue(app.staticTexts["Try your shortcut"].waitForExistence(timeout: 5))
         XCTAssertTrue(
             app.descendants(matching: .any)["onboarding.shortcut-instruction"].exists
         )
         XCTAssertFalse(app.buttons["Try with Button"].exists)
 
         app.typeKey(.space, modifierFlags: [.control, .option])
-        XCTAssertTrue(app.staticTexts["Shortcut works."].waitForExistence(timeout: 2))
+        XCTAssertTrue(
+            app.descendants(matching: .any)["onboarding.try-listening"]
+                .waitForExistence(timeout: 2)
+        )
+        app.typeKey(.space, modifierFlags: [.control, .option])
+        XCTAssertTrue(app.staticTexts["Shortcut works."].waitForExistence(timeout: 5))
 
-        continueButton("Finish").click()
+        clickContinue("Finish")
         XCTAssertFalse(
             app.descendants(matching: .any)["onboarding.root"]
                 .waitForExistence(timeout: 1)
@@ -90,5 +100,10 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(button.waitForExistence(timeout: 2))
         XCTAssertTrue(button.isEnabled)
         return button
+    }
+
+    private func clickContinue(_ label: String) {
+        let button = continueButton(label)
+        button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
     }
 }

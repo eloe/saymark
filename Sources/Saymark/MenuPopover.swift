@@ -94,8 +94,8 @@ struct MenuPopover: View {
                                      (InsertMode.hudOnly.rawValue, "HUD only")])
             label("Hotkey").padding(.top, 11)
             SaymarkSegment("Hotkey", selection: $triggerRaw,
-                           options: [(TriggerMode.hold.rawValue, "Hold"),
-                                     (TriggerMode.toggle.rawValue, "Toggle")])
+                           options: [(TriggerMode.hold.rawValue, "Hold to Dictate"),
+                                     (TriggerMode.toggle.rawValue, "Start / Stop")])
             if dictation.needsAccessibilityToType, insertRaw == InsertMode.inField.rawValue {
                 Button { dictation.requestAccessibility() } label: {
                     Text("Grant Accessibility to type…")

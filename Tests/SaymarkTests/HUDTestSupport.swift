@@ -48,10 +48,28 @@ final class ManualHUDAnimator: HUDAnimating {
 }
 
 @MainActor
+final class ManualListeningHalo: ListeningHaloControlling {
+    private(set) var beginCount = 0
+    private(set) var stopCount = 0
+    private(set) var completeCount = 0
+    private(set) var dismissCount = 0
+
+    func begin(on screen: NSScreen?) { beginCount += 1 }
+    func stopListening() { stopCount += 1 }
+    func complete() { completeCount += 1 }
+    func dismiss() { dismissCount += 1 }
+}
+
+@MainActor
 func makeHUDController() -> (HUDController, ManualHUDScheduler, ManualHUDAnimator) {
     let scheduler = ManualHUDScheduler()
     let animator = ManualHUDAnimator()
-    return (HUDController(scheduler: scheduler, animator: animator), scheduler, animator)
+    let halo = ManualListeningHalo()
+    return (
+        HUDController(scheduler: scheduler, animator: animator, halo: halo),
+        scheduler,
+        animator
+    )
 }
 
 @MainActor

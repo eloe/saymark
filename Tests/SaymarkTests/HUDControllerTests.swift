@@ -35,6 +35,44 @@ final class HUDControllerTests: XCTestCase {
         XCTAssertFalse(controller.model.showStop)
     }
 
+    func testToggleModeHaloFollowsListeningAndSuccessfulCompletion() {
+        let scheduler = ManualHUDScheduler()
+        let animator = ManualHUDAnimator()
+        let halo = ManualListeningHalo()
+        let controller = HUDController(scheduler: scheduler, animator: animator, halo: halo)
+        defer { tearDownHUD(controller) }
+
+        controller.begin(presentation: false, lang: "Auto", interactive: true)
+
+        XCTAssertEqual(halo.beginCount, 1)
+        XCTAssertTrue(controller.isListeningHaloVisible)
+
+        controller.processing()
+
+        XCTAssertEqual(halo.stopCount, 1)
+        XCTAssertFalse(controller.isListeningHaloVisible)
+
+        controller.finish("Finished words")
+
+        XCTAssertEqual(halo.completeCount, 1)
+        XCTAssertEqual(halo.dismissCount, 0)
+    }
+
+    func testHoldModeNeverShowsHaloAndErrorDismissesIt() {
+        let scheduler = ManualHUDScheduler()
+        let animator = ManualHUDAnimator()
+        let halo = ManualListeningHalo()
+        let controller = HUDController(scheduler: scheduler, animator: animator, halo: halo)
+        defer { tearDownHUD(controller) }
+
+        controller.begin(presentation: false, lang: "Auto", interactive: false)
+        controller.error("denied")
+
+        XCTAssertEqual(halo.beginCount, 0)
+        XCTAssertFalse(controller.isListeningHaloVisible)
+        XCTAssertEqual(halo.dismissCount, 2)
+    }
+
     func testTranscriptWindowIsBoundedByPresentationMode() {
         let (controller, _, _) = makeHUDController()
         defer { tearDownHUD(controller) }

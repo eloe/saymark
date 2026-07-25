@@ -237,6 +237,8 @@ final class OnboardingModel {
     /// rapid re-press from starting a new utterance before teardown finishes —
     /// otherwise it would overlap start()/stop() on the shared session.
     @ObservationIgnored private var tryBusy = false
+    @ObservationIgnored private let tryHalo: any ListeningHaloControlling =
+        ActiveDisplayHaloController()
 
     /// Press: borrow the warmed session, redirect its updates into our field, and
     /// start an utterance. No-op if the pipeline isn't ready, already live,
@@ -247,6 +249,7 @@ final class OnboardingModel {
             tryConfirmed = ""
             tryPartial = ""
             tryListening = true
+            beginTryHaloIfNeeded()
             return
         }
         guard session.isReady(OnboardingFlow.modelPlan.mode), !tryListening, !tryBusy else { return }
@@ -261,8 +264,10 @@ final class OnboardingModel {
         do {
             try session.start(mode: OnboardingFlow.modelPlan.mode)
             tryListening = true
+            beginTryHaloIfNeeded()
         } catch {
             tryListening = false
+            tryHalo.dismiss()
             tryUpdateSubscription?.cancel()
             tryUpdateSubscription = nil
         }
@@ -274,10 +279,19 @@ final class OnboardingModel {
     func tryEnd() {
         guard tryListening else { return }
         tryListening = false
+        let completesWithHalo = TriggerMode.current == .toggle
+        if completesWithHalo {
+            tryHalo.stopListening()
+        } else {
+            tryHalo.dismiss()
+        }
         if RuntimeEnvironment.isUITesting {
             tryConfirmed = "Write with your voice anywhere."
             tryPartial = ""
             flow.didTry = true
+            if completesWithHalo {
+                tryHalo.complete()
+            }
             return
         }
         tryBusy = true
@@ -298,6 +312,11 @@ final class OnboardingModel {
                         "word_count": final.split(separator: " ").count,
                     ])
                 }
+                if completesWithHalo, !final.isEmpty {
+                    self.tryHalo.complete()
+                } else {
+                    self.tryHalo.dismiss()
+                }
                 self.tryBusy = false
             }
         }
@@ -308,11 +327,23 @@ final class OnboardingModel {
     func tryReset() {
         tryConfirmed = ""
         tryPartial = ""
+        tryHalo.dismiss()
     }
 
     /// VoiceOver can't hold a key — double-tap toggles the utterance instead.
     func tryToggle() {
         if tryListening { tryEnd() } else { tryStart() }
+    }
+
+    private func beginTryHaloIfNeeded() {
+        guard TriggerMode.current == .toggle else {
+            tryHalo.dismiss()
+            return
+        }
+        let activeDisplay = NSScreen.screens.first {
+            NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
+        } ?? NSScreen.main
+        tryHalo.begin(on: activeDisplay)
     }
 
     /// Should onboarding be shown at launch?

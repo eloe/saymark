@@ -278,17 +278,35 @@ final class HUDController {
     private var hideWork: HUDCancellation?
     private let scheduler: any HUDHideScheduling
     private let animator: any HUDAnimating
+    private let halo: any ListeningHaloControlling
+    private(set) var isListeningHaloVisible = false
+    private var completesWithHalo = false
     private let normalSize = NSSize(width: 940, height: 260)
     private let presentationSize = NSSize(width: 940, height: 380)
     var hasAttachedViewTree: Bool { panel?.contentView != nil }
 
     convenience init() {
-        self.init(scheduler: DispatchHUDHideScheduler(), animator: AppKitHUDAnimator())
+        self.init(
+            scheduler: DispatchHUDHideScheduler(),
+            animator: AppKitHUDAnimator(),
+            halo: ActiveDisplayHaloController()
+        )
     }
 
-    init(scheduler: any HUDHideScheduling, animator: any HUDAnimating) {
+    convenience init(scheduler: any HUDHideScheduling, animator: any HUDAnimating) {
+        self.init(
+            scheduler: scheduler,
+            animator: animator,
+            halo: ActiveDisplayHaloController()
+        )
+    }
+
+    init(scheduler: any HUDHideScheduling,
+         animator: any HUDAnimating,
+         halo: any ListeningHaloControlling) {
         self.scheduler = scheduler
         self.animator = animator
+        self.halo = halo
     }
 
     /// Reveal the HUD for a new utterance. `interactive` (toggle mode) makes the
@@ -309,6 +327,16 @@ final class HUDController {
         panel.ignoresMouseEvents = !interactive
         position(panel)
         animator.show(panel)
+        completesWithHalo = interactive
+        isListeningHaloVisible = interactive
+        if interactive {
+            let activeDisplay = NSScreen.screens.first {
+                NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
+            } ?? NSScreen.main
+            halo.begin(on: activeDisplay)
+        } else {
+            halo.dismiss()
+        }
     }
 
     /// Live two-tier update.
@@ -329,6 +357,10 @@ final class HUDController {
         model.partial = ""
         model.recording = false
         model.showStop = false
+        if isListeningHaloVisible {
+            halo.stopListening()
+            isListeningHaloVisible = false
+        }
     }
 
     /// Surface a mic/permission error in the HUD.
@@ -347,6 +379,9 @@ final class HUDController {
         if !detail.isEmpty { model.errorText = detail }
         model.recording = false
         model.showStop = false
+        halo.dismiss()
+        isListeningHaloVisible = false
+        completesWithHalo = false
         position(panel)
         animator.show(panel)
         scheduleHide(after: delay)
@@ -360,6 +395,13 @@ final class HUDController {
         if !finalText.isEmpty {
             model.confirmed = finalText; model.partial = ""; model.phase = .transcribing
         }
+        if completesWithHalo, !finalText.isEmpty {
+            halo.complete()
+        } else {
+            halo.dismiss()
+        }
+        isListeningHaloVisible = false
+        completesWithHalo = false
         scheduleHide(after: model.presentation ? 4.0 : 1.6)
     }
 

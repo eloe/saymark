@@ -118,6 +118,8 @@ private struct DailyDriverUITestView: View {
             Text(model.status)
                 .font(.system(.body, design: .monospaced))
                 .textSelection(.enabled)
+                .accessibilityIdentifier("daily-driver.status")
+                .accessibilityLabel(model.status)
 
             Spacer()
             Button(model.isRunning ? "Running…" : "Run deterministic dictation", action: run)
