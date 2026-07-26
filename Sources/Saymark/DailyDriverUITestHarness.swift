@@ -363,14 +363,14 @@ private struct DailyDriverUITestView: View {
                     }
                 }
             } else {
-                Text(model.targetText)
+                Text(model.targetText.isEmpty ? "<empty>" : model.targetText)
                     .lineLimit(2)
                     .accessibilityIdentifier("daily-driver.target-text")
             }
 
             Text("deliveries=\(model.deliveryCount)")
                 .accessibilityIdentifier("daily-driver.delivery-count")
-            Text(model.clipboardValue)
+            Text(model.clipboardValue.isEmpty ? "<empty>" : model.clipboardValue)
                 .lineLimit(1)
                 .accessibilityIdentifier("daily-driver.clipboard")
             Text(model.status)

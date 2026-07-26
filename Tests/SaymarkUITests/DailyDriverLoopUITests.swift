@@ -1,4 +1,3 @@
-import CoreGraphics
 import XCTest
 
 final class DailyDriverLoopUITests: XCTestCase {
@@ -37,7 +36,7 @@ final class DailyDriverLoopUITests: XCTestCase {
             "READY|KD|L|V3F1\(signature)|KU|P|D0AC1\(signature)|TRR"
         )
         assertValue("daily-driver.delivery-count", equals: "deliveries=0")
-        assertValue("daily-driver.target-text", equals: "")
+        assertValue("daily-driver.target-text", equals: "<empty>")
         assertValue("daily-driver.clipboard", equals: Self.transcript)
     }
 
@@ -50,7 +49,7 @@ final class DailyDriverLoopUITests: XCTestCase {
             "READY|KD|L|V3F1\(signature)|KU|P|D0SC1\(signature)|TRR"
         )
         assertValue("daily-driver.delivery-count", equals: "deliveries=0")
-        assertValue("daily-driver.target-text", equals: "")
+        assertValue("daily-driver.target-text", equals: "<empty>")
         assertValue("daily-driver.clipboard", equals: Self.transcript + " ")
     }
 
@@ -60,8 +59,8 @@ final class DailyDriverLoopUITests: XCTestCase {
 
         assertCompleted("READY|KD|L|KU|P|D0N|TRR")
         assertValue("daily-driver.delivery-count", equals: "deliveries=0")
-        assertValue("daily-driver.target-text", equals: "")
-        assertValue("daily-driver.clipboard", equals: "")
+        assertValue("daily-driver.target-text", equals: "<empty>")
+        assertValue("daily-driver.clipboard", equals: "<empty>")
     }
 
     func testOriginalClipboardIsRestoredAfterAtomicPaste() {
@@ -122,22 +121,13 @@ final class DailyDriverLoopUITests: XCTestCase {
         XCTAssertTrue(element("daily-driver.shortcut-instruction").exists)
     }
 
-    /// This is deliberately not a harness button. XCUITest emits the configured
-    /// keyboard chord and the app's real KeyboardShortcuts/Carbon handlers drive
-    /// both the key-down and key-up lifecycle.
+    /// This is deliberately not a harness button. XCTest delivers the configured
+    /// chord through its trusted keyboard automation channel; the app's real
+    /// KeyboardShortcuts/Carbon callbacks still drive key down and key up. Raw
+    /// CGEvents from a test-runner process are intentionally rejected by macOS
+    /// unless that runner has separate Accessibility trust.
     private func triggerShortcut() {
-        let source = CGEventSource(stateID: .privateState)
-        let space = CGKeyCode(49)
-        let flags: CGEventFlags = [.maskControl, .maskAlternate]
-        let down = CGEvent(keyboardEventSource: source, virtualKey: space, keyDown: true)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: space, keyDown: false)
-        XCTAssertNotNil(down)
-        XCTAssertNotNil(up)
-        down?.flags = flags
-        up?.flags = flags
-        down?.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.05)
-        up?.post(tap: .cghidEventTap)
+        app.typeKey(.space, modifierFlags: [.control, .option])
         let status = element("daily-driver.status")
         let receivedShortcut = XCTNSPredicateExpectation(
             predicate: NSPredicate(
