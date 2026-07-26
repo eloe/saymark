@@ -45,7 +45,9 @@ Do not introduce orange, yellow, brown, rainbow gradients, or a second decorativ
 
 - Use native vibrancy and material APIs in the app rather than painted fake glass.
 - Prefer graphite, smoked glass, satin aluminum, and subtle inner highlights.
-- Keep depth shallow. Avoid oversized shadows, glowing borders, and glossy toy-like controls.
+- Keep depth shallow. Avoid oversized shadows, decorative glowing borders, and
+  glossy toy-like controls. The restrained Start/Stop perimeter halo is a
+  functional listening state, not surface decoration.
 - Let macOS appearance, contrast, and accessibility settings govern final rendering.
 
 ### Typography
@@ -59,7 +61,12 @@ Do not introduce orange, yellow, brown, rainbow gradients, or a second decorativ
 
 Motion explains state rather than adding personality.
 
-- Listening: immediate appearance, gentle amplitude response, no pulsing halo.
+- Hold and Start/Stop listening: immediate HUD appearance and gentle amplitude
+  response.
+- Start/Stop listening: one short blue perimeter bloom on the active display,
+  then a faint steady edge. Never pulse continuously.
+- Start/Stop success: a brief green perimeter fade, never a persistent
+  decorative glow.
 - Processing: continuous restrained movement, never an indeterminate flashing panel.
 - Inserting: caret-directed completion movement, then a short readable dwell.
 - Reduced Motion: crossfades and value changes only.
@@ -112,4 +119,3 @@ Avoid:
 - App icon: graphite tile with the wave-to-caret mark.
 - Settings: standard macOS sidebar and form controls; brand color only for selection and status.
 - Website: generous neutral space, native-window product imagery, restrained blue trace connecting speech to text.
-

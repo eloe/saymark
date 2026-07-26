@@ -4,8 +4,8 @@
   "document": {
     "title": "Saymark architecture map",
     "purpose": "Machine-readable orientation for agents and contributors changing Saymark.",
-    "generated_on": "2026-07-24",
-    "based_on_revision": "working tree based on 66478f4",
+    "generated_on": "2026-07-26",
+    "based_on_revision": "working tree based on e179a3a",
     "canonical_source": "docs/architecture.json",
     "human_view": "docs/architecture.html",
     "regenerate": "node Scripts/generate-architecture-map.mjs"
@@ -70,6 +70,7 @@
           "Global hotkey semantics",
           "Onboarding UI and macOS permission UX",
           "Floating HUD presentation",
+          "Active-display listening halo",
           "Mapping final transcripts to insertion or HUD-only output"
         ],
         "must_not_own": [
@@ -200,18 +201,22 @@
       "name": "Onboarding",
       "layer": "presentation",
       "path": "Sources/Saymark/Onboarding",
-      "kind": "Observable coordinator plus six SwiftUI screens",
+      "kind": "Observable coordinator plus native SwiftUI setup flow",
       "responsibilities": [
-        "Guide welcome, permissions, shortcut, download, try-it, and completion",
+        "Guide five visible positions: welcome, permissions, shortcut, prepare, and try-it",
         "Require microphone permission and allow Accessibility to be skipped",
+        "Invoke the macOS Accessibility setup prompt and expose a draggable application icon",
+        "Configure Hold to Dictate or Press to Start/Stop",
         "Download and warm the Efficient model plan",
-        "Reuse the production DictationSession for try-it",
+        "Reuse the production DictationSession and configured shortcut for try-it",
+        "Require a non-empty shortcut-driven result before Finish",
         "Persist completion in UserDefaults"
       ],
       "depends_on": [
         "onboarding-flow",
         "model-downloader",
         "dictation-session",
+        "listening-halo",
         "permissions",
         "preferences"
       ]
@@ -236,6 +241,7 @@
         "Present the HUD before audio startup",
         "Start and stop DictationSession",
         "Bridge live transcript updates to the HUD",
+        "Coordinate Start/Stop listening-halo state",
         "Finalize off the main actor",
         "Paste or retain the final transcript according to InsertMode"
       ],
@@ -266,6 +272,29 @@
         "Support compact and six-line presentation layouts",
         "Support a clickable stop control in toggle mode",
         "Cancel stale hides and release hosted content after hiding"
+      ],
+      "depends_on": [
+        "listening-halo"
+      ]
+    },
+    {
+      "id": "listening-halo",
+      "name": "ActiveDisplayHaloController",
+      "layer": "presentation",
+      "path": "Sources/Saymark/ListeningHalo.swift",
+      "kind": "Click-through non-activating NSPanel",
+      "states": [
+        "listening",
+        "complete",
+        "hidden"
+      ],
+      "responsibilities": [
+        "Show only for Press to Start/Stop on the active display",
+        "Bloom blue once, then settle into a faint static edge",
+        "Hide while final transcription is processing",
+        "Fade green after a successful non-empty result",
+        "Skip the bloom when Reduce Motion is enabled",
+        "Cancel stale animation work across dictation sessions"
       ]
     },
     {
@@ -683,12 +712,12 @@
       "name": "Onboarding",
       "trigger": "First run or Setup tour",
       "steps": [
-        "Welcome explains local-first behavior and current diagnostics status",
-        "Permissions requires microphone and allows Accessibility to be skipped",
-        "Shortcut records the global trigger",
+        "Welcome explains private on-device dictation",
+        "Permissions requires microphone, allows Accessibility to be skipped, and offers a draggable app icon",
+        "Shortcut records the global trigger and chooses Hold to Dictate or Press to Start/Stop",
         "Download fetches the Efficient plan and warms Parakeet plus VAD",
-        "Try It borrows the production DictationSession",
-        "Done persists saymark.didOnboard"
+        "Try It borrows the production DictationSession and responds only to the configured shortcut behavior",
+        "A non-empty result unlocks Finish and persists saymark.didOnboard"
       ],
       "gates": {
         "permissions": "Microphone granted",
@@ -699,18 +728,20 @@
     {
       "id": "dictation",
       "name": "Hotkey-to-text",
-      "trigger": "Global hotkey down or toggle",
+      "trigger": "Hold shortcut down/up or Start/Stop shortcut press",
       "steps": [
         "Reject the gesture if disabled, already active, or models are not ready",
         "Present the HUD synchronously on the main actor",
+        "In Start/Stop mode, show the click-through blue halo on the active display",
         "Start a fresh DictationSession and MicCapture",
         "Capture and convert audio to 16 kHz mono",
         "Emit 160 ms chunks on the capture queue",
         "Serialize VAD and ASR on saymark.stt",
         "Publish live updates to the HUD",
-        "On release, display Processing and stop capture",
+        "On hold release or the second Start/Stop press, hide the halo, display Processing, and stop capture",
         "Finalize off the main actor",
         "Use Parakeet final text in Efficient and Live Preview",
+        "After a successful Start/Stop result, briefly fade the active-display edge green",
         "Paste once into the focused app or leave text in the HUD",
         "Tear down per-utterance resources and schedule HUD dismissal"
       ],
@@ -960,7 +991,8 @@
         "HUD controller state",
         "Panel lifecycle",
         "Cancellation and stale-hide protection",
-        "Long transcript layout behavior"
+        "Long transcript layout behavior",
+        "Start/Stop halo visibility, processing hide, completion feedback, and hold-mode exclusion"
       ]
     },
     {
@@ -969,6 +1001,7 @@
       "covers": [
         "First-run onboarding without external services",
         "Onboarding gates",
+        "Two-press Start/Stop shortcut practice",
         "Local-build privacy presentation",
         "Welcome-screen CPU and memory metrics",
         "Real global-shortcut dictation lifecycle",
@@ -1002,10 +1035,11 @@
       ]
     },
     {
-      "change": "Hotkey, dictation state, final insertion, or HUD behavior",
+      "change": "Hotkey, dictation state, final insertion, HUD, or listening-halo behavior",
       "start_at": [
         "Sources/Saymark/DictationController.swift",
         "Sources/Saymark/HUDOverlay.swift",
+        "Sources/Saymark/ListeningHalo.swift",
         "SaymarkKit/Sources/SaymarkKit/TextInjector.swift"
       ],
       "tests": [
@@ -1118,9 +1152,14 @@
       "why": "Onboarding must own permission, download, and try-it sequencing without duplicate sessions."
     },
     {
-      "id": "atomic-paste",
-      "rule": "Insert the final transcript once; do not stream synthetic keystrokes into the target field.",
-      "why": "Atomic paste is reliable across Terminal, Electron, editors, and browsers."
+      "id": "toggle-halo",
+      "rule": "Show the display-edge halo only while Start/Stop mode is actively listening; hide it during processing and honor Reduce Motion.",
+      "why": "The halo is a recording-state affordance, not ambient decoration or a repeating animation."
+    },
+    {
+      "id": "safe-insertion",
+      "rule": "Current builds insert the final transcript once. Planned live insertion may revise only Saymark-owned provisional text and must retain atomic paste as the compatibility fallback.",
+      "why": "Atomic paste is reliable across Terminal, Electron, editors, and browsers; live revision must never overwrite user-owned text."
     }
   ],
   "known_work": [
@@ -1141,6 +1180,12 @@
       "status": "continuous",
       "source": "docs/performance-acceptance.md",
       "summary": "Use benchmark evidence for changes to model composition, chunking, live preview, or memory policy."
+    },
+    {
+      "id": "live-field-insertion",
+      "status": "planned after daily-driver promotion",
+      "source": "docs/product-roadmap.md",
+      "summary": "Write stable words at the cursor while speaking with committed-prefix and revisable-tail ownership; retain atomic final insertion as the compatibility fallback."
     }
   ],
   "file_index": [

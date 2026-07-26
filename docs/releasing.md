@@ -32,7 +32,10 @@ workflow files, local `.env` files, or build configuration files.
 5. The workflow must archive with Developer ID, enforce Hardened Runtime,
    retain library validation, notarize, staple, and pass Gatekeeper assessment.
 6. Download the published ZIP and checksum from a separate Mac account, verify
-   the checksum, and perform a clean onboarding/dictation/insertion smoke test.
+   the checksum, and perform a clean onboarding/dictation/insertion smoke test
+   in both Hold to Dictate and Press to Start/Stop modes. Confirm that
+   Start/Stop shows the active-display halo and that Reduce Motion suppresses
+   its bloom.
 7. Record any release-specific performance result or known limitation in the
    GitHub release notes.
 

@@ -27,9 +27,16 @@ external side effects that are unsuitable for a repeatable test:
 - menu-app bootstrap and update checks after onboarding.
 
 The real AppKit window, SwiftUI views, onboarding state machine, navigation,
-accessibility tree, copy, and lifecycle remain in the test. Model correctness and
-resource behavior are covered separately by the 20-run SaymarkKit benchmark gates;
-an installed local Release build is covered by `Scripts/check-app-resources.sh`.
+accessibility tree, copy, and lifecycle remain in the test. The first-run test
+runs with **Press to Start/Stop**, verifies that the first shortcut press enters
+listening, and requires a second press before success and Finish. Hosted app
+tests separately verify that the blue halo is exclusive to Start/Stop mode,
+leaves during processing, resolves green on success, and is absent for Hold
+mode and errors.
+
+Model correctness and resource behavior are covered separately by the 20-run
+SaymarkKit benchmark gates; an installed local Release build is covered by
+`Scripts/check-app-resources.sh`.
 
 Use stable accessibility identifiers for custom controls. A visible label may be
 used when asserting product copy, because changing that copy should intentionally

@@ -42,10 +42,13 @@ implementation detail governed by benchmarks.
 The current source already contains:
 
 - global hold and toggle shortcuts;
+- a click-through active-display halo for Start/Stop listening, with
+  reduced-motion behavior and brief success feedback;
 - local Apple-silicon transcription with Efficient and Live Preview plans;
 - immediate HUD presentation, provisional text, final text, and error states;
 - automatic insertion with clipboard restoration and secure-input fallback;
-- guided microphone, Accessibility, shortcut, download, and try-it onboarding;
+- guided microphone and draggable Accessibility setup, shortcut behavior,
+  download, and hotkey-only try-it onboarding;
 - privacy-safe local diagnostics for latency, CPU, memory, MLX allocation, and
   transcript counts;
 - unit, app/HUD, XCUITest, and opt-in real-model benchmark targets.
@@ -103,7 +106,7 @@ Acceptance gates:
 
 | Measure | Gate |
 | --- | ---: |
-| Shortcut down to visible HUD, p95 / max | <= 100 ms / <= 200 ms |
+| Shortcut down to first visible listening feedback, p95 / max | <= 100 ms / <= 200 ms |
 | Microphone capture start, p95 | <= 250 ms |
 | Stop-to-final median / p95 | <= 2.0 s / <= 3.0 s |
 | Successful single insertion | 100% across 10 repetitions per compatibility target |
@@ -117,6 +120,21 @@ The existing real-time-factor, streaming-step, WER, and 6 GB peak-allocation
 ceilings continue to apply. This is the recommended first implementation slice:
 it converts the work already in the repository into a repeatable daily-driver
 contract before new feature paths multiply the failure surface.
+
+### Planned follow-up — Live field insertion
+
+Once the atomic daily-driver loop is promoted, in-field dictation should write
+stable words at the cursor while the user speaks. This is a planned product
+direction, not current shipped behavior: current builds show provisional text
+in the HUD and paste the final transcript once.
+
+Live insertion must use a committed-prefix / revisable-tail ownership model.
+Saymark may replace only text it inserted provisionally; a focus, selection,
+cursor, or user-edit change must stop revision without overwriting user-owned
+text. Atomic final insertion remains the compatibility fallback for apps or
+states where safe revision cannot be proven. The latency and ownership gates in
+[`performance-acceptance.md`](performance-acceptance.md#human-perceived-live-insertion-gates)
+are the release contract for this follow-up.
 
 ## Slice 2 — Vocabulary and correction
 

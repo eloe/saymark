@@ -31,7 +31,7 @@ final class OnboardingModel {
     /// setup window buried behind other apps — so we re-front it after the mic prompt.
     var onReactivate: (() -> Void)?
 
-    /// Guards `startDownload` so the overlap-from-Welcome trigger and a manual
+    /// Guards `startDownload` so repeated Download-step appearances or a manual
     /// Retry never spawn two concurrent downloads.
     @ObservationIgnored private var downloadStarted = false
 

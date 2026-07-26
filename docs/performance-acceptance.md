@@ -30,7 +30,10 @@ Application lifecycle gates:
 
 - Normal idle CPU after warm-up: median <= 0.5%, p95 <= 2.0% over 30 seconds.
 - Visible onboarding CPU: median <= 2.0% over 30 seconds.
-- Hidden or closed onboarding/HUD: no repeating animation or display updates.
+- Hidden or closed onboarding/HUD/halo: no repeating animation or display
+  updates.
+- Start/Stop listening halo: one short bloom may settle into a static edge;
+  never continuously pulse.
 - Twenty back-to-back dictations: settled memory growth <= 0.25 GB.
 - No retained HUD windows, timers, update subscriptions, or capture sessions after stop.
 
@@ -42,7 +45,7 @@ real-time factor:
 
 | Human-visible event | p50 | p95 | Hard limit |
 | --- | ---: | ---: | ---: |
-| Hotkey down to visible listening feedback | <= 50 ms | <= 100 ms | 150 ms |
+| Hotkey down to first visible listening feedback | <= 50 ms | <= 100 ms | 200 ms |
 | End of a decodable word to that word appearing | <= 250 ms | <= 400 ms | 500 ms |
 | New transcript hypothesis to completed field mutation | <= 50 ms | <= 100 ms | 150 ms |
 | Stop gesture to final settled text | <= 300 ms | <= 500 ms | 750 ms |
@@ -70,7 +73,9 @@ the aggregate real-time factor passes.
 
 Measure each boundary separately:
 
-- `hotkey_down` to the first committed listening-state frame;
+- `hotkey_down` to the first committed listening-state frame. The HUD is the
+  required signal in both modes; the perimeter halo is additional Start/Stop
+  feedback and does not replace the HUD gate;
 - aligned end time of a reference word in a consented fixture to the first frame
   containing that word;
 - streaming hypothesis publication to completion of the corresponding target
