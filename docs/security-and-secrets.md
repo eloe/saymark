@@ -77,6 +77,14 @@ requirements and produces the committed, GitHub-readable
 `Tuist/Package.resolved`. `make dependency-check` fails if the Tuist build
 manifest, security manifest, and lockfile drift.
 
+GitHub does not reliably add nested Swift lockfiles to the repository SBOM by
+static analysis alone. The `Dependency graph` workflow converts the committed
+Tuist lockfile into GitHub's documented dependency-snapshot format on every
+push to `main` and submits it with the workflow token's narrowly scoped
+`contents: write` permission. No repository secret is required. The submitted
+Swift package URLs make KeyboardShortcuts and PostHog visible to dependency
+review and Dependabot alerts.
+
 To update an app-only package:
 
 1. Change its exact version in both `Project.swift` and `Tuist/Package.swift`.
