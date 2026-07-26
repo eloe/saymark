@@ -9,7 +9,7 @@ import PostHog
 /// shared pipeline to an `@Observable` menu-bar state, wires the Carbon hotkey
 /// to start/stop, and injects the final transcript into the focused field.
 ///
-/// All the heavy lifting (mic, STT, 480 ms feed, warm-up) lives in SaymarkKit and
+/// All the heavy lifting (mic, STT, 160 ms feed, warm-up) lives in SaymarkKit and
 /// is shared verbatim with `saymark-cli`.
 @MainActor
 @Observable
@@ -34,6 +34,9 @@ final class DictationController {
     var dictationSession: DictationSession { session }
     @ObservationIgnored private var promptedAccessibility = false
     @ObservationIgnored private var isPreparing = false
+    #if DEBUG
+    @ObservationIgnored private var dailyDriverUITestConfiguration: DailyDriverUITestConfiguration?
+    #endif
 
     var shortcutLabel: String {
         KeyboardShortcuts.getShortcut(for: .dictate)?.description ?? "⌃⌥Space"
@@ -45,7 +48,10 @@ final class DictationController {
     var statusLine: String {
         switch state {
         case .loadingModels: return "Loading models…"
-        case .idle: return "Idle — hold \(shortcutLabel)"
+        case .idle:
+            return TriggerMode.current == .hold
+                ? "Idle — hold \(shortcutLabel)"
+                : "Idle — press \(shortcutLabel) to start"
         case .recording: return "Listening…"
         case .transcribing: return "Transcribing…"
         case let .transcribed(t): return t.isEmpty ? "…(no speech detected)" : t
@@ -80,8 +86,7 @@ final class DictationController {
         updateSubscription = session.observeUpdates { [weak self] confirmed, partial in
             self?.echo(confirmed, partial)
         }
-        KeyboardShortcuts.onKeyDown(for: .dictate) { [weak self] in self?.hotkeyDown() }
-        KeyboardShortcuts.onKeyUp(for: .dictate) { [weak self] in self?.hotkeyUp() }
+        installHotkeyHandlers()
         session.requestMicrophonePermission()            // surface the mic prompt early
         if InsertMode.current == .inField, !accessibilityTrusted {
             promptedAccessibility = true
@@ -91,6 +96,11 @@ final class DictationController {
     }
 
     func requestAccessibility() { Accessibility.prompt() }
+
+    private func installHotkeyHandlers() {
+        KeyboardShortcuts.onKeyDown(for: .dictate) { [weak self] in self?.hotkeyDown() }
+        KeyboardShortcuts.onKeyUp(for: .dictate) { [weak self] in self?.hotkeyUp() }
+    }
 
     /// Re-load when the Model setting changes (popover) — pulls in the newly
     /// selected mode's models so the next dictation starts instantly.
@@ -122,7 +132,6 @@ final class DictationController {
                 SaymarkDiagnostics.log(.error, "models.ui_failed", fields: [
                     "mode": mode.rawValue,
                     "error_type": String(reflecting: type(of: error)),
-                    "error_description": error.localizedDescription,
                 ])
                 state = .error("model load: \(error.localizedDescription)")
             }
@@ -132,6 +141,12 @@ final class DictationController {
     /// Hotkey press: hold-mode starts; toggle-mode flips start/stop. Gated by the
     /// master enable.
     private func hotkeyDown() {
+        #if DEBUG
+        if RuntimeEnvironment.isDailyDriverUITesting {
+            dailyDriverUITestHotkeyDown()
+            return
+        }
+        #endif
         guard DictationEnabled.value else {
             SaymarkDiagnostics.log(.trace, "hotkey.ignored", fields: ["reason": "dictation_disabled"])
             return
@@ -144,6 +159,12 @@ final class DictationController {
 
     /// Hotkey release only ends dictation in hold mode (toggle ignores release).
     private func hotkeyUp() {
+        #if DEBUG
+        if RuntimeEnvironment.isDailyDriverUITesting {
+            dailyDriverUITestHotkeyUp()
+            return
+        }
+        #endif
         if TriggerMode.current == .hold { endRecording() }
     }
 
@@ -166,6 +187,7 @@ final class DictationController {
         // Give visual feedback before AVAudioEngine setup. Capture startup takes
         // around 100 ms on this Mac; the HUD should never wait behind it.
         hud.begin(presentation: insert == .hudOnly, lang: "Auto",
+                  shortcutLabel: shortcutLabel,
                   interactive: toggle, onStop: { [weak self] in self?.endRecording() })
         SaymarkDiagnostics.log(.debug, "dictation.hud_presented", fields: [
             "latency_ms": (ProcessInfo.processInfo.systemUptime - gestureStarted) * 1_000,
@@ -190,11 +212,10 @@ final class DictationController {
             SaymarkDiagnostics.log(.error, "dictation.ui_start_failed", sessionID: session.activeSessionID, fields: [
                 "model_mode": modelMode.rawValue,
                 "error_type": String(reflecting: type(of: error)),
-                "error_description": error.localizedDescription,
             ])
             state = .error(error.localizedDescription)
             PostHogSDK.shared.capture("dictation_failed", properties: [
-                "error": error.localizedDescription,
+                "error_type": String(reflecting: type(of: error)),
                 "model_mode": modelMode.rawValue,
             ])
             hud.error("Open Privacy in Settings →")
@@ -217,6 +238,7 @@ final class DictationController {
         let modelModeAtStop = ModelSetting.current.rawValue
         let insertModeAtStop = InsertMode.current.rawValue
         let diagnosticSessionID = session.activeSessionID
+        let stopStarted = ProcessInfo.processInfo.systemUptime
         SaymarkDiagnostics.log(.info, "dictation.ui_stop_requested", sessionID: diagnosticSessionID)
         // Drain off the main thread so a slow finish never freezes the UI, then
         // paste the final on the main thread (pasteboard + ⌘V).
@@ -240,6 +262,7 @@ final class DictationController {
                     "is_empty": final.isEmpty,
                     "model_mode": modelModeAtStop,
                     "insert_mode": insertModeAtStop,
+                    "stop_to_complete_ms": (ProcessInfo.processInfo.systemUptime - stopStarted) * 1_000,
                 ])
                 PostHogSDK.shared.capture("dictation_completed", properties: [
                     "word_count": final.split(separator: " ").count,
@@ -257,7 +280,31 @@ final class DictationController {
     /// ⌘V needs Accessibility — if untrusted, prompt once and leave the text on the
     /// clipboard so it's not lost. Secure input (password fields) blocks paste; we
     /// say so in the HUD instead of dropping silently.
-    private func insertFinal(_ text: String, sessionID: String?) {
+    private func insertFinal(
+        _ text: String,
+        sessionID: String?,
+        uiTestCompletion: ((String) -> Void)? = nil
+    ) {
+        #if DEBUG
+        if RuntimeEnvironment.isDailyDriverUITesting {
+            switch RuntimeEnvironment.dailyDriverOutcome {
+            case "fallback":
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                hud.error(
+                    title: String(localized: "Copied to clipboard"),
+                    detail: String(localized: "Enable Accessibility to paste automatically"),
+                    hideAfter: 2.0
+                )
+                uiTestCompletion?("copied")
+            default:
+                hud.finish(text)
+                uiTestCompletion?("inserted")
+            }
+            return
+        }
+        #endif
+
         guard Accessibility.isTrusted else {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
@@ -304,4 +351,157 @@ final class DictationController {
             )
         }
     }
+
+    #if DEBUG
+    /// Installs the same Carbon shortcut callbacks used in production, but swaps
+    /// microphone/model work for a deterministic transcript and target adapter.
+    /// The UI test must still generate the configured global shortcut; calling
+    /// this method alone never starts a dictation.
+    func prepareDailyDriverUITest(_ configuration: DailyDriverUITestConfiguration) {
+        guard RuntimeEnvironment.isDailyDriverUITesting else { return }
+        dailyDriverUITestConfiguration = configuration
+        state = .idle
+        installHotkeyHandlers()
+        configuration.onStatus("READY")
+    }
+
+    private func dailyDriverUITestHotkeyDown() {
+        guard let configuration = dailyDriverUITestConfiguration else { return }
+        guard state != .recording, state != .transcribing else {
+            configuration.onStatus("KDX")
+            return
+        }
+        configuration.onStatus("KD")
+        state = .recording
+        hud.begin(presentation: true, lang: "Auto", shortcutLabel: shortcutLabel)
+        configuration.onStatus(hud.panel != nil && hud.hasAttachedViewTree
+            ? "L"
+            : "LX")
+
+        guard !configuration.finalText.isEmpty else { return }
+        let sentences = configuration.finalText.split(separator: ".", omittingEmptySubsequences: true)
+        let confirmed = sentences.prefix(2).map(String.init).joined(separator: ".") + "."
+        let partial = sentences.dropFirst(2).map(String.init).joined(separator: ".") + "."
+        hud.update(confirmed: confirmed, partial: partial)
+        let visible = [hud.model.confirmed, hud.model.partial]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let visibleSentenceCount =
+            visible.split(separator: ".", omittingEmptySubsequences: true).count
+        let fullTranscript = visible.replacingOccurrences(of: " ", with: "") ==
+            configuration.finalText.replacingOccurrences(of: " ", with: "")
+        let panelState = hud.panel != nil && hud.hasAttachedViewTree
+        let signature = Self.dailyDriverSignature(configuration.finalText)
+        configuration.onStatus(
+                visibleSentenceCount == 3 && fullTranscript && panelState
+                    ? "V3F1\(signature)"
+                    : "VX"
+        )
+    }
+
+    private func dailyDriverUITestHotkeyUp() {
+        guard let configuration = dailyDriverUITestConfiguration else { return }
+        guard state == .recording else {
+            configuration.onStatus("KUX")
+            return
+        }
+        configuration.onStatus("KU")
+        state = .transcribing
+        hud.processing()
+        let isProcessing =
+            hud.model.phase == .transcribing &&
+            hud.model.confirmed.isEmpty &&
+            hud.model.partial.isEmpty &&
+            !hud.model.recording
+        let panelAttached = hud.panel != nil && hud.hasAttachedViewTree
+        configuration.onStatus(isProcessing && panelAttached ? "P" : "PX")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, self.state == .transcribing else { return }
+            if configuration.finalText.isEmpty {
+                self.hud.error(
+                    title: String(localized: "No speech detected"),
+                    detail: String(localized: "Try again and speak a little longer"),
+                    hideAfter: 0.2
+                )
+                configuration.onStatus("D0N")
+                self.waitForDailyDriverHUDTeardown(
+                    attemptsRemaining: 40,
+                    onStatus: configuration.onStatus
+                )
+                self.state = .transcribed("")
+                return
+            }
+            configuration.deliver(configuration.finalText) { [weak self] result in
+                guard let self else { return }
+                switch result.hudPresentation {
+                case .finished:
+                    self.hud.finish(configuration.finalText)
+                case .accessibilityFallback:
+                    self.hud.error(
+                        title: String(localized: "Copied to clipboard"),
+                        detail: String(localized: "Enable Accessibility to paste automatically"),
+                        hideAfter: 0.2
+                    )
+                case .secureInputFallback:
+                    self.hud.error(
+                        title: String(localized: "Field is protected"),
+                        detail: String(localized: "The transcript was copied — press ⌘V"),
+                        hideAfter: 0.2
+                    )
+                }
+                configuration.onStatus(result.statusToken)
+                self.waitForDailyDriverHUDTeardown(
+                    attemptsRemaining: 40,
+                    onStatus: configuration.onStatus
+                )
+                self.state = .transcribed(configuration.finalText)
+            }
+        }
+    }
+
+    private func waitForDailyDriverHUDTeardown(
+        attemptsRemaining: Int,
+        onStatus: @escaping (String) -> Void
+    ) {
+        if hud.panel == nil && !hud.hasAttachedViewTree {
+            onStatus("TRR")
+            return
+        }
+        guard attemptsRemaining > 0 else {
+            onStatus("TXX")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.waitForDailyDriverHUDTeardown(
+                attemptsRemaining: attemptsRemaining - 1,
+                onStatus: onStatus
+            )
+        }
+    }
+
+    private static func dailyDriverSignature(_ text: String) -> String {
+        let checksum = text.utf8.reduce(0) { (($0 * 31) + Int($1)) % 100_000 }
+        return "N\(text.count)H\(checksum)"
+    }
+    #endif
 }
+
+#if DEBUG
+enum DailyDriverHUDPresentation {
+    case finished
+    case accessibilityFallback
+    case secureInputFallback
+}
+
+struct DailyDriverDeliveryResult {
+    let statusToken: String
+    let hudPresentation: DailyDriverHUDPresentation
+}
+
+struct DailyDriverUITestConfiguration {
+    let finalText: String
+    let onStatus: (String) -> Void
+    let deliver: (_ text: String, _ completion: @escaping (DailyDriverDeliveryResult) -> Void) -> Void
+}
+#endif

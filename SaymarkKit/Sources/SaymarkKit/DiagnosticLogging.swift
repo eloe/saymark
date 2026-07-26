@@ -81,6 +81,36 @@ public enum SaymarkDiagnostics {
 }
 
 private final class DiagnosticStorage: @unchecked Sendable {
+    /// The complete privacy boundary for caller-supplied diagnostic fields.
+    /// Unknown names are discarded, even when their values happen to be JSON
+    /// scalars, so a typo or newly invented field cannot leak application data.
+    private static let allowedFieldNames: Set<String> = [
+        "accessibility_granted", "accessibility_trusted", "asr_ms",
+        "asr_step_max_ms", "asr_step_p50_ms", "asr_step_p95_ms",
+        "asr_stream_compute_ms", "audio_seconds", "available", "behavior",
+        "build", "bundle_id", "character_count", "compute_rtf",
+        "configured_level", "confirmed_characters", "conversion_error_count",
+        "count", "cpu_percent", "destination", "draft_empty", "draft_word_count",
+        "duration_ms", "duration_seconds", "error_type", "fallback", "fed",
+        "fed_audio_seconds", "fed_chunks", "feed_interval_ms", "feed_samples",
+        "final_source", "final_word_count", "finish_compute_ms", "from_mode",
+        "gated_chunks", "granted", "input_buffer_count", "input_channels",
+        "input_chunks", "input_sample_rate", "insert_mode", "interval_seconds",
+        "is_empty", "lane", "language", "latency_ms", "level", "log_level",
+        "max_file_bytes", "mlx_active_bytes", "mlx_cache_bytes", "mlx_peak_bytes",
+        "mode", "model_mode", "nemotron_loaded", "normalized_word_distance",
+        "os_version", "outcome", "parakeet_empty", "parakeet_loaded", "partial_characters",
+        "peak_rms", "physical_footprint_bytes", "physical_memory_bytes",
+        "queue_wait_max_ms", "queue_wait_ms", "queue_wait_p95_ms", "reason",
+        "recording_wall_ms", "repository", "resident_bytes", "result_characters",
+        "result_empty", "result_words", "reused", "revision", "sample_count",
+        "samples", "source", "state", "step_index", "stop_to_complete_ms",
+        "success", "system_cpu_seconds", "target_sample_rate", "to_mode",
+        "total_gb", "trigger_mode", "ui_testing", "user_cpu_seconds",
+        "vad_available", "vad_enabled", "vad_ms", "vad_p95_ms", "verification",
+        "version", "warmup_ms", "word_count", "word_edit_distance",
+    ]
+
     private let queue = DispatchQueue(label: "saymark.diagnostics", qos: .utility)
     private let stateLock = NSLock()
     private let unifiedLog = Logger(
@@ -124,7 +154,8 @@ private final class DiagnosticStorage: @unchecked Sendable {
             "pid": ProcessInfo.processInfo.processIdentifier,
         ]
         if let sessionID { object["session_id"] = sessionID }
-        for (key, value) in fields where Self.isJSONScalar(value) {
+        for (key, value) in fields
+        where Self.allowedFieldNames.contains(key) && Self.isJSONScalar(value) {
             object[key] = value
         }
         guard JSONSerialization.isValidJSONObject(object),
@@ -168,7 +199,7 @@ private final class DiagnosticStorage: @unchecked Sendable {
             try handle.seekToEnd()
             try handle.write(contentsOf: data)
         } catch {
-            unifiedLog.error("diagnostic file write failed: \(error.localizedDescription, privacy: .public)")
+            unifiedLog.error("diagnostic file write failed")
         }
     }
 

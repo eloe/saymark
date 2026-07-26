@@ -1,11 +1,9 @@
 import Foundation
-import HuggingFace
-import MLXAudioCore
 
 /// Downloads a plan's model repos up front with live per-model progress, into the
 /// Hugging Face cache that `*.fromPretrained` later reads (so loading does not
-/// re-download). The progress mechanism reuses `MLXAudioCore.ModelUtils` — no
-/// fork changes. The fractions feed `OnboardingFlow`'s download gate + math.
+/// re-download). Repositories are pinned to immutable commits and critical files
+/// are verified before the runtime can load them.
 public actor OnboardingDownloader {
     /// Per-model download fractions (0…1), reported together each tick.
     public struct Progress: Sendable {
@@ -32,8 +30,11 @@ public actor OnboardingDownloader {
     }
 
     private func run(plan: DictationPlan) async throws {
+        // VAD is small and shared by every mode. Verify it before progress can
+        // reach 100%, so onboarding never declares an incomplete trust set ready.
+        _ = try await PinnedModelStore.shared.ensure(SaymarkModelCatalog.silero)
         for model in plan.models {
-            try await fetch(model.repository) { [weak self] fraction in
+            try await fetch(model.artifactSet) { [weak self] fraction in
                 await self?.set(fraction, for: model.id)
             }
         }
@@ -48,20 +49,15 @@ public actor OnboardingDownloader {
     /// Resolve-or-download one repo into the shared cache, forwarding the
     /// Foundation `Progress.fractionCompleted` (0…1) on each tick.
     private func fetch(
-        _ repo: String,
+        _ descriptor: PinnedModelArtifactSet,
         _ onFraction: @escaping @Sendable (Double) async -> Void
     ) async throws {
-        guard let id = Repo.ID(rawValue: repo) else { throw Err.badRepo(repo) }
-        _ = try await ModelUtils.resolveOrDownloadModel(
-            client: HubClient(),
-            repoID: id,
-            requiredExtension: "safetensors",
+        _ = try await PinnedModelStore.shared.ensure(
+            descriptor,
             progressHandler: { progress in
                 Task { await onFraction(progress.fractionCompleted) }   // 0…1
             }
         )
         await onFraction(1.0)   // mark complete (cache hit returns without a tick)
     }
-
-    enum Err: Error { case badRepo(String) }
 }

@@ -29,7 +29,7 @@ open "/Applications/Saymark.app"
 
 Levels are `off`, `error`, `warn`, `info`, `debug`, and `trace`. Local builds
 default to `debug`; official builds default to `info`. Debug includes a process
-CPU/memory sample every 30 seconds. Trace additionally records each 480 ms audio
+CPU/memory sample every 30 seconds. Trace additionally records each 160 ms audio
 processing step.
 
 ## Recorded measurements
@@ -58,3 +58,24 @@ Scripts/report-diagnostics.sh /path/to/saymark.jsonl
 
 The report validates every JSON line and summarizes resource samples, model
 loads, and completed dictations without displaying user content.
+
+Caller-supplied diagnostic fields cross a strict allowlist at the logger
+boundary. Unknown fields and content-bearing names are discarded, and raw
+localized error descriptions are not recorded; add any new metric name to the
+reviewed allowlist and its privacy tests before relying on it.
+
+## Daily-driver acceptance
+
+After one or more real dictations, turn the same local events into a red/green
+acceptance result:
+
+```bash
+make daily-driver-check
+node Scripts/check-daily-driver-diagnostics.mjs /path/to/saymark.jsonl --min-sessions 10
+```
+
+This enforces the observed hotkey-to-HUD, stop-to-final, per-mode RTF and step
+latency, MLX peak-memory, insertion-success, and diagnostic privacy gates. It
+fails when required measurements are missing rather than treating absent data
+as a pass. Idle CPU and settled-memory growth remain separate sampled checks
+because a diagnostic log cannot reliably infer that the user left the app idle.

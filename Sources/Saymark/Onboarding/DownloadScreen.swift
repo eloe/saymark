@@ -1,231 +1,65 @@
+import Foundation
 import SaymarkKit
 import SwiftUI
 
-/// Step 3 — Download. Model cards are derived from the onboarding plan, with live
-/// progress, a "{downloaded} / {total} · {eta} · {speed}" line, a done banner,
-/// and an error note with Retry. The actual
-/// download runs from `OnboardingModel.startDownload`, triggered by this screen's
-/// `.onAppear` — nothing downloads until the user reaches this step. Continue is
-/// gated by the footer (`OnboardingFlow.canContinue`). Sizes/maths come
-/// from `OnboardingFlow` — no hardcoded GB in the view.
+/// A single, user-facing preparation state. Model identities and internal roles
+/// remain implementation details while the existing downloader reports real
+/// progress and supports retry.
 struct DownloadScreen: View {
     @Bindable var model: OnboardingModel
-    @Environment(\.colorScheme) private var scheme
-
-    /// Tracks the previous (downloadedGB, timestamp) to derive speed + ETA from
-    /// the fraction deltas — no separate byte accounting (GB is the SSOT here).
-    @State private var lastGB = 0.0
-    @State private var lastTick = Date()
-    @State private var speedGBs = 0.0   // GB/second, smoothed
-
-    private var t: OnTheme { OnTheme(scheme) }
 
     private var metrics: OnboardingFlow.DownloadMetrics {
         OnboardingFlow.downloadMetrics(progress: model.flow.modelFractions)
     }
 
+    private var fraction: Double {
+        guard metrics.totalGB > 0 else { return 0 }
+        return min(1, metrics.downloadedGB / metrics.totalGB)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Download")
-                    .tracking(1.4).saymarkFont(11, weight: .bold)
-                    .foregroundStyle(SaymarkTheme.accent)
-                Text("Getting my voice ready")
-                    .saymarkFont(32, weight: .semibold, design: .serif)
-                    .foregroundStyle(t.ink).padding(.top, 10)
-                Text("One efficient model downloads once, then runs entirely on your Mac. Optional live preview can be enabled later.")
-                    .saymarkFont(14.5).lineSpacing(4)
-                    .foregroundStyle(t.muted(0.66))
-                    .frame(maxWidth: 444, alignment: .leading).padding(.top, 11)
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Preparing on-device dictation")
+                .font(.system(size: 26, weight: .semibold))
+
+            Text("Saymark is downloading the language model it needs for private dictation.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 10) {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .accessibilityLabel("Dictation model download")
+                    .accessibilityValue(metrics.done ? "Ready" : progressText)
+
+                Text(metrics.done ? "Download complete" : progressText)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
 
-            VStack(spacing: 12) {
-                ForEach(OnboardingFlow.modelPlan.models) { descriptor in
-                    modelCard(
-                        title: title(for: descriptor),
-                        subtitle: subtitle(for: descriptor),
-                        sizeGB: descriptor.estimatedDownloadGB,
-                        fraction: model.flow.modelFractions[descriptor.id, default: 0]
-                    )
-                }
-            }
-            .padding(.top, 22)
-
-            metricsLine.padding(.top, 14)
+            Label("Stored on this Mac. Audio isn’t uploaded.", systemImage: "internaldrive")
+                .font(.callout)
+                .foregroundStyle(.secondary)
 
             if metrics.done {
-                doneBanner.padding(.top, 14)
-            } else if let err = model.downloadError {
-                errorBanner(err).padding(.top, 14)
+                Label("Dictation is ready", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else if let error = model.downloadError {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("The download couldn’t be completed.")
+                        .font(.headline)
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("Retry") { model.retryDownload() }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: metrics.downloadedGB) { _, newGB in updateSpeed(newGB) }
-        .onAppear { model.startDownload() }   // download starts when this step is reached
+        .onAppear { model.startDownload() }
     }
 
-    // MARK: - Per-model card
-
-    private func title(for descriptor: SaymarkModelDescriptor) -> LocalizedStringKey {
-        descriptor.role == .streamingDraft ? "Live preview model" : "Efficient transcription model"
-    }
-
-    private func subtitle(for descriptor: SaymarkModelDescriptor) -> LocalizedStringKey {
-        descriptor.role == .streamingDraft
-            ? "Shows provisional words while you speak"
-            : "Produces the final text when you release"
-    }
-
-    private func modelCard(title: LocalizedStringKey,
-                           subtitle: LocalizedStringKey,
-                           sizeGB: Double,
-                           fraction: Double) -> some View {
-        let ready = fraction >= 1
-        let pct = Int((fraction * 100).rounded())
-        return VStack(alignment: .leading, spacing: 11) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
-                        Text(title).saymarkFont(15, weight: .semibold).foregroundStyle(t.ink)
-                        Text(verbatim: String(format: "%.1f GB", sizeGB))
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(t.muted(0.55))
-                            .padding(.horizontal, 6).padding(.vertical, 3)
-                            .background(t.line(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    }
-                    Text(subtitle).saymarkFont(13).foregroundStyle(t.muted(0.6))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                if ready {
-                    readyPill
-                } else {
-                    Text(verbatim: "\(pct)%")
-                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(SaymarkTheme.accent)
-                }
-            }
-
-            progressBar(fraction: fraction, ready: ready)
-        }
-        .padding(16)
-        .background(t.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(t.line(0.1), lineWidth: 1))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
-        .accessibilityValue(ready ? "Downloaded" : "\(pct) percent")
-    }
-
-    private func progressBar(fraction: Double, ready: Bool) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(t.line(0.1))
-                Capsule().fill(ready ? AnyShapeStyle(t.ok) : AnyShapeStyle(SaymarkTheme.accent))
-                    .frame(width: max(0, min(1, fraction)) * geo.size.width)
-            }
-        }
-        .frame(height: 7)
-    }
-
-    private var readyPill: some View {
-        HStack(spacing: 6) {
-            Text(verbatim: "✓").font(.system(size: 12, weight: .bold)).accessibilityHidden(true)
-            Text("Ready").font(.system(size: 13, weight: .semibold))
-        }
-        .foregroundStyle(t.ok)
-        .padding(.horizontal, 13).padding(.vertical, 6)
-        .background(t.ok.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-    }
-
-    // MARK: - Metrics line ("{downloaded} / {total} · {eta} · {speed}")
-
-    private var metricsLine: some View {
-        let m = metrics
-        let downloaded = String(format: "%.1f", m.downloadedGB)
-        let total = String(format: "%.1f", m.totalGB)
-        return HStack(spacing: 0) {
-            Text(verbatim: "\(downloaded) / \(total) GB")
-            if !m.done {
-                Text(verbatim: " · ")
-                Text(verbatim: etaText(remainingGB: m.remainingGB))
-                Text(verbatim: " · ")
-                Text(verbatim: speedText)
-            }
-        }
-        .font(.system(size: 12.5, design: .monospaced))
-        .foregroundStyle(t.muted(0.5))
-    }
-
-    /// Human ETA from the remaining GB and the smoothed speed. Falls back to a
-    /// neutral placeholder until a speed sample exists.
-    private func etaText(remainingGB: Double) -> String {
-        guard speedGBs > 0.0001 else { return "estimating…" }
-        let secs = Int((remainingGB / speedGBs).rounded())
-        if secs >= 60 { return "~\(secs / 60)m \(secs % 60)s left" }
-        return "~\(secs)s left"
-    }
-
-    private var speedText: String {
-        guard speedGBs > 0.0001 else { return "—" }
-        let mbs = speedGBs * 1024   // GB/s → MB/s
-        return String(format: "%.0f MB/s", mbs)
-    }
-
-    /// Derive instantaneous speed from the GB delta since the last tick, lightly
-    /// smoothed (EMA) so the line doesn't jitter.
-    private func updateSpeed(_ newGB: Double) {
-        let now = Date()
-        let dt = now.timeIntervalSince(lastTick)
-        let dGB = newGB - lastGB
-        if dt > 0.05, dGB > 0 {
-            let sample = dGB / dt
-            speedGBs = speedGBs == 0 ? sample : speedGBs * 0.6 + sample * 0.4
-            lastGB = newGB
-            lastTick = now
-        } else if dGB > 0 {
-            lastGB = newGB
-        }
-    }
-
-    // MARK: - Done / error banners
-
-    private var doneBanner: some View {
-        HStack(spacing: 11) {
-            Circle().fill(t.ok).frame(width: 22, height: 22)
-                .overlay(Text(verbatim: "✓").font(.system(size: 12, weight: .bold)).foregroundStyle(.white))
-                .accessibilityHidden(true)   // decorative; the banner text carries the meaning
-            Text("Your model is on your Mac — you’re ready to roll.")
-                .saymarkFont(13.5, weight: .medium).foregroundStyle(t.ink)
-            Spacer(minLength: 0)
-        }
-        .padding(.init(top: 13, leading: 15, bottom: 13, trailing: 15))
-        .background(t.ok.opacity(0.1), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(t.ok.opacity(0.3), lineWidth: 1))
-    }
-
-    private func errorBanner(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 11) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("The download hit a snag.")
-                    .saymarkFont(13.5, weight: .semibold).foregroundStyle(SaymarkTheme.error)
-                Text(verbatim: message)
-                    .saymarkFont(12.5).lineSpacing(2).foregroundStyle(t.muted(0.6))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button { model.retryDownload() } label: {
-                Text("Retry")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(SaymarkTheme.error)
-                    .padding(.horizontal, 17).padding(.vertical, 9)
-                    .background(SaymarkTheme.error.opacity(0.08), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(SaymarkTheme.error, lineWidth: 1.5))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.init(top: 13, leading: 15, bottom: 13, trailing: 15))
-        .background(SaymarkTheme.error.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(SaymarkTheme.error.opacity(0.3), lineWidth: 1))
+    private var progressText: String {
+        "Downloading \(String(format: "%.1f", metrics.downloadedGB)) GB of \(String(format: "%.1f", metrics.totalGB)) GB"
     }
 }

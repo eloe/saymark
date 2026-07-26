@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private var onboardingWindow: NSWindow?
     private var didStartMenuApp = false
+    #if DEBUG
+    private var dailyDriverUITestHarness: DailyDriverUITestHarness?
+    #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DiagnosticLogSetting.configure()
@@ -38,7 +41,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "os_version": ProcessInfo.processInfo.operatingSystemVersionString,
             "physical_memory_bytes": Int64(ProcessInfo.processInfo.physicalMemory),
             "log_level": SaymarkDiagnostics.level.name,
-            "log_file": DiagnosticLogSetting.fileURL.path,
         ])
         resourceMonitor.start()
 
@@ -80,6 +82,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         didStartMenuApp = true
+        #if DEBUG
+        // A returning-user daily-driver UI test must remain a foreground app so
+        // XCTest can focus its window and emit the real registered shortcut.
+        // Production still transitions to `.accessory` immediately below.
+        if RuntimeEnvironment.isDailyDriverUITesting {
+            NSApp.setActivationPolicy(.regular)
+            SaymarkDiagnostics.log(.debug, "app.menu_started", fields: ["ui_testing": true])
+            let harness = DailyDriverUITestHarness(dictation: dictation)
+            dailyDriverUITestHarness = harness
+            harness.present()
+            return
+        }
+        #endif
         NSApp.setActivationPolicy(.accessory)
         guard !RuntimeEnvironment.isUITesting else {
             SaymarkDiagnostics.log(.debug, "app.menu_started", fields: ["ui_testing": true])
@@ -107,15 +122,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func makeOnboardingWindow() -> NSWindow {
-        let host = NSHostingController(rootView: OnboardingView(model: onboarding).frame(width: 880, height: 640))
-        host.safeAreaRegions = []   // content runs under the transparent title bar (our drawn row IS the bar)
+        let size = NSSize(width: 680, height: 500)
+        let host = NSHostingController(rootView: OnboardingView(model: onboarding).frame(
+            width: size.width,
+            height: size.height
+        ))
         let window = NSWindow(contentViewController: host)
         window.title = "Saymark Setup"
-        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
-        window.setContentSize(NSSize(width: 880, height: 640))
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.titlebarAppearsTransparent = false
+        window.titleVisibility = .visible
+        window.isMovableByWindowBackground = false
+        window.setContentSize(size)
+        window.contentMinSize = size
+        window.contentMaxSize = size
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()

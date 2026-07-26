@@ -44,6 +44,10 @@ final class RealModelAcceptanceTests: XCTestCase {
                 ?? TwoTierEngine.defaultParakeetRepo
         )
         try await session.load(mode: mode)
+        // Model loading does not compile every lazy MLX execution path. Exercise
+        // one complete dictation before collecting timing or memory samples.
+        _ = session.transcribeOffline(samples, mode: mode)
+        Memory.clearCache()
         let settledBaseline = Memory.activeMemory + Memory.cacheMemory
 
         var results: [OfflineResult] = []

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="160" y1="112" x2="864" y2="912" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#323943"/>
+      <stop offset="0.52" stop-color="#171b21"/>
+      <stop offset="1" stop-color="#0d0f13"/>
+    </linearGradient>
+    <linearGradient id="trace" x1="230" y1="360" x2="700" y2="660" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#88c8ff"/>
+      <stop offset="0.58" stop-color="#3a9eff"/>
+      <stop offset="1" stop-color="#1688f8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="28" flood-color="#000000" flood-opacity=".32"/>
+    </filter>
+    <filter id="markShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity=".28"/>
+    </filter>
+  </defs>
+
+  <!-- A restrained macOS-style tile with transparent corners. -->
+  <rect x="64" y="64" width="896" height="896" rx="205" fill="url(#tile)" filter="url(#shadow)"/>
+  <rect x="66" y="66" width="892" height="892" rx="203" fill="none" stroke="#ffffff" stroke-opacity=".18" stroke-width="4"/>
+  <path d="M120 318 C218 145 415 102 612 129 C782 152 886 252 925 389"
+        fill="none" stroke="#ffffff" stroke-opacity=".055" stroke-width="76" stroke-linecap="round"/>
+
+  <!-- Spoken rhythm resolves into the insertion point. -->
+  <path d="M222 512 H316
+           C354 512 354 376 394 376
+           C434 376 434 648 474 648
+           C514 648 514 512 554 512
+           H696"
+        fill="none" stroke="url(#trace)" stroke-width="64"
+        stroke-linecap="round" stroke-linejoin="round" filter="url(#markShadow)"/>
+  <path d="M704 350 V674"
+        fill="none" stroke="#e6ebf2" stroke-width="64"
+        stroke-linecap="round"/>
+</svg>

@@ -7,7 +7,10 @@ final class OnboardingUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchEnvironment["SAYMARK_UI_TESTING"] = "1"
-        app.launchArguments += ["-saymark.didOnboard", "NO"]
+        app.launchArguments += [
+            "-saymark.didOnboard", "NO",
+            "-saymark.triggerMode", "toggle",
+        ]
         app.launch()
     }
 
@@ -17,41 +20,66 @@ final class OnboardingUITests: XCTestCase {
     }
 
     func testFirstRunCompletesWithoutExternalServices() throws {
-        XCTAssertTrue(app.otherElements["onboarding.root"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Just talk. I’ll type it."].exists)
-        let modelNote = app.staticTexts["onboarding.model-note"]
-        XCTAssertTrue(modelNote.exists)
-        XCTAssertFalse(app.staticTexts["Two voice models installed"].exists)
         XCTAssertTrue(
-            app.descendants(matching: .any)["onboarding.local-diagnostics"].exists
+            app.descendants(matching: .any)["onboarding.root"]
+                .waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(app.staticTexts["Speak naturally. Write anywhere."].exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["onboarding.welcome-mark"].exists
         )
         XCTAssertFalse(app.switches["Share anonymous usage & crash reports"].exists)
+        XCTAssertFalse(app.staticTexts["Setup steps"].exists)
+        XCTAssertFalse(app.buttons["Replay the setup tour"].exists)
 
-        continueButton("Get started").click()
-        XCTAssertTrue(app.staticTexts["Two quick permissions"].waitForExistence(timeout: 2))
+        clickContinue("Set Up Saymark")
+        XCTAssertTrue(app.staticTexts["Allow Saymark to listen and type"].waitForExistence(timeout: 5))
+        XCTAssertEqual(
+            app.descendants(matching: .any)
+                .matching(identifier: "onboarding.permission.allowed").count,
+            2
+        )
 
-        continueButton("Continue").click()
-        XCTAssertTrue(app.staticTexts["Choose your push-to-talk"].waitForExistence(timeout: 2))
+        clickContinue("Continue")
+        XCTAssertTrue(app.staticTexts["Choose how to start dictation"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.descendants(matching: .any)["onboarding.trigger-mode"].exists
+        )
+        XCTAssertTrue(app.descendants(matching: .any)["Hold to Dictate"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["Press to Start/Stop"].exists)
+        app.links["Use Recommended Shortcut"].click()
 
-        continueButton("Continue").click()
-        XCTAssertTrue(app.staticTexts["Getting my voice ready"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.staticTexts["Your model is on your Mac — you’re ready to roll."].waitForExistence(timeout: 2))
+        clickContinue("Continue")
+        XCTAssertTrue(app.staticTexts["Preparing on-device dictation"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Stored on this Mac. Audio isn’t uploaded."].exists)
 
-        continueButton("Continue").click()
-        XCTAssertTrue(app.staticTexts["Give me a sentence"].waitForExistence(timeout: 2))
+        clickContinue("Continue")
+        XCTAssertTrue(app.staticTexts["Try your shortcut"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.descendants(matching: .any)["onboarding.shortcut-instruction"].exists
+        )
+        XCTAssertFalse(app.buttons["Try with Button"].exists)
 
-        let tryButton = app.buttons["Hold to talk"]
-        XCTAssertTrue(tryButton.waitForExistence(timeout: 2))
-        tryButton.click()
-        XCTAssertTrue(app.staticTexts["Got it — that’s exactly what I said."].waitForExistence(timeout: 2))
+        app.typeKey(.space, modifierFlags: [.control, .option])
+        XCTAssertTrue(
+            app.descendants(matching: .any)["onboarding.try-listening"]
+                .waitForExistence(timeout: 2)
+        )
+        app.typeKey(.space, modifierFlags: [.control, .option])
+        XCTAssertTrue(app.staticTexts["Shortcut works."].waitForExistence(timeout: 5))
 
-        continueButton("I’ve got it").click()
-        XCTAssertTrue(app.staticTexts["You’re ready to talk"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.staticTexts["Voice model installed"].exists)
+        clickContinue("Finish")
+        XCTAssertFalse(
+            app.descendants(matching: .any)["onboarding.root"]
+                .waitForExistence(timeout: 1)
+        )
     }
 
     func testWelcomeIdleResourceMetrics() throws {
-        XCTAssertTrue(app.otherElements["onboarding.root"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.descendants(matching: .any)["onboarding.root"]
+                .waitForExistence(timeout: 5)
+        )
         let options = XCTMeasureOptions()
         options.iterationCount = 3
 
@@ -72,5 +100,10 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(button.waitForExistence(timeout: 2))
         XCTAssertTrue(button.isEnabled)
         return button
+    }
+
+    private func clickContinue(_ label: String) {
+        let button = continueButton(label)
+        button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
     }
 }

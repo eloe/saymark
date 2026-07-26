@@ -32,6 +32,20 @@ make build
 Release configuration is intentional: unoptimized MLX Swift builds do not
 represent product latency.
 
+## Dependencies
+
+App-only packages use Tuist's Xcode-native integration in `Project.swift`.
+Their exact requirements are mirrored in `Tuist/Package.swift` so GitHub can
+index the committed `Tuist/Package.resolved`.
+
+```bash
+make dependencies
+```
+
+This resolves the committed versions and verifies that both manifests and the
+lockfile agree. After an update, run unit and integration tests, the security
+checks, and any performance benchmark affected by the dependency.
+
 ## Tests and benchmarks
 
 ```bash

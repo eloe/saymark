@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 2,
+  "id": "saymark-english-v1",
+  "description": "Redistributable public English accuracy corpus derived from complete LibriSpeech utterances.",
+  "dataset": {
+    "repository": "openslr/librispeech_asr",
+    "revision": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+    "license": "CC-BY-4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "datasetUrl": "https://huggingface.co/datasets/openslr/librispeech_asr",
+    "upstreamUrl": "https://www.openslr.org/12/"
+  },
+  "preparation": {
+    "sampleRateHz": 16000,
+    "channels": 1,
+    "encoding": "pcm_s16le",
+    "interClipSilenceSeconds": 0.25,
+    "noise": {
+      "color": "pink",
+      "amplitude": 0.012,
+      "seed": 20260724
+    }
+  },
+  "sources": [
+    {
+      "id": "clean-test-0",
+      "config": "clean",
+      "split": "test",
+      "offset": 0,
+      "rowID": "6930-75918-0000",
+      "speakerID": 6930,
+      "path": "6930-75918-0000.flac",
+      "transcript": "CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS",
+      "sha256": "9ce35224156f071ab58eb7feb8a5ceae600f6f9f353da2a6cbf797b6b1ac8a23",
+      "durationSeconds": 3.505
+    },
+    {
+      "id": "clean-test-500",
+      "config": "clean",
+      "split": "test",
+      "offset": 500,
+      "rowID": "2961-960-0003",
+      "speakerID": 2961,
+      "path": "2961-960-0003.flac",
+      "transcript": "THEY WERE ABSORBED IN HIS THEOLOGY AND WERE UNDER THE DOMINION OF HIS NAME WHILE THAT WHICH WAS TRULY GREAT AND TRULY CHARACTERISTIC IN HIM HIS EFFORT TO REALIZE AND CONNECT ABSTRACTIONS WAS NOT UNDERSTOOD BY THEM AT ALL",
+      "sha256": "1c7709259d871c7a36fe1f994f6f1bce0a3424c6f009002eb3defcd3f1a97040",
+      "durationSeconds": 17.315
+    },
+    {
+      "id": "clean-test-1000",
+      "config": "clean",
+      "split": "test",
+      "offset": 1000,
+      "rowID": "8455-210777-0028",
+      "speakerID": 8455,
+      "path": "8455-210777-0028.flac",
+      "transcript": "JACK WOULD BECOME EVA'S HAPPY HUSBAND AND WOULD REMAIN AMIDST THE HURRIED DUTIES OF THE EAGER WORLD",
+      "sha256": "61e1697bdc0de5142e0cd76c4a14ed38086b66b9a0ab7722bd1c02aa3cebd261",
+      "durationSeconds": 7.735
+    },
+    {
+      "id": "clean-test-2000",
+      "config": "clean",
+      "split": "test",
+      "offset": 2000,
+      "rowID": "1580-141083-0051",
+      "speakerID": 1580,
+      "path": "1580-141083-0051.flac",
+      "transcript": "ONLY FOR A MINUTE OR SO",
+      "sha256": "3f7d90044d1a1ec56c95e9f0ec7a5bd1f1914259b6441148ea2991a341950b77",
+      "durationSeconds": 1.98
+    },
+    {
+      "id": "clean-test-2500",
+      "config": "clean",
+      "split": "test",
+      "offset": 2500,
+      "rowID": "5683-32865-0017",
+      "speakerID": 5683,
+      "path": "5683-32865-0017.flac",
+      "transcript": "ALL THE TIME HE WAS TALKING TO ME HIS ANGRY LITTLE EYES WERE FOLLOWING LAKE",
+      "sha256": "d0027b49e5e0c29b3b59d1d782b8d4d9753f90e4343f243a15698e787c8e64ca",
+      "durationSeconds": 5.455
+    },
+    {
+      "id": "other-test-0",
+      "config": "other",
+      "split": "test",
+      "offset": 0,
+      "rowID": "7902-96591-0000",
+      "speakerID": 7902,
+      "path": "7902-96591-0000.flac",
+      "transcript": "I AM FROM THE CUTTER LYING OFF THE COAST",
+      "sha256": "955d0cc57211f03986124307ade29fbab521e26133caa2d2831b9a1b38c7a9b6",
+      "durationSeconds": 2.095
+    },
+    {
+      "id": "other-test-1000",
+      "config": "other",
+      "split": "test",
+      "offset": 1000,
+      "rowID": "3528-168669-0123",
+      "speakerID": 3528,
+      "path": "3528-168669-0123.flac",
+      "transcript": "THE EMPTY COFFIN REMAINS THIS PRODUCED A PAUSE",
+      "sha256": "f7d8a842164f129bb4d5051030886d2e3cdd7c51eddb5ad40c462b451b1d8e15",
+      "durationSeconds": 3.71
+    },
+    {
+      "id": "other-test-1500",
+      "config": "other",
+      "split": "test",
+      "offset": 1500,
+      "rowID": "3538-163619-0000",
+      "speakerID": 3538,
+      "path": "3538-163619-0000.flac",
+      "transcript": "THERE WAS ONCE ON A TIME A WIDOWER WHO HAD A SON AND A DAUGHTER BY HIS FIRST WIFE",
+      "sha256": "7bd2d28e42eae58bad5e22270ca3308f00b50fc6f17fd98c70e52ea5181bdb46",
+      "durationSeconds": 4.9
+    },
+    {
+      "id": "other-test-2000",
+      "config": "other",
+      "split": "test",
+      "offset": 2000,
+      "rowID": "1688-142285-0052",
+      "speakerID": 1688,
+      "path": "1688-142285-0052.flac",
+      "transcript": "AS THEY TURNED UP INTO A SMALL COURT OPENING OUT OF A SQUALID STREET BESSY SAID",
+      "sha256": "fa26bd59faf8fb740e8d1a72092fb13ab95dda92174cafdc3ca724952545efa9",
+      "durationSeconds": 7.08
+    },
+    {
+      "id": "other-test-2500",
+      "config": "other",
+      "split": "test",
+      "offset": 2500,
+      "rowID": "6432-63723-0009",
+      "speakerID": 6432,
+      "path": "6432-63723-0009.flac",
+      "transcript": "THE COLONEL DID NOT DISCLOSE THE FACT THAT IT WAS NO NEWS TO HIM",
+      "sha256": "3b0bbbe2eb86267cb519923c4c1c21ed55080e134a03ecbaebb08f82174052e5",
+      "durationSeconds": 3.58
+    }
+  ],
+  "cases": [
+    { "id": "short-clean-0", "scenario": "test-clean", "locale": "English", "sourceIds": ["clean-test-0"] },
+    { "id": "short-clean-500", "scenario": "test-clean", "locale": "English", "sourceIds": ["clean-test-500"] },
+    { "id": "short-clean-1000", "scenario": "test-clean", "locale": "English", "sourceIds": ["clean-test-1000"] },
+    { "id": "short-clean-2000", "scenario": "test-clean", "locale": "English", "sourceIds": ["clean-test-2000"] },
+    { "id": "short-clean-2500", "scenario": "test-clean", "locale": "English", "sourceIds": ["clean-test-2500"] },
+    { "id": "short-other-0", "scenario": "test-other", "locale": "English", "sourceIds": ["other-test-0"] },
+    { "id": "short-other-1000", "scenario": "test-other", "locale": "English", "sourceIds": ["other-test-1000"] },
+    { "id": "short-other-1500", "scenario": "test-other", "locale": "English", "sourceIds": ["other-test-1500"] },
+    { "id": "short-other-2000", "scenario": "test-other", "locale": "English", "sourceIds": ["other-test-2000"] },
+    { "id": "short-other-2500", "scenario": "test-other", "locale": "English", "sourceIds": ["other-test-2500"] },
+    { "id": "noisy-clean-1000", "scenario": "pink-noise", "locale": "English", "sourceIds": ["clean-test-1000"], "noise": true },
+    { "id": "noisy-other-2000", "scenario": "pink-noise", "locale": "English", "sourceIds": ["other-test-2000"], "noise": true },
+    {
+      "id": "long-30s",
+      "scenario": "long-form",
+      "locale": "English",
+      "targetDurationSeconds": 30,
+      "sourceIds": ["clean-test-500", "other-test-2000", "other-test-1500"]
+    },
+    {
+      "id": "long-45s",
+      "scenario": "long-form",
+      "locale": "English",
+      "targetDurationSeconds": 45,
+      "sourceIds": ["clean-test-500", "clean-test-1000", "other-test-2000", "clean-test-2500", "other-test-1500"]
+    },
+    {
+      "id": "long-60s",
+      "scenario": "long-form",
+      "locale": "English",
+      "targetDurationSeconds": 60,
+      "sourceIds": ["clean-test-500", "other-test-0", "clean-test-1000", "other-test-1000", "clean-test-2500", "other-test-1500", "clean-test-0", "other-test-2000", "clean-test-2000", "other-test-2500"]
+    },
+    {
+      "id": "long-90s",
+      "scenario": "long-form",
+      "locale": "English",
+      "targetDurationSeconds": 90,
+      "sourceIds": ["clean-test-500", "other-test-0", "clean-test-1000", "other-test-1000", "clean-test-2500", "other-test-1500", "clean-test-0", "other-test-2000", "clean-test-2000", "other-test-2500"],
+      "repeatSourceIds": ["other-test-2000", "clean-test-0", "other-test-1500", "clean-test-1000", "other-test-1000", "clean-test-2500", "other-test-0", "clean-test-2000", "other-test-2500", "clean-test-500"]
+    },
+    {
+      "id": "long-120s",
+      "scenario": "long-form",
+      "locale": "English",
+      "targetDurationSeconds": 120,
+      "sourceIds": ["clean-test-500", "other-test-0", "clean-test-1000", "other-test-1000", "clean-test-2500", "other-test-1500", "clean-test-0", "other-test-2000", "clean-test-2000", "other-test-2500"],
+      "repeatSourceIds": ["other-test-2000", "clean-test-0", "other-test-1500", "clean-test-1000", "other-test-1000", "clean-test-2500", "other-test-0", "clean-test-2000", "other-test-2500", "clean-test-500"]
+    }
+  ],
+  "acceptance": {
+    "maximumMacroWordErrorRate": 0.08,
+    "maximumScenarioWordErrorRate": 0.12,
+    "maximumLocaleWordErrorRate": 0.12
+  }
+}

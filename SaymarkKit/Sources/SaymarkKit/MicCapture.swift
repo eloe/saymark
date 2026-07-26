@@ -2,7 +2,7 @@
 import Foundation
 
 /// Captures the default input and resamples to 16 kHz mono Float, delivering
-/// fixed 80 ms chunks via `onChunk`. Ported from the mic-compare CLI's MicRunner.
+/// fixed 160 ms chunks via `onChunk`. Ported from the mic-compare CLI's MicRunner.
 ///
 /// `@unchecked Sendable`: the input-tap closure runs on the realtime audio
 /// thread, so it must NOT inherit actor isolation. All mutable state is confined
@@ -21,12 +21,15 @@ final class MicCapture: @unchecked Sendable {
     /// Fixed-size 16 kHz mono chunks delivered on the capture queue.
     var onChunk: ([Float]) -> Void = { _ in }
 
-    // 480 ms per `session.step`, matching the mic-compare CLI's feedMs=480. This
-    // is the FEED size, NOT Nemotron's internal chunk (that's
-    // `TwoTierEngine.defaultFastChunkMs`, already set on the session) — feeding at
-    // a smaller size calls step proportionally more often and the per-call MLX
-    // overhead pushes RTF > 1 → backlog → freeze.
-    private let chunkSize = 7680                          // 480 ms @ 16 kHz
+    // This is the FEED size, not Nemotron's internal chunk. A 20-run
+    // 160/240/320/480 ms experiment on the release model stack selected 160 ms:
+    // it passed throughput, quality, step-latency, and memory gates without
+    // backlog, while providing three times as many live-update opportunities as
+    // the old 480 ms feed.
+    static let feedSamples = 2_560
+    static let feedIntervalMilliseconds = 160
+    static let speechHangoverChunks = 6
+    private let chunkSize = feedSamples
     private let queue = DispatchQueue(label: "saymark.mic.capture")
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?

@@ -4,6 +4,122 @@ These measurements are decision records, not general hardware claims. The
 synthetic fixture verifies repeatability and catches gross regressions; model
 promotion still requires the quality corpus in `performance-acceptance.md`.
 
+## 2026-07-24 — Apple M2, 24 GB
+
+- Machine: MacBook Pro `Mac14,7`
+- macOS: 26.5.2
+- Saymark base commit: `66478f4731c036a546f13fd93f1fc4dc46422b97`
+- Benchmark harness: current working-tree patch that performs the full unmeasured
+  transcription described below; this patch must land with this decision record
+- MLX Swift: 0.31.4
+- MLX Audio Swift: `6671490176d24bc962f0b8cd50dbf24e2427e387`
+- Fixture: 24.49-second deterministic `say` recording, one unmeasured
+  compilation warm-up followed by 20 measured runs
+- Parakeet FP16:
+  `mlx-community/parakeet-tdt-0.6b-v3@ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`
+- Nemotron 8-bit:
+  `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit@7279359e4481b5e9e185a318bd618e429c6d86cd`
+- Silero VAD:
+  `mlx-community/silero-vad@7bc17f22d3c0451bd3a6cd71e759b009271ff49a`
+
+| Profile | Median RTF | Final median | p95/max step | MLX peak | Settled growth | Smoke WER | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Efficient | 0.022 | 0.39 s | 0.004 / 0.010 s | 3.80 GB | 0 GB | 3.0% | Pass |
+| Live Preview | 0.210 | 0.42 s | 0.115 / 0.375 s | 4.60 GB | 0 GB | 3.0% | Pass |
+
+The synthetic voice pronounced “Saymark” as two words that Parakeet rendered as
+“same arc,” accounting for the nonzero smoke WER. This is a repeatability signal,
+not a human-speech accuracy estimate.
+
+### Public English corpus status
+
+An initial MINDS-14-backed v1 run reported 25.84% macro WER, but inspection
+showed that multiple selected recordings contained material audible sentences
+omitted from the dataset row's `transcription` field. The run was rejected as
+invalid ground truth, not treated as a Parakeet failure or model baseline, and
+its ignored local results file was not committed. The acceptance gates were not
+weakened.
+
+The replacement `saymark-english-v1` foundation pins ten complete CC BY 4.0
+LibriSpeech utterances from ten speakers—five `test.clean` and five
+`test.other`—and deterministically prepares 17 unmodified, noisy, and
+30–120-second cases.
+
+The first LibriSpeech preparation reported 6.9916% overall macro WER:
+0.5128% `test.clean`, 8.3730% `test.other`, 6.25% noise, and 12.3856%
+long-form. Four long cases were healthy—30/45/90/120 seconds reported
+5.80/7.00/2.42/5.11%—but the 60-second case reported 41.61%. Direct Parakeet
+and segment checks confirmed the audio was present; inspection found the
+fixture's five-source cycle repeated the same utterances within roughly 30
+seconds and the decoder collapsed that artificial repetition. That preparation
+was rejected as a corpus-construction artifact, not recorded as a model
+baseline, and the gates were not weakened.
+
+The corrected recipe consumes all ten unique utterances before any repeat and
+uses a separately ordered second cycle for 90- and 120-second cases. No
+acceptance gate was changed.
+
+Both product profiles passed the corrected 17-case corpus. Their final results
+are identical because Parakeet remains the authoritative final model in both
+profiles; Nemotron supplies only the provisional Live Preview draft.
+
+- Corpus source manifest SHA-256:
+  `5ff6a56c84f927b145c5fb1633b6e14010c4ebbbba899ea88d690e7d5feaf9af`
+- Dataset:
+  `openslr/librispeech_asr@71cacbfb7e2354c4226d01e70d77d5fca3d04ba1`
+- Parakeet:
+  `mlx-community/parakeet-tdt-0.6b-v3@ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`
+- Live Preview Nemotron:
+  `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit@7279359e4481b5e9e185a318bd618e429c6d86cd`
+
+| Profile | Macro WER | Clean | Other | Pink noise | Long form | Violations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Efficient | 4.88% | 0.51% | 8.37% | 6.25% | 5.21% | 0 |
+| Live Preview | 4.88% | 0.51% | 8.37% | 6.25% | 5.21% | 0 |
+
+The local results JSON remains ignored because it contains the public reference
+and hypothesis text; the checked-in source manifest and this decision record
+identify the reproducible inputs and aggregate outcome. Public v1 is a valid
+English baseline for the scenarios it covers. Spoken numbers and punctuation
+commands remain required before promoting a different model as a general
+product replacement.
+
+The installed app remained open and untouched. A separate 31-sample idle check
+reported median CPU 0%, nearest-rank p95 0.3%, maximum 1.2%, and mean 0.06%.
+Its physical footprint was 2.0 GB with a historical 4.4 GB peak, consistent with
+resident MLX allocations after prior dictation use.
+
+As supplemental process-level readings, `/usr/bin/time` reported end-to-end CPU
+usage of approximately 50% for Efficient and 42% for Live Preview when calculated
+from user plus system time divided by wall time. Those figures include model load
+and the unmeasured warm-up, so they are not inference-only acceptance metrics.
+
+The first Efficient attempt exposed a harness error: model loading did not compile
+all lazy MLX paths, so the nominally warmed sample included a one-time 0.617-second
+step and failed the maximum-step budget. The CLI and real-model XCTest now execute
+one full unmeasured transcription before establishing the memory baseline and
+collecting the requested number of samples.
+
+### Live Preview feed-cadence experiment
+
+The same warmed 24.49-second fixture, model revisions, and 20-run acceptance
+harness were used at every cadence. All four candidates produced the same final
+transcript and passed the Live Preview quality and resource budget.
+
+| Feed | Median RTF | p95/max step | MLX peak | Settled growth | Smoke WER | Result |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 160 ms | 0.220 | 0.052 / 0.142 s | 4.60 GB | 0 GB | 3.0% | Pass; selected |
+| 240 ms | 0.248 | 0.075 / 0.124 s | 4.60 GB | 0 GB | 3.0% | Pass |
+| 320 ms | 0.244 | 0.078 / 0.102 s | 4.60 GB | 0 GB | 3.0% | Pass |
+| 480 ms | 0.240 | 0.116 / 0.234 s | 4.60 GB | 0 GB | 3.0% | Pass; prior baseline |
+
+The 160 ms feed creates three times as many publication opportunities as the
+old 480 ms feed, had the lowest median RTF in this run, stayed well ahead of
+real time, and showed no settled-memory growth. It is therefore the production
+candidate. Merge remains gated on the app-level shortcut-to-visible-text tests;
+this offline experiment does not claim word-aligned display or field-mutation
+latency.
+
 ## 2026-07-21 — Apple M2, 24 GB
 
 - Machine: MacBook Pro `Mac14,7`

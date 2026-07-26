@@ -26,6 +26,17 @@ guard let runs = Int(runsText), runs > 0 else {
     FileHandle.standardError.write(Data("invalid --runs '\(runsText)'; use a positive integer\n".utf8))
     exit(2)
 }
+let feedMillisecondsText = option("--feed-ms") ?? "480"
+guard let feedMilliseconds = Int(feedMillisecondsText),
+      feedMilliseconds >= 80,
+      feedMilliseconds <= 1_000,
+      feedMilliseconds.isMultiple(of: 10) else {
+    FileHandle.standardError.write(Data(
+        "invalid --feed-ms '\(feedMillisecondsText)'; use 80...1000 in 10 ms increments\n".utf8
+    ))
+    exit(2)
+}
+let feedSamples = feedMilliseconds * 16
 
 /// Read any audio file and resample to 16 kHz mono Float.
 func readWav16kMono(_ path: String) throws -> [Float] {
@@ -120,14 +131,22 @@ if let wavIdx = args.firstIndex(of: "--wav"), wavIdx + 1 < args.count {
 
     FileHandle.standardError.write(Data("loading \(mode.rawValue) model(s) (warming up MLX)…\n".utf8))
     try await session.load(mode: mode)
+    // Force lazy MLX kernels and execution paths to compile before the measured
+    // runs. The acceptance policy explicitly excludes first-compilation cost.
+    _ = session.transcribeOffline(samples, chunkSamples: feedSamples, mode: mode)
+    Memory.clearCache()
     let settledMemoryBaseline = Memory.activeMemory + Memory.cacheMemory
     FileHandle.standardError.write(Data(
-        String(format: "transcribing %.1fs of audio in %@ mode, %d run(s) (480 ms chunks)…\n",
-               Double(samples.count) / 16000.0, mode.rawValue, runs).utf8))
+        String(format: "transcribing %.1fs of audio in %@ mode, %d run(s) (%d ms chunks)…\n",
+               Double(samples.count) / 16000.0, mode.rawValue, runs, feedMilliseconds).utf8))
 
     var results: [OfflineResult] = []
     for run in 1 ... runs {
-        let result = session.transcribeOffline(samples, mode: mode)
+        let result = session.transcribeOffline(
+            samples,
+            chunkSamples: feedSamples,
+            mode: mode
+        )
         results.append(result)
         let quarter = max(1, result.stepSeconds.count / 4)
         let early = result.stepSeconds.prefix(quarter).reduce(0, +) / Double(quarter)
@@ -145,9 +164,10 @@ if let wavIdx = args.firstIndex(of: "--wav"), wavIdx + 1 < args.count {
 
         === saymark-cli benchmark: %@ / %@ ===
         audio        %.2f s (%d chunks)
+        feed          %d ms
         median RTF   %.3f     (<1 = faster than realtime)
         """, (path as NSString).lastPathComponent, mode.rawValue,
-        representative.audioSeconds, representative.stepCount, medianRTF))
+        representative.audioSeconds, representative.stepCount, feedMilliseconds, medianRTF))
     print("\ntext: \(representative.text)")
 
     if let acceptanceName = option("--accept") {

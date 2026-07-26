@@ -1,156 +1,135 @@
+import AppKit
 import SwiftUI
 
-/// Step 1 — Permissions (design: Saymark Onboarding.dc.html STEP 1). Two cards:
-/// Microphone (the hard gate — `OnboardingFlow.canContinue` needs it) and
-/// Accessibility (skippable — HUD-only dictation works without it). Each card's
-/// Grant button calls the model and flips to a green "Granted" pill once the
-/// matching `flow` flag is set. The model reflects already-granted state on
-/// appear and polls AX trust while this screen is up.
+/// Permission requests stay in context and retain the existing hard/soft gates:
+/// microphone is required, while Accessibility may be completed later.
 struct PermissionsScreen: View {
     @Bindable var model: OnboardingModel
-    @Environment(\.colorScheme) private var scheme
-
-    private var t: OnTheme { OnTheme(scheme) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Permissions")
-                    .tracking(1.4).saymarkFont(11, weight: .bold)
-                    .foregroundStyle(SaymarkTheme.accent)
-                Text("Two quick permissions")
-                    .saymarkFont(32, weight: .semibold, design: .serif)
-                    .foregroundStyle(t.ink).padding(.top, 10)
-                Text("macOS will pop up a confirmation for each. Grant both and I’m good to go — here’s what they’re for.")
-                    .saymarkFont(14.5).lineSpacing(4)
-                    .foregroundStyle(t.muted(0.66))
-                    .frame(maxWidth: 444, alignment: .leading).padding(.top, 11)
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Allow Saymark to listen and type")
+                .font(.system(size: 26, weight: .semibold))
+
+            Text("Saymark needs microphone access for dictation. Accessibility lets it insert the result into the app you’re using.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            GroupBox {
+                VStack(spacing: 0) {
+                    permissionRow(
+                        symbol: "mic",
+                        title: "Microphone",
+                        explanation: "Required to hear dictation",
+                        granted: model.flow.micGranted,
+                        actionTitle: "Allow Microphone",
+                        action: model.requestMic
+                    )
+                    Divider()
+                    permissionRow(
+                        symbol: "accessibility",
+                        title: "Accessibility",
+                        explanation: "Lets Saymark insert text in the active app",
+                        granted: model.flow.accessibilityGranted,
+                        actionTitle: nil,
+                        action: model.promptAccessibility
+                    )
+                }
             }
-
-            VStack(spacing: 12) {
-                permissionCard(
-                    icon: { micIcon },
-                    title: "Microphone",
-                    badge: nil,
-                    why: "So I can hear you while you’re holding the shortcut.",
-                    granted: model.flow.micGranted,
-                    grant: { model.requestMic() })
-
-                permissionCard(
-                    icon: { accessibilityIcon },
-                    title: "Accessibility",
-                    badge: "Input · typing",
-                    why: "So I can type the words straight into whatever field has focus.",
-                    granted: model.flow.accessibilityGranted,
-                    grant: { model.promptAccessibility() })
-            }
-            .padding(.top, 22)
-
-            Text("You can change these anytime in System Settings → Privacy & Security.")
-                .saymarkFont(12.5).lineSpacing(3)
-                .foregroundStyle(t.muted(0.5))
-                .padding(.top, 14)
 
             if !model.flow.accessibilityGranted {
-                Text("Accessibility is optional — you can set up typing later from the menu.")
-                    .saymarkFont(12.5).lineSpacing(3)
-                    .foregroundStyle(t.muted(0.42))
-                    .padding(.top, 6)
+                accessibilityDragCard
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { model.refreshPermissions() }
-        // Stop the AX-trust poll when leaving for ANY reason — step change OR a
-        // window close (the model is app-lifetime, so nothing else invalidates it).
         .onDisappear { model.stopAccessibilityPolling() }
     }
 
-    // MARK: - Card
-
-    private func permissionCard<Icon: View>(
-        @ViewBuilder icon: () -> Icon,
+    private func permissionRow(
+        symbol: String,
         title: LocalizedStringKey,
-        badge: LocalizedStringKey?,
-        why: LocalizedStringKey,
+        explanation: LocalizedStringKey,
         granted: Bool,
-        grant: @escaping () -> Void
+        actionTitle: LocalizedStringKey?,
+        action: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: 15) {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(SaymarkTheme.accent.opacity(0.1))
-                .frame(width: 48, height: 48)
-                .overlay { icon() }
+        HStack(spacing: 14) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(SaymarkTheme.accent)
+                .frame(width: 28)
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text(title).saymarkFont(15, weight: .semibold).foregroundStyle(t.ink)
-                    if let badge {
-                        Text(badge)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(t.muted(0.55))
-                            .padding(.horizontal, 6).padding(.vertical, 3)
-                            .background(t.line(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    }
-                }
-                Text(why).saymarkFont(13).lineSpacing(2).foregroundStyle(t.muted(0.6))
+                Text(title)
+                    .font(.headline)
+                Text(explanation)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 16)
 
             if granted {
-                grantedPill
-            } else {
-                Button(action: grant) {
-                    Text("Grant")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(SaymarkTheme.accent)
-                        .padding(.horizontal, 17).padding(.vertical, 9)
-                        .background(SaymarkTheme.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(SaymarkTheme.accent, lineWidth: 1.5))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                Label("Allowed", systemImage: "checkmark.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.green)
+                    .accessibilityIdentifier("onboarding.permission.allowed")
+            } else if let actionTitle {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.bordered)
             }
         }
-        .padding(16)
-        .background(t.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(t.line(0.1), lineWidth: 1))
+        .padding(.vertical, 14)
+        .padding(.horizontal, 8)
     }
 
-    private var grantedPill: some View {
-        HStack(spacing: 6) {
-            Text(verbatim: "✓").font(.system(size: 12, weight: .bold)).accessibilityHidden(true)
-            Text("Granted").font(.system(size: 13, weight: .semibold))
-        }
-        .foregroundStyle(t.ok)
-        .padding(.horizontal, 15).padding(.vertical, 9)
-        .background(t.ok.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-    }
-
-    // MARK: - Icons (glyph tiles from the mock)
-
-    private var micIcon: some View {
-        VStack(spacing: 2) {
-            RoundedRectangle(cornerRadius: 6, style: .continuous).fill(SaymarkTheme.accent).frame(width: 12, height: 18)
-            Rectangle().fill(t.muted(0.4)).frame(width: 2, height: 4)
-            RoundedRectangle(cornerRadius: 2, style: .continuous).fill(t.muted(0.4)).frame(width: 13, height: 2)
-        }
-        .accessibilityHidden(true)   // decorative glyph; the card title carries the name
-    }
-
-    private var accessibilityIcon: some View {
-        RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .strokeBorder(SaymarkTheme.accent, lineWidth: 1.5)
-            .frame(width: 30, height: 20)
-            .overlay {
-                VStack(spacing: 2.5) {
-                    HStack(spacing: 2.5) {
-                        ForEach(0 ..< 3, id: \.self) { _ in
-                            Circle().fill(t.muted(0.5)).frame(width: 2.5, height: 2.5)
-                        }
-                    }
-                    RoundedRectangle(cornerRadius: 2, style: .continuous).fill(t.muted(0.5)).frame(width: 16, height: 2.5)
+    private var accessibilityDragCard: some View {
+        HStack(spacing: 14) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 48, height: 48)
+                .onDrag {
+                    NSItemProvider(object: Bundle.main.bundleURL as NSURL)
+                } preview: {
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 56, height: 56)
                 }
+                .accessibilityLabel("Saymark application icon")
+                .accessibilityHint("Drag into the Accessibility app list in System Settings")
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Drag Saymark into System Settings")
+                    .font(.headline)
+                Text("Open Accessibility, then drag this icon into the app list.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .accessibilityHidden(true)   // decorative glyph; the card title carries the name
+
+            Spacer(minLength: 8)
+
+            Button("Open Accessibility") {
+                model.promptAccessibility()
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(14)
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(
+                    Color(nsColor: .separatorColor),
+                    style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+                )
+        }
     }
 }

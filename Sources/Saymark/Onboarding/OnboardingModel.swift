@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Foundation
 import KeyboardShortcuts
@@ -47,7 +48,7 @@ final class OnboardingModel {
     var canContinue: Bool { OnboardingFlow.canContinue(flow) }
     var showBack: Bool { flow.step != .welcome && !finished }
 
-    /// The current push-to-talk shortcut, for the Done screen's chips.
+    /// The configured dictation shortcut shown and exercised on Try It.
     var shortcutLabel: String {
         KeyboardShortcuts.getShortcut(for: .dictate)?.description ?? "⌃⌥Space"
     }
@@ -55,7 +56,11 @@ final class OnboardingModel {
     func next() {
         guard canContinue else { return }
         if flow.step == .permissions { stopAccessibilityPolling() }
-        if flow.step == .tryIt { tryEnd() }                   // stop + restore onUpdate on leave
+        if flow.step == .tryIt {
+            tryEnd()
+            finish()
+            return
+        }
         if flow.step == .done { finish(); return }
         // Download starts when the Download step itself appears (DownloadScreen
         // .onAppear) — no preemptive background load during earlier steps.
@@ -74,6 +79,7 @@ final class OnboardingModel {
         UserDefaults.standard.set(true, forKey: Self.didOnboardKey)
         finished = true
         onFinished?()                 // boot the live menu app (mic granted, models cached)
+        NSApp.keyWindow?.orderOut(nil)
     }
     func replay() {
         flow = OnboardingFlow.State(); finished = false; downloadError = nil
@@ -111,7 +117,9 @@ final class OnboardingModel {
     /// poll until the user flips it on — there's no AX-trust notification.
     func promptAccessibility() {
         if RuntimeEnvironment.isUITesting {
-            flow.accessibilityGranted = true
+            if !RuntimeEnvironment.isOnboardingReview {
+                flow.accessibilityGranted = true
+            }
             return
         }
         _ = Accessibility.prompt()
@@ -123,7 +131,7 @@ final class OnboardingModel {
     func refreshPermissions() {
         if RuntimeEnvironment.isUITesting {
             flow.micGranted = true
-            flow.accessibilityGranted = true
+            flow.accessibilityGranted = !RuntimeEnvironment.isOnboardingReview
             return
         }
         flow.micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
@@ -189,7 +197,7 @@ final class OnboardingModel {
                 self.downloadError = error.localizedDescription
                 self.downloadStarted = false                 // allow Retry
                 PostHogSDK.shared.capture("model_download_failed", properties: [
-                    "error": error.localizedDescription,
+                    "error_type": String(reflecting: type(of: error)),
                 ])
             }
         }
@@ -229,6 +237,8 @@ final class OnboardingModel {
     /// rapid re-press from starting a new utterance before teardown finishes —
     /// otherwise it would overlap start()/stop() on the shared session.
     @ObservationIgnored private var tryBusy = false
+    @ObservationIgnored private let tryHalo: any ListeningHaloControlling =
+        ActiveDisplayHaloController()
 
     /// Press: borrow the warmed session, redirect its updates into our field, and
     /// start an utterance. No-op if the pipeline isn't ready, already live,
@@ -239,6 +249,7 @@ final class OnboardingModel {
             tryConfirmed = ""
             tryPartial = ""
             tryListening = true
+            beginTryHaloIfNeeded()
             return
         }
         guard session.isReady(OnboardingFlow.modelPlan.mode), !tryListening, !tryBusy else { return }
@@ -253,8 +264,10 @@ final class OnboardingModel {
         do {
             try session.start(mode: OnboardingFlow.modelPlan.mode)
             tryListening = true
+            beginTryHaloIfNeeded()
         } catch {
             tryListening = false
+            tryHalo.dismiss()
             tryUpdateSubscription?.cancel()
             tryUpdateSubscription = nil
         }
@@ -266,10 +279,19 @@ final class OnboardingModel {
     func tryEnd() {
         guard tryListening else { return }
         tryListening = false
+        let completesWithHalo = TriggerMode.current == .toggle
+        if completesWithHalo {
+            tryHalo.stopListening()
+        } else {
+            tryHalo.dismiss()
+        }
         if RuntimeEnvironment.isUITesting {
-            tryConfirmed = "Saymark integration test"
+            tryConfirmed = "Write with your voice anywhere."
             tryPartial = ""
             flow.didTry = true
+            if completesWithHalo {
+                tryHalo.complete()
+            }
             return
         }
         tryBusy = true
@@ -290,6 +312,11 @@ final class OnboardingModel {
                         "word_count": final.split(separator: " ").count,
                     ])
                 }
+                if completesWithHalo, !final.isEmpty {
+                    self.tryHalo.complete()
+                } else {
+                    self.tryHalo.dismiss()
+                }
                 self.tryBusy = false
             }
         }
@@ -300,11 +327,23 @@ final class OnboardingModel {
     func tryReset() {
         tryConfirmed = ""
         tryPartial = ""
+        tryHalo.dismiss()
     }
 
     /// VoiceOver can't hold a key — double-tap toggles the utterance instead.
     func tryToggle() {
         if tryListening { tryEnd() } else { tryStart() }
+    }
+
+    private func beginTryHaloIfNeeded() {
+        guard TriggerMode.current == .toggle else {
+            tryHalo.dismiss()
+            return
+        }
+        let activeDisplay = NSScreen.screens.first {
+            NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
+        } ?? NSScreen.main
+        tryHalo.begin(on: activeDisplay)
     }
 
     /// Should onboarding be shown at launch?

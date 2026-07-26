@@ -1,0 +1,240 @@
+name: Signed release
+
+on:
+  push:
+    tags:
+      - "saymark-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Required source gates
+    uses: ./.github/workflows/quality.yml
+    permissions:
+      contents: read
+
+  provenance:
+    name: Protected main release provenance
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require an annotated tag reachable from origin/main
+        run: |
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] ||
+            { echo "Release workflow must run from a tag" >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" =~ ^saymark-v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+            { echo "Tag must be saymark-vX.Y.Z" >&2; exit 1; }
+          [[ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" == "tag" ]] ||
+            { echo "Release tags must be annotated, not lightweight" >&2; exit 1; }
+          tag_commit="$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")"
+          [[ "$tag_commit" == "$GITHUB_SHA" ]] ||
+            { echo "Checked-out commit does not match the release tag" >&2; exit 1; }
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+          git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main ||
+            { echo "Release tag commit is not reachable from origin/main" >&2; exit 1; }
+
+  release:
+    name: Sign, notarize, and publish
+    needs: provenance
+    runs-on: macos-26
+    timeout-minutes: 90
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+
+      - name: Validate release tag and protected secrets
+        env:
+          SIGNING_P12: ${{ secrets.SAYMARK_DEVELOPER_ID_APPLICATION_P12 }}
+          SIGNING_PASSWORD: ${{ secrets.SAYMARK_DEVELOPER_ID_APPLICATION_PASSWORD }}
+          EXPECTED_TEAM_ID: ${{ secrets.SAYMARK_DEVELOPER_TEAM_ID }}
+          EXPECTED_CERT_SHA256: ${{ secrets.SAYMARK_DEVELOPER_CERT_SHA256 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.SAYMARK_BUILD_KEYCHAIN_PASSWORD }}
+          NOTARY_KEY_ID: ${{ secrets.SAYMARK_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.SAYMARK_NOTARY_ISSUER_ID }}
+          NOTARY_PRIVATE_KEY: ${{ secrets.SAYMARK_NOTARY_PRIVATE_KEY }}
+        run: |
+          version="${GITHUB_REF_NAME#saymark-v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+            { echo "Tag must be saymark-vX.Y.Z" >&2; exit 1; }
+          for name in SIGNING_P12 SIGNING_PASSWORD EXPECTED_TEAM_ID \
+            EXPECTED_CERT_SHA256 KEYCHAIN_PASSWORD \
+            NOTARY_KEY_ID NOTARY_ISSUER_ID NOTARY_PRIVATE_KEY; do
+            [[ -n "${!name}" ]] || { echo "Missing protected secret: $name" >&2; exit 1; }
+          done
+          [[ "$EXPECTED_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] ||
+            { echo "SAYMARK_DEVELOPER_TEAM_ID must be a 10-character Apple Team ID" >&2; exit 1; }
+          expected_cert="${EXPECTED_CERT_SHA256//:/}"
+          [[ "$expected_cert" =~ ^[A-Fa-f0-9]{64}$ ]] ||
+            { echo "SAYMARK_DEVELOPER_CERT_SHA256 must be a SHA-256 fingerprint" >&2; exit 1; }
+
+      - name: Import signing identity into an ephemeral keychain
+        env:
+          SIGNING_P12: ${{ secrets.SAYMARK_DEVELOPER_ID_APPLICATION_P12 }}
+          SIGNING_PASSWORD: ${{ secrets.SAYMARK_DEVELOPER_ID_APPLICATION_PASSWORD }}
+          EXPECTED_TEAM_ID: ${{ secrets.SAYMARK_DEVELOPER_TEAM_ID }}
+          EXPECTED_CERT_SHA256: ${{ secrets.SAYMARK_DEVELOPER_CERT_SHA256 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.SAYMARK_BUILD_KEYCHAIN_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/saymark-release.keychain-db"
+          p12="$RUNNER_TEMP/saymark-release.p12"
+          printf '%s' "$SIGNING_P12" | base64 --decode > "$p12"
+          certificate="$RUNNER_TEMP/saymark-release-certificate.pem"
+          openssl pkcs12 -in "$p12" -clcerts -nokeys \
+            -passin env:SIGNING_PASSWORD -out "$certificate"
+          actual_cert_sha256="$(
+            openssl x509 -in "$certificate" -outform DER |
+              shasum -a 256 | awk '{print toupper($1)}'
+          )"
+          expected_cert_sha256="$(tr -d ':' <<<"$EXPECTED_CERT_SHA256" | tr '[:lower:]' '[:upper:]')"
+          [[ "$actual_cert_sha256" == "$expected_cert_sha256" ]] ||
+            { echo "Developer ID certificate SHA-256 does not match protected fingerprint" >&2; exit 1; }
+          actual_team_id="$(
+            openssl x509 -in "$certificate" -noout -subject -nameopt RFC2253 |
+              sed -nE 's/.*OU=([^,]+).*/\1/p'
+          )"
+          [[ "$actual_team_id" == "$EXPECTED_TEAM_ID" ]] ||
+            { echo "Developer ID certificate team does not match protected Team ID" >&2; exit 1; }
+          identity_sha1="$(
+            openssl x509 -in "$certificate" -outform DER |
+              shasum | awk '{print toupper($1)}'
+          )"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$p12" -k "$keychain" -P "$SIGNING_PASSWORD" -x -t agg -f pkcs12
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -d user -s "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$keychain"
+          security find-identity -v -p codesigning "$keychain" |
+            awk -v expected="$identity_sha1" 'toupper($2) == expected { found=1 } END { exit !found }' ||
+            { echo "Expected Developer ID identity was not imported" >&2; exit 1; }
+          echo "SAYMARK_SIGNING_IDENTITY_SHA1=$identity_sha1" >> "$GITHUB_ENV"
+          rm -f "$p12" "$certificate"
+
+      - name: Generate release project
+        run: |
+          version="${GITHUB_REF_NAME#saymark-v}"
+          TUIST_APP_VERSION="$version" \
+          TUIST_APP_BUILD="${GITHUB_RUN_NUMBER}" \
+            tuist generate --no-open
+
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Archive with Developer ID and Hardened Runtime
+        run: |
+          identity="$SAYMARK_SIGNING_IDENTITY_SHA1"
+          xcodebuild archive \
+            -workspace Saymark.xcworkspace \
+            -scheme Saymark \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -archivePath "$RUNNER_TEMP/Saymark.xcarchive" \
+            -skipPackagePluginValidation \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$identity" \
+            CODE_SIGN_ENTITLEMENTS=Saymark.entitlements \
+            ENABLE_HARDENED_RUNTIME=YES \
+            OTHER_CODE_SIGN_FLAGS="--timestamp"
+
+      - name: Reject an unsigned or weakened archive
+        env:
+          EXPECTED_TEAM_ID: ${{ secrets.SAYMARK_DEVELOPER_TEAM_ID }}
+          EXPECTED_CERT_SHA256: ${{ secrets.SAYMARK_DEVELOPER_CERT_SHA256 }}
+        run: |
+          Scripts/verify-release-app.sh \
+            "$RUNNER_TEMP/Saymark.xcarchive/Products/Applications/Saymark.app" \
+            --team-id "$EXPECTED_TEAM_ID" \
+            --cert-sha256 "$EXPECTED_CERT_SHA256"
+
+      - name: Verify bundled legal notices
+        run: |
+          Scripts/check-legal-notices.sh \
+            "$RUNNER_TEMP/Saymark.xcarchive/Products/Applications/Saymark.app"
+
+      - name: Notarize, staple, and assess
+        env:
+          NOTARY_KEY_ID: ${{ secrets.SAYMARK_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.SAYMARK_NOTARY_ISSUER_ID }}
+          NOTARY_PRIVATE_KEY: ${{ secrets.SAYMARK_NOTARY_PRIVATE_KEY }}
+          EXPECTED_TEAM_ID: ${{ secrets.SAYMARK_DEVELOPER_TEAM_ID }}
+          EXPECTED_CERT_SHA256: ${{ secrets.SAYMARK_DEVELOPER_CERT_SHA256 }}
+        run: |
+          app="$RUNNER_TEMP/Saymark.xcarchive/Products/Applications/Saymark.app"
+          submission="$RUNNER_TEMP/Saymark-notary.zip"
+          key="$RUNNER_TEMP/AuthKey_${NOTARY_KEY_ID}.p8"
+          printf '%s' "$NOTARY_PRIVATE_KEY" > "$key"
+          chmod 600 "$key"
+          ditto -c -k --keepParent "$app" "$submission"
+          xcrun notarytool submit "$submission" \
+            --key "$key" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait
+          rm -f "$key"
+          xcrun stapler staple "$app"
+          Scripts/verify-release-app.sh "$app" \
+            --team-id "$EXPECTED_TEAM_ID" \
+            --cert-sha256 "$EXPECTED_CERT_SHA256" \
+            --notarized
+
+      - name: Package verified artifact
+        run: |
+          app="$RUNNER_TEMP/Saymark.xcarchive/Products/Applications/Saymark.app"
+          artifact_name="Saymark-${GITHUB_REF_NAME#saymark-v}-arm64.zip"
+          artifact="$RUNNER_TEMP/$artifact_name"
+          ditto -c -k --keepParent "$app" "$artifact"
+          (
+            cd "$RUNNER_TEMP"
+            shasum -a 256 "$artifact_name" > "${artifact_name}.sha256"
+          )
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#saymark-v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/Saymark-${version}-arm64.zip" \
+            "$RUNNER_TEMP/Saymark-${version}-arm64.zip.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "Saymark ${version}"
+
+      - name: Remove ephemeral signing material
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/saymark-release.keychain-db" 2>/dev/null || true
+          rm -f \
+            "$RUNNER_TEMP/saymark-release.p12" \
+            "$RUNNER_TEMP/saymark-release-certificate.pem" \
+            "$RUNNER_TEMP"/AuthKey_*.p8

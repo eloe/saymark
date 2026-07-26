@@ -2,9 +2,9 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// Floating dictation HUD (design: Saymark.dc.html). A non-activating, click-through
-/// borderless NSPanel (we type into another app's field at the same time) hosting a
-/// SwiftUI glass pill that adapts to light/dark. Three states — listening,
+/// Floating dictation HUD. A non-activating, click-through borderless NSPanel (we
+/// type into another app's field at the same time) hosting a SwiftUI glass pill
+/// that adapts to light/dark. Three states — listening,
 /// transcribing (two-tier coloured text), error — plus a larger "presentation"
 /// subtitle variant for HUD-only mode.
 
@@ -15,16 +15,35 @@ final class HUDModel {
     var confirmed = ""
     var partial = ""
     var lang = "Auto"
+    var shortcutLabel = "⌃⌥Space"
     var errorTitle = "No microphone access"
     var errorText = "Open Privacy in Settings →"
     var presentation = false      // HUD-only / subtitles
     var recording = false
+    var showingFinal = false
     var showStop = false          // toggle-mode: HUD shows a clickable Stop
     var onStop: () -> Void = {}
 
-    /// Rolling caption bounds: compact dictation stays unobtrusive; HUD-only
-    /// presentation gets enough room for several sentences.
-    var transcriptLineLimit: Int { presentation ? 6 : 3 }
+    /// Live captions stay compact. Final text is never line-truncated: the HUD
+    /// expands and exposes the entire wrapped value in a native scroll view.
+    var transcriptLineLimit: Int? { showingFinal ? nil : (presentation ? 6 : 3) }
+    var usesScrollableTranscript: Bool { showingFinal }
+    var transcriptAccessibilityLabel: String {
+        [confirmed, partial].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    var requiresExpandedFinal: Bool {
+        showingFinal && (transcriptAccessibilityLabel.count >= 180 ||
+                         transcriptAccessibilityLabel.split(whereSeparator: \.isWhitespace).count >= 32)
+    }
+
+    var finalDisplayDuration: TimeInterval {
+        guard showingFinal else { return 1.6 }
+        let words = transcriptAccessibilityLabel.split(whereSeparator: \.isWhitespace).count
+        // A final result should read as a stable completion state, not a flash.
+        // Long dictations linger longer, while the cap keeps the HUD temporary.
+        return min(12.0, max(3.2, 2.4 + Double(words) * 0.045))
+    }
 }
 
 // MARK: - Building blocks
@@ -34,14 +53,15 @@ private struct LevelBars: View {
     var color: Color
     var count: Int = 4
     var barHeight: CGFloat = 13
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var up = false
     var body: some View {
         HStack(spacing: 2) {
             ForEach(0 ..< count, id: \.self) { i in
                 Capsule().fill(color)
                     .frame(width: 2.5, height: barHeight)
-                    .scaleEffect(y: up ? 1 : 0.32, anchor: .center)
-                    .animation(.easeInOut(duration: 0.45).repeatForever(autoreverses: true)
+                    .scaleEffect(y: (up || reduceMotion) ? 1 : 0.32, anchor: .center)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.45).repeatForever(autoreverses: true)
                         .delay(Double(i) * 0.12), value: up)
             }
         }
@@ -49,16 +69,12 @@ private struct LevelBars: View {
     }
 }
 
-/// Pulsing status dot (`murpulse`).
-private struct PulseDot: View {
+/// Static status dot; the adjacent level bars carry the listening motion.
+private struct StatusDot: View {
     var color: Color
     var size: CGFloat = 8
-    @State private var on = false
     var body: some View {
         Circle().fill(color).frame(width: size, height: size)
-            .opacity(on ? 0.4 : 1).scaleEffect(on ? 0.78 : 1)
-            .animation(.easeInOut(duration: 0.75).repeatForever(autoreverses: true), value: on)
-            .onAppear { on = true }
     }
 }
 
@@ -92,7 +108,13 @@ private struct HUDView: View {
     private var header: some View {
         HStack(spacing: 10) {
             brandIcon(18)
-            LevelBars(color: SaymarkTheme.accent, count: 4, barHeight: 13)
+            if model.showingFinal {
+                Label("Transcribed", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(SaymarkTheme.accent)
+            } else {
+                LevelBars(color: SaymarkTheme.accent, count: 4, barHeight: 13)
+            }
             Spacer(minLength: 8)
             Text(model.lang.uppercased())
                 .font(.system(size: 10, weight: .medium)).tracking(0.4)
@@ -121,20 +143,37 @@ private struct HUDView: View {
         let big = model.presentation
         return VStack(alignment: .leading, spacing: big ? 12 : 9) {
             header
-            TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
-                let on = Int(ctx.date.timeIntervalSinceReferenceDate / 0.5) % 2 == 0
-                (transcript + Text("▏").foregroundStyle(SaymarkTheme.accent.opacity(on ? 1 : 0)))
-                    .font(.system(size: big ? 30 : 21))
-                    .lineSpacing(big ? 8 : 6)
-                    .lineLimit(model.transcriptLineLimit)
-                    .truncationMode(.head)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if model.showingFinal {
+                ScrollView(.vertical) {
+                    transcript
+                        .font(.system(size: big ? 25 : 19))
+                        .lineSpacing(big ? 7 : 5)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("hud.final-transcript")
+                        .accessibilityLabel(model.transcriptAccessibilityLabel)
+                }
+                .scrollIndicators(.automatic)
+                .frame(maxHeight: big ? 300 : 220)
+                .accessibilityIdentifier("hud.final-transcript-scroll")
+            } else {
+                TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+                    let on = Int(ctx.date.timeIntervalSinceReferenceDate / 0.5) % 2 == 0
+                    (transcript + Text("▏").foregroundStyle(SaymarkTheme.accent.opacity(on ? 1 : 0)))
+                        .font(.system(size: big ? 30 : 21))
+                        .lineSpacing(big ? 8 : 6)
+                        .lineLimit(model.transcriptLineLimit)
+                        .truncationMode(.head)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("hud.live-transcript")
+                }
             }
         }
         .padding(.horizontal, big ? 24 : 16)
         .padding(.vertical, big ? 18 : 13)
         .frame(maxWidth: big ? 820 : 460, alignment: .leading)
-        .murPill(scheme, radius: big ? 18 : 16, border: borderColor)
+        .saymarkPill(scheme, radius: big ? 18 : 16, border: borderColor)
     }
 
     private var transcript: Text {
@@ -159,14 +198,14 @@ private struct HUDView: View {
 
     private var listeningPill: some View {
         HStack(spacing: 13) {
-            PulseDot(color: SaymarkTheme.accent, size: 8)
+            StatusDot(color: SaymarkTheme.accent, size: 8)
             Text("Listening…").font(.system(size: 15))
                 .foregroundStyle(scheme == .dark ? Color.white.opacity(0.92) : SaymarkTheme.ink)
             LevelBars(color: SaymarkTheme.accent, count: 5, barHeight: 16)
             if model.showStop { stopButton } else { hotkeyBadge }
         }
         .padding(.horizontal, 17).padding(.vertical, 11)
-        .murPill(scheme, radius: 14, border: borderColor)
+        .saymarkPill(scheme, radius: 14, border: borderColor)
     }
 
     private var errorPill: some View {
@@ -184,11 +223,11 @@ private struct HUDView: View {
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
-        .murPill(scheme, radius: 14, border: SaymarkTheme.error.opacity(0.4))
+        .saymarkPill(scheme, radius: 14, border: SaymarkTheme.error.opacity(0.4))
     }
 
     private var hotkeyBadge: some View {
-        Text("⌥ Space").font(.system(size: 11, design: .monospaced))
+        Text(model.shortcutLabel).font(.system(size: 11, design: .monospaced))
             .foregroundStyle(scheme == .dark ? Color.white.opacity(0.5) : SaymarkTheme.ink.opacity(0.55))
             .padding(.horizontal, 6).padding(.vertical, 3)
             .background(scheme == .dark ? Color.white.opacity(0.09) : SaymarkTheme.ink.opacity(0.07),
@@ -204,15 +243,14 @@ private struct HUDView: View {
     }
 }
 
-/// Glass-pill background: blurred material + neutral tint + hairline border + shadow.
+/// Native material pill with a hairline border and shallow separation shadow.
 private extension View {
-    func murPill(_ scheme: ColorScheme, radius: CGFloat, border: Color) -> some View {
+    func saymarkPill(_ scheme: ColorScheme, radius: CGFloat, border: Color) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return self
-            .background(SaymarkTheme.glass(scheme), in: shape)
-            .background(.ultraThinMaterial, in: shape)
+            .background(.regularMaterial, in: shape)
             .overlay(shape.strokeBorder(border, lineWidth: 1))
-            .shadow(color: .black.opacity(scheme == .dark ? 0.42 : 0.18), radius: 22, y: 14)
+            .shadow(color: .black.opacity(scheme == .dark ? 0.28 : 0.12), radius: 8, y: 3)
     }
 }
 
@@ -282,21 +320,48 @@ final class HUDController {
     private var hideWork: HUDCancellation?
     private let scheduler: any HUDHideScheduling
     private let animator: any HUDAnimating
+    private let halo: any ListeningHaloControlling
+    private(set) var isListeningHaloVisible = false
+    private var completesWithHalo = false
     private let normalSize = NSSize(width: 940, height: 260)
     private let presentationSize = NSSize(width: 940, height: 380)
+    private let expandedFinalSize = NSSize(width: 940, height: 410)
+    private let expandedPresentationFinalSize = NSSize(width: 940, height: 510)
+    var hasAttachedViewTree: Bool { panel?.contentView != nil }
 
     convenience init() {
-        self.init(scheduler: DispatchHUDHideScheduler(), animator: AppKitHUDAnimator())
+        self.init(
+            scheduler: DispatchHUDHideScheduler(),
+            animator: AppKitHUDAnimator(),
+            halo: ActiveDisplayHaloController()
+        )
     }
 
-    init(scheduler: any HUDHideScheduling, animator: any HUDAnimating) {
+    convenience init(scheduler: any HUDHideScheduling, animator: any HUDAnimating) {
+        self.init(
+            scheduler: scheduler,
+            animator: animator,
+            halo: ActiveDisplayHaloController()
+        )
+    }
+
+    init(scheduler: any HUDHideScheduling,
+         animator: any HUDAnimating,
+         halo: any ListeningHaloControlling) {
         self.scheduler = scheduler
         self.animator = animator
+        self.halo = halo
     }
 
     /// Reveal the HUD for a new utterance. `interactive` (toggle mode) makes the
     /// panel accept clicks so the Stop button works.
-    func begin(presentation: Bool, lang: String, interactive: Bool = false, onStop: @escaping () -> Void = {}) {
+    func begin(
+        presentation: Bool,
+        lang: String,
+        shortcutLabel: String = "⌃⌥Space",
+        interactive: Bool = false,
+        onStop: @escaping () -> Void = {}
+    ) {
         hideWork?.cancel(); hideWork = nil
         presentationID += 1
         let size = presentation ? presentationSize : normalSize
@@ -304,18 +369,31 @@ final class HUDController {
         panel.setContentSize(size)
         model.presentation = presentation
         model.lang = lang
+        model.shortcutLabel = shortcutLabel
         model.phase = .listening
         model.confirmed = ""; model.partial = ""
         model.recording = true
+        model.showingFinal = false
         model.showStop = interactive
         model.onStop = onStop
         panel.ignoresMouseEvents = !interactive
         position(panel)
         animator.show(panel)
+        completesWithHalo = interactive
+        isListeningHaloVisible = interactive
+        if interactive {
+            let activeDisplay = NSScreen.screens.first {
+                NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
+            } ?? NSScreen.main
+            halo.begin(on: activeDisplay)
+        } else {
+            halo.dismiss()
+        }
     }
 
     /// Live two-tier update.
     func update(confirmed: String, partial: String) {
+        model.showingFinal = false
         model.confirmed = confirmed
         model.partial = partial
         if model.phase != .error {
@@ -331,7 +409,12 @@ final class HUDController {
         model.confirmed = ""
         model.partial = ""
         model.recording = false
+        model.showingFinal = false
         model.showStop = false
+        if isListeningHaloVisible {
+            halo.stopListening()
+            isListeningHaloVisible = false
+        }
     }
 
     /// Surface a mic/permission error in the HUD.
@@ -349,7 +432,11 @@ final class HUDController {
         model.errorTitle = title
         if !detail.isEmpty { model.errorText = detail }
         model.recording = false
+        model.showingFinal = false
         model.showStop = false
+        halo.dismiss()
+        isListeningHaloVisible = false
+        completesWithHalo = false
         position(panel)
         animator.show(panel)
         scheduleHide(after: delay)
@@ -361,9 +448,28 @@ final class HUDController {
         model.recording = false
         model.showStop = false
         if !finalText.isEmpty {
-            model.confirmed = finalText; model.partial = ""; model.phase = .transcribing
+            model.confirmed = finalText
+            model.partial = ""
+            model.showingFinal = true
+            model.phase = .transcribing
+            if model.requiresExpandedFinal, let panel {
+                let size = model.presentation ? expandedPresentationFinalSize : expandedFinalSize
+                panel.setContentSize(size)
+                panel.ignoresMouseEvents = false
+                position(panel)
+            }
         }
-        scheduleHide(after: model.presentation ? 4.0 : 1.6)
+        if completesWithHalo, !finalText.isEmpty {
+            halo.complete()
+        } else {
+            halo.dismiss()
+        }
+        isListeningHaloVisible = false
+        completesWithHalo = false
+        let delay = model.showingFinal
+            ? model.finalDisplayDuration
+            : (model.presentation ? 4.0 : 1.6)
+        scheduleHide(after: delay)
     }
 
     private func scheduleHide(after delay: TimeInterval) {

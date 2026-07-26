@@ -71,6 +71,27 @@ final class HUDPanelIntegrationTests: XCTestCase {
         XCTAssertNil(controller.panel)
     }
 
+    func testLongFinalStillDestroysScrollableHostedViewAndReleasesPanel() {
+        let (controller, scheduler, animator) = makeHUDController()
+        controller.begin(presentation: false, lang: "Auto")
+        let finalText = Array(
+            repeating: "This long dictated passage remains wrapped and scrollable until teardown.",
+            count: 30
+        ).joined(separator: " ")
+        controller.finish(finalText)
+        let panel = controller.panel
+
+        XCTAssertEqual(controller.model.transcriptAccessibilityLabel, finalText)
+        XCTAssertTrue(controller.model.usesScrollableTranscript)
+        XCTAssertNotNil(panel?.contentView)
+
+        scheduler.fire(0)
+        animator.completeHide()
+
+        XCTAssertNil(panel?.contentView)
+        XCTAssertNil(controller.panel)
+    }
+
     func testNextPresentationCreatesFreshPanelAndViewTreeAfterTeardown() {
         let (controller, scheduler, animator) = makeHUDController()
         controller.begin(presentation: false, lang: "Auto")
@@ -95,7 +116,9 @@ final class HUDPanelIntegrationTests: XCTestCase {
         controller.begin(presentation: false, lang: "Auto")
         controller.finish("done")
 
-        let didStartHiding = await waitForHUDCondition { animator.hiddenPanels.count == 1 }
+        let didStartHiding = await waitForHUDCondition(timeout: .seconds(5)) {
+            animator.hiddenPanels.count == 1
+        }
         XCTAssertTrue(didStartHiding)
         animator.completeHide()
         XCTAssertNil(controller.panel)

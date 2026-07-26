@@ -1,0 +1,86 @@
+name: Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Repository policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Legal notices
+        run: Scripts/check-legal-notices.sh
+
+      - name: Current-tree and history credential policy
+        run: Scripts/security-audit.sh
+
+      - name: App dependency lock agreement
+        run: node Scripts/check-app-dependencies.mjs
+
+      - name: Generated architecture agreement
+        run: node Scripts/generate-architecture-map.mjs --check
+
+  swift:
+    name: Swift core and app tests
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Test SaymarkKit without real model downloads
+        working-directory: SaymarkKit
+        run: swift test -c release
+
+      - name: Generate the local app project
+        env:
+          TUIST_SAYMARK_LOCAL_BUILD: "1"
+          TUIST_APP_VERSION: "0.1.1"
+          TUIST_APP_BUILD: ${{ github.run_number }}
+        run: tuist generate --no-open
+
+      - name: Test the app and HUD
+        run: |
+          xcodebuild test \
+            -workspace Saymark.xcworkspace \
+            -scheme Saymark \
+            -configuration Release \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/saymark-app-tests" \
+            -skipPackagePluginValidation \
+            -only-testing:SaymarkTests \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+            ENABLE_TESTABILITY=YES \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM=

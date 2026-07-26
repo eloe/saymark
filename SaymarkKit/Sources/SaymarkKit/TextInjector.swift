@@ -15,10 +15,18 @@ import Foundation
 /// are blocked by **secure input** (password fields / secure-keyboard terminals).
 /// We detect that and refuse gracefully rather than silently dropping text.
 public enum TextInjector {
-    public enum Result: Sendable {
+    public enum Result: Sendable, Equatable {
         case pasted              // ⌘V sent into the field; clipboard restored
         case copiedSecureInput   // secure input on → left on the clipboard for manual ⌘V
         case failed              // couldn't synthesize the events
+    }
+
+    /// Observable result of the delayed clipboard-restoration policy. This is
+    /// SPI for deterministic tests; production callers use `paste(_:)`.
+    @_spi(Testing)
+    public enum RestoreResult: Sendable, Equatable {
+        case restoredOriginal
+        case preservedNewerClipboard
     }
 
     /// True when some process has secure event input enabled — synthetic key
@@ -31,8 +39,54 @@ public enum TextInjector {
     /// lost. Call on the main thread (pasteboard + a short async restore).
     @discardableResult
     public static func paste(_ text: String) -> Result {
+        paste(
+            text,
+            pasteboard: .general,
+            secureInputActive: secureInputActive,
+            postPaste: postPasteShortcut,
+            restoreDelay: 0.12,
+            onRestore: nil
+        )
+    }
+
+    /// Deterministic seam for UI and policy tests. It runs the exact production
+    /// snapshot/write/change-count/restore implementation while substituting
+    /// only the two macOS boundaries that cannot be controlled in automation:
+    /// secure-input state and delivery of the synthetic ⌘V event.
+    @_spi(Testing)
+    @discardableResult
+    public static func pasteForTesting(
+        _ text: String,
+        pasteboard: NSPasteboard = .general,
+        secureInputActive: Bool = false,
+        restoreDelay: TimeInterval = 0.01,
+        postPaste: @escaping () -> Bool,
+        onRestore: @escaping (RestoreResult) -> Void = { _ in }
+    ) -> Result {
+        paste(
+            text,
+            pasteboard: pasteboard,
+            secureInputActive: secureInputActive,
+            postPaste: postPaste,
+            restoreDelay: restoreDelay,
+            onRestore: { result in
+                switch result {
+                case .restoredOriginal: onRestore(.restoredOriginal)
+                case .preservedNewerClipboard: onRestore(.preservedNewerClipboard)
+                }
+            }
+        )
+    }
+
+    private static func paste(
+        _ text: String,
+        pasteboard pb: NSPasteboard,
+        secureInputActive: Bool,
+        postPaste: () -> Bool,
+        restoreDelay: TimeInterval,
+        onRestore: ((RestoreResultShim) -> Void)?
+    ) -> Result {
         guard !text.isEmpty else { return .failed }
-        let pb = NSPasteboard.general
 
         // Secure input → ⌘V won't reach the field. Leave the text on the clipboard.
         if secureInputActive {
@@ -45,17 +99,28 @@ public enum TextInjector {
         pb.clearContents()
         pb.setString(text, forType: .string)
         let mine = pb.changeCount
-        guard postPasteShortcut() else { return .failed }
+        guard postPaste() else { return .failed }
 
         // Restore once the target has read the pasteboard — but only if nothing
         // else wrote to it since (guard with changeCount so we never clobber a
         // copy the user made in between).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            guard pb.changeCount == mine else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay) {
+            guard pb.changeCount == mine else {
+                onRestore?(.preservedNewerClipboard)
+                return
+            }
             pb.clearContents()
             if let saved, !saved.isEmpty { pb.writeObjects(saved) }
+            onRestore?(.restoredOriginal)
         }
         return .pasted
+    }
+
+    /// Internal spelling keeps the production implementation free of a public
+    /// test-only type when compiling non-Debug distributions.
+    private enum RestoreResultShim {
+        case restoredOriginal
+        case preservedNewerClipboard
     }
 
     /// Deep-copy the current pasteboard items so we can put them back after paste.

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="150" y1="100" x2="880" y2="920" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#323943"/>
+      <stop offset=".55" stop-color="#171b21"/>
+      <stop offset="1" stop-color="#0d0f13"/>
+    </linearGradient>
+    <linearGradient id="trace" x1="180" y1="350" x2="650" y2="670" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#88c8ff"/>
+      <stop offset=".62" stop-color="#3a9eff"/>
+      <stop offset="1" stop-color="#1688f8"/>
+    </linearGradient>
+  </defs>
+  <!-- Optically simplified master for the non-Retina 16-pixel slot. -->
+  <rect x="64" y="64" width="896" height="896" rx="205" fill="url(#tile)"/>
+  <rect x="68" y="68" width="888" height="888" rx="201" fill="none"
+        stroke="#ffffff" stroke-opacity=".22" stroke-width="10"/>
+  <path d="M180 512 H310
+           C355 512 355 360 405 360
+           C455 360 455 664 505 664
+           C555 664 555 512 605 512
+           H650"
+        fill="none" stroke="url(#trace)" stroke-width="92"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M746 330 V694"
+        fill="none" stroke="#f5f7fa" stroke-width="112"
+        stroke-linecap="round"/>
+</svg>

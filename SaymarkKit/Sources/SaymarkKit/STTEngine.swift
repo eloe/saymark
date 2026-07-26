@@ -59,8 +59,22 @@ final class STTEngine: @unchecked Sendable {
 
         if !queue.sync(execute: { vadLoaded }) {
             let vadStarted = ProcessInfo.processInfo.systemUptime
-            SaymarkDiagnostics.log(.info, "vad.load_started", fields: ["repository": "mlx-community/silero-vad"])
-            let silero = try? await SileroVAD.fromPretrained("mlx-community/silero-vad")
+            let sileroDescriptor = SaymarkModelCatalog.silero
+            SaymarkDiagnostics.log(.info, "vad.load_started", fields: [
+                "repository": sileroDescriptor.repository,
+                "revision": sileroDescriptor.revision,
+            ])
+            let silero: SileroVAD?
+            do {
+                _ = try await PinnedModelStore.shared.ensure(sileroDescriptor)
+                silero = try await SileroVAD.fromPretrained(sileroDescriptor.repository)
+            } catch {
+                SaymarkDiagnostics.log(.warn, "vad.load_failed", fields: [
+                    "repository": sileroDescriptor.repository,
+                    "error_type": String(reflecting: type(of: error)),
+                ])
+                silero = nil
+            }
             queue.sync {
                 if let silero, let st = try? silero.initialState(sampleRate: 16000) {
                     _ = try? silero.feed(chunk: MLXArray([Float](repeating: 0, count: 512)), state: st)

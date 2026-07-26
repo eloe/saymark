@@ -5,6 +5,7 @@
 DerivedData/
 xcuserdata/
 *.profraw
+Benchmarks/Corpus/local/
 
 # Tuist (generated)
 *.xcodeproj
@@ -13,6 +14,7 @@ Derived/
 .tuist/
 Tuist/.build/
 graph.*
+Artifacts/
 
 # Xcode build output
 build/
