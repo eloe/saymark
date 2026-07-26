@@ -106,7 +106,7 @@ struct PermissionsScreen: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Drag Saymark into System Settings")
                     .font(.headline)
-                Text("Open Accessibility, then drag this icon into the app list.")
+                Text("Choose Open System Settings in the macOS prompt, then drag this icon into the app list.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -114,7 +114,7 @@ struct PermissionsScreen: View {
 
             Spacer(minLength: 8)
 
-            Button("Open Accessibility") {
+            Button("Set Up Accessibility") {
                 model.promptAccessibility()
             }
             .buttonStyle(.bordered)

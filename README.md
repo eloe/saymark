@@ -2,8 +2,9 @@
 
 > Speak naturally. Write anywhere.
 
-Saymark is a native macOS voice-writing app. Hold a global shortcut, speak, and
-Saymark inserts the finished text into the field you were already using.
+Saymark is a native macOS voice-writing app. Hold a global shortcut while
+speaking, or press it once to start and again to stop. Saymark inserts the
+finished text into the field you were already using.
 
 The current development build runs transcription locally on Apple silicon. It
 supports an efficient final-transcript mode and an optional live-preview mode
@@ -56,6 +57,7 @@ automated testing, performance gates, diagnostics, and privacy/security.
 ## Architecture
 
 - `Sources/Saymark/` — native macOS app and HUD
+- `Sources/Saymark/Onboarding/` — native first-run setup and shortcut practice
 - `SaymarkKit/` — capture, VAD, model orchestration, transcription, and insertion
 - `Tests/SaymarkTests/` — app and HUD tests
 - `Tests/SaymarkUITests/` — XCUITest application flows
