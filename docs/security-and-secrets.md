@@ -138,8 +138,9 @@ analysis:
   Gitleaks configuration, and non-Swift security automation skip the traced
   Swift build but still report the required `CodeQL policy gate`. The fast
   repository-policy and secrets checks audit those DevOps changes.
-- Pushes to `main`, release tags, the weekly schedule, and manual dispatches run
-  the `security-extended` suite.
+- Release tags, the weekly schedule, and manual dispatches run the
+  `security-extended` suite. Protected `main` receives only pull-request
+  changes, so it does not repeat the same traced build immediately after merge.
 
 The required branch-protection context is `CodeQL policy gate`, not the
 conditionally skipped `Swift security analysis` context. Keep compiled
