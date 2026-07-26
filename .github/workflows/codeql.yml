@@ -3,6 +3,8 @@ name: CodeQL
 on:
   push:
     branches: [main]
+    tags:
+      - "saymark-v*"
   pull_request:
     branches: [main]
   schedule:
@@ -11,13 +13,81 @@ on:
 
 permissions:
   contents: read
-  security-events: write
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  classify:
+    name: Classify CodeQL scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      query_suite: ${{ steps.scope.outputs.query_suite }}
+      run_codeql: ${{ steps.scope.outputs.run_codeql }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select scan depth from the event and changed paths
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "run_codeql=true" >> "$GITHUB_OUTPUT"
+            echo "query_suite=security-extended" >> "$GITHUB_OUTPUT"
+            echo "Full extended scan required for $EVENT_NAME."
+            exit 0
+          fi
+
+          echo "query_suite=default" >> "$GITHUB_OUTPUT"
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git cat-file -e "${HEAD_SHA}^{commit}"
+          git diff --name-only -z "$BASE_SHA...$HEAD_SHA" \
+            > "$RUNNER_TEMP/codeql-changed-paths"
+
+          run_codeql=false
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              *.swift|\
+              *.entitlements|\
+              *.pbxproj|\
+              *.plist|\
+              *.resolved|\
+              *.xcconfig|\
+              *.xcscheme|\
+              .github/codeql*.yaml|\
+              .github/codeql*.yml|\
+              .github/codeql/*|\
+              .mise.toml|\
+              Makefile)
+                echo "CodeQL-relevant change: $path"
+                run_codeql=true
+                ;;
+            esac
+          done < "$RUNNER_TEMP/codeql-changed-paths"
+
+          echo "run_codeql=$run_codeql" >> "$GITHUB_OUTPUT"
+          if [[ "$run_codeql" == "false" ]]; then
+            echo "Skipping traced Swift build: no Swift or build inputs changed."
+          fi
+
   analyze:
     name: Swift security analysis
+    needs: classify
+    if: needs.classify.outputs.run_codeql == 'true'
     runs-on: macos-26
     timeout-minutes: 90
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -42,7 +112,18 @@ jobs:
 
       # Initialize only after Tuist runs. CodeQL's DYLD tracer prevents Tuist
       # from locating its bundled ProjectDescription resource on hosted macOS.
-      - name: Initialize CodeQL
+      # The default query suite is implicit in advanced setup. The `queries`
+      # input is only for additional suites, so omit it entirely on pull
+      # requests instead of passing the unsupported string "default".
+      - name: Initialize CodeQL with the default query suite
+        if: needs.classify.outputs.query_suite == 'default'
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+        with:
+          languages: swift
+          build-mode: manual
+
+      - name: Initialize CodeQL with the extended query suite
+        if: needs.classify.outputs.query_suite == 'security-extended'
         uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           languages: swift
@@ -89,3 +170,29 @@ jobs:
         uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           category: /language:swift
+
+  gate:
+    name: CodeQL policy gate
+    needs: [classify, analyze]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the selected CodeQL policy
+        env:
+          ANALYZE_RESULT: ${{ needs.analyze.result }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          RUN_CODEQL: ${{ needs.classify.outputs.run_codeql }}
+        run: |
+          [[ "$CLASSIFY_RESULT" == "success" ]] ||
+            { echo "CodeQL scope classification failed." >&2; exit 1; }
+
+          if [[ "$RUN_CODEQL" == "true" ]]; then
+            [[ "$ANALYZE_RESULT" == "success" ]] ||
+              { echo "Required Swift CodeQL analysis did not succeed." >&2; exit 1; }
+            echo "Required Swift CodeQL analysis succeeded."
+          else
+            [[ "$ANALYZE_RESULT" == "skipped" ]] ||
+              { echo "Unexpected CodeQL result for a skipped scan: $ANALYZE_RESULT" >&2; exit 1; }
+            echo "Swift CodeQL correctly skipped: no Swift or build inputs changed."
+          fi
