@@ -6,6 +6,7 @@ Start with the documents that match the work you are doing:
 - [`architecture.json`](architecture.json) — machine-readable handoff for agents and tooling
 - [`architecture.md`](architecture.md) — app boundaries and the dictation lifecycle
 - [`product-roadmap.md`](product-roadmap.md) — benchmark-gated product sequence and competitive target
+- [`language-correction-quality-sdd.md`](language-correction-quality-sdd.md) — proposed (not shipped) vocabulary, deterministic correction, and language-quality implementation contract
 - [`development.md`](development.md) — local setup, build, signing, and installation
 - [`integration-testing.md`](integration-testing.md) — automated macOS application tests
 - [`performance-acceptance.md`](performance-acceptance.md) — release performance and quality gates

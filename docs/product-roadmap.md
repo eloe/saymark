@@ -145,8 +145,9 @@ Deliverables:
 
 - local vocabulary management with import, export, search, enable/disable, and
   delete;
-- deterministic normalization for spoken URLs, emails, acronyms, and explicitly
-  configured replacements;
+- deterministic normalization for explicitly configured heard-to-write
+  replacements, including user-authored aliases for URLs, emails, and acronyms;
+  built-in parsing/normalization of those forms is deferred;
 - a documented adapter boundary for model-native prompting or biasing where a
   speech model supports it;
 - per-entry tests and an opt-in diagnostic that reports only aggregate match
