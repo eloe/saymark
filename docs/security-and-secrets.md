@@ -131,20 +131,26 @@ make architecture-check
 GitHub additionally runs the full-history Gitleaks scan and tiered CodeQL Swift
 analysis:
 
-- Pull requests that change Swift, entitlements, Xcode or Tuist build inputs,
-  dependency manifests and lockfiles, or CodeQL query configuration run the
-  high-precision default CodeQL suite.
-- Documentation, visual assets, GitHub workflows and actions, Dependabot and
-  Gitleaks configuration, and non-Swift security automation skip the traced
-  Swift build but still report the required `CodeQL policy gate`. The fast
-  repository-policy and secrets checks audit those DevOps changes.
+- Ready-for-review pull requests that change shipped Swift sources,
+  entitlements, Xcode or Tuist build inputs, dependency manifests and lockfiles,
+  or the CodeQL workflow and query configuration run the high-precision default
+  CodeQL suite.
+- Draft pull requests defer the traced build until `ready_for_review`. Test-only
+  Swift changes, documentation, visual assets, unrelated GitHub workflows and
+  actions, Dependabot and Gitleaks configuration, and non-Swift security
+  automation skip the traced build but still report the required
+  `CodeQL policy gate`. The fast repository-policy and secrets checks audit
+  those DevOps changes.
 - Release tags, the weekly schedule, and manual dispatches run the
   `security-extended` suite. Protected `main` receives only pull-request
   changes, so it does not repeat the same traced build immediately after merge.
 
 The required branch-protection context is `CodeQL policy gate`, not the
 conditionally skipped `Swift security analysis` context. Keep compiled
-`DerivedData` out of caches so CodeQL observes every compiler invocation.
+`DerivedData` out of caches so CodeQL observes every compiler invocation. The
+traced build retains Release compilation conditions but disables compiler
+optimization and whole-module compilation because CodeQL needs compiler
+invocations, not an optimized distributable binary.
 
 ## GitHub repository controls
 
