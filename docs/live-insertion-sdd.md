@@ -160,11 +160,15 @@ evidence spike or adapter work:
   take atomic fallback. The old compatibility stop shim was removed, so no
   caller can forge tail history at stop time; terminal delivery is exact-once
   and repeated Stop is a no-op.
-- Secure-input activation seals a copy-only terminal in every active or
-  throttled state, including no-tail states. It never selects fallback-final.
-- A field-resident tail acknowledgement is bound to the opaque mutation token,
-  exact candidate bytes, and current acknowledgement generation. A new
-  hypothesis retires that receipt; delayed/stale tail acknowledgements fail.
+- Secure-input activation seals a copy-only terminal in every non-consumed
+  state, including frozen ownership-loss and all no-tail/throttled states. It
+  never selects fallback-final; repeated Stop is a no-op after copy-only.
+- A field-resident tail acknowledgement is an opaque receipt carrying the
+  request's exact UTF-16 candidate prefix and exact expected tail. It is
+  retained only when the observed tail matches exactly and is <=64 UTF-16 code
+  units; arbitrary, oversized, delayed, duplicate, or stale receipts fail. A
+  new hypothesis retires every in-flight receipt, including an identical-text
+  observation.
 - Exact hypothesis fragments preserve original whitespace, punctuation, Unicode
   scalars, and UTF-16 length. Comparisons use exact UTF-16 code-unit identity,
   never canonical Swift `String` equality. Whitespace is separately represented

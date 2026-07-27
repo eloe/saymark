@@ -18,7 +18,7 @@ final class LiveInsertionPolicyTests: XCTestCase {
         XCTAssertEqual(stable.stableCandidatePrefix, "hello")
         let request = tryUnwrap(tracker.beginStableMutation())
         XCTAssertEqual(request.candidatePrefix, "hello")
-        XCTAssertTrue(tracker.acknowledge(request))
+        XCTAssertTrue(tracker.acknowledge(request.receipt))
         XCTAssertEqual(tracker.ingest("hello", at: 161).committedPrefix, "hello")
     }
 
@@ -30,7 +30,7 @@ final class LiveInsertionPolicyTests: XCTestCase {
 
         _ = tracker.ingest("omega", at: 170)
 
-        XCTAssertFalse(tracker.acknowledge(request))
+        XCTAssertFalse(tracker.acknowledge(request.receipt))
         XCTAssertEqual(tracker.ingest("omega", at: 171).committedPrefix, "")
     }
 
@@ -38,7 +38,7 @@ final class LiveInsertionPolicyTests: XCTestCase {
         var tracker = StableTranscriptTracker()
         _ = tracker.ingest("alpha", at: 0)
         _ = tracker.ingest("alpha", at: 160)
-        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation())))
+        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation()).receipt))
 
         XCTAssertEqual(tracker.ingest("omega", at: 170).phase, .frozenFinal)
         XCTAssertEqual(tracker.ingest("alpha again", at: 1_000).phase, .frozenFinal)
@@ -61,7 +61,7 @@ final class LiveInsertionPolicyTests: XCTestCase {
         XCTAssertEqual(update.stableCandidatePrefix, original)
         XCTAssertEqual(update.revisableTail, original)
         XCTAssertEqual(update.revisableTail.utf16.count, original.utf16.count)
-        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation())))
+        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation()).receipt))
         XCTAssertEqual(tracker.ingest(original, at: 161).committedPrefix, original)
     }
 
@@ -69,7 +69,7 @@ final class LiveInsertionPolicyTests: XCTestCase {
         var tracker = StableTranscriptTracker()
         _ = tracker.ingest("alpha", at: 0)
         _ = tracker.ingest("alpha", at: 160)
-        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation())))
+        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation()).receipt))
 
         _ = tracker.ingest("alpha beta", at: 170)
         let update = tracker.ingest("alpha better", at: 180)
@@ -84,20 +84,19 @@ final class LiveInsertionPolicyTests: XCTestCase {
         _ = tracker.ingest("alpha", at: 0)
         _ = tracker.ingest("alpha", at: 160)
         let tailRequest = tryUnwrap(tracker.beginStableMutation())
-        XCTAssertTrue(tracker.acknowledge(tailRequest))
-        XCTAssertTrue(tracker.acknowledgeFieldResidentTail(" beta", for: tailRequest))
+        XCTAssertTrue(tracker.acknowledge(tailRequest.receipt))
 
         let oversized = "alpha " + String(repeating: "x", count: 65)
         let throttled = tracker.ingest(oversized, at: 170)
         XCTAssertEqual(throttled.phase, .tailThrottled)
         XCTAssertEqual(throttled.committedPrefix, "alpha")
-        XCTAssertEqual(throttled.revisableTail, " beta")
+        XCTAssertEqual(throttled.revisableTail, "alpha")
         XCTAssertEqual(throttled.hudOnlyTail, oversized)
 
         let later = tracker.ingest("alpha replacement", at: 999)
         XCTAssertEqual(later.phase, .tailThrottled)
         XCTAssertEqual(later.committedPrefix, "alpha")
-        XCTAssertEqual(later.revisableTail, " beta")
+        XCTAssertEqual(later.revisableTail, "alpha")
         XCTAssertEqual(later.hudOnlyTail, "alpha replacement")
         XCTAssertNil(tracker.beginStableMutation())
     }
@@ -137,6 +136,18 @@ final class LiveInsertionPolicyTests: XCTestCase {
         XCTAssertEqual(session.state, .secureFinal)
         XCTAssertEqual(session.stop(ownershipVerified: true), .copyOnly)
         XCTAssertEqual(session.stop(ownershipVerified: true), .noOp)
+    }
+
+    func testSecureInputDominatesFrozenOwnershipLossAndDeliversCopyOnlyOnce() {
+        var session = SealedLiveInsertionSession()
+        session.recordAcknowledgedTailWrite()
+        session.invalidateOwnership()
+        XCTAssertEqual(session.state, .frozenFinal)
+
+        session.secureInputActivated()
+        XCTAssertEqual(session.state, .secureFinal)
+        XCTAssertEqual(session.stop(ownershipVerified: true), .copyOnly)
+        XCTAssertEqual(session.stop(ownershipVerified: false), .noOp)
     }
 
     func testNoTailRoutesToFallbackExactlyOnceAndResetIsExplicit() {
@@ -214,23 +225,13 @@ final class LiveInsertionPolicyTests: XCTestCase {
         XCTAssertTrue(buffer.isEmpty)
     }
 
-    func testNormalPolicyUpdateWorkMeetsSliceOneTimeBudget() {
-        let clock = ContinuousClock()
-        var samples: [Duration] = []
-        samples.reserveCapacity(10_000)
-
+    func testNormalEligibleUpdateScheduleKeepsRetainedPolicyStateBounded() {
+        var tracker = StableTranscriptTracker()
         for value in 0 ..< 10_000 {
-            var tracker = StableTranscriptTracker()
-            _ = tracker.ingest("alpha \(value)", at: 0)
-            let start = clock.now
-            _ = tracker.ingest("alpha \(value)", at: 160)
-            samples.append(start.duration(to: clock.now))
+            let update = tracker.ingest("word-\(value % 100)", at: value)
+            XCTAssertEqual(update.phase, .live)
+            XCTAssertLessThanOrEqual(tracker.retainedUTF16Length, 64)
         }
-
-        let sorted = samples.sorted()
-        let p95 = sorted[Int(Double(sorted.count - 1) * 0.95)]
-        XCTAssertLessThanOrEqual(p95, .milliseconds(1))
-        XCTAssertLessThanOrEqual(sorted.last!, .milliseconds(5))
     }
 
     func testSliceOneValuesCrossASendableConcurrencyBoundary() async {
@@ -257,24 +258,30 @@ final class LiveInsertionPolicyTests: XCTestCase {
         }
     }
 
-    func testTailAcknowledgementRejectsStaleRequestOrGeneration() {
+    func testMutationReceiptRejectsStaleGenerationAndMayNotBeReused() {
         var tracker = StableTranscriptTracker()
         _ = tracker.ingest("alpha", at: 0)
         _ = tracker.ingest("alpha", at: 160)
         let alpha = tryUnwrap(tracker.beginStableMutation())
-        XCTAssertTrue(tracker.acknowledge(alpha))
+        // A newer recogniser observation retires every in-flight receipt,
+        // including one whose text would otherwise still match.
+        _ = tracker.ingest("alpha", at: 161)
+        XCTAssertFalse(tracker.acknowledge(alpha.receipt))
 
-        // A subsequent hypothesis retires the acknowledgement receipt before a
-        // coordinator can report an old field tail as current state.
-        _ = tracker.ingest("alpha beta", at: 161)
-        XCTAssertFalse(tracker.acknowledgeFieldResidentTail(" alpha", for: alpha))
+        let current = tryUnwrap(tracker.beginStableMutation())
+        XCTAssertTrue(tracker.acknowledge(current.receipt))
+        XCTAssertFalse(tracker.acknowledge(current.receipt))
+    }
 
-        _ = tracker.ingest("alpha beta", at: 321)
-        let beta = tryUnwrap(tracker.beginStableMutation())
-        XCTAssertTrue(tracker.acknowledge(beta))
-        XCTAssertFalse(tracker.acknowledgeFieldResidentTail(" beta", for: alpha))
-        XCTAssertTrue(tracker.acknowledgeFieldResidentTail(" beta", for: beta))
-        XCTAssertFalse(tracker.acknowledgeFieldResidentTail(" beta", for: beta))
+    func testMutationReceiptRejectsArbitraryOrOversizeObservedTail() {
+        var tracker = StableTranscriptTracker()
+        _ = tracker.ingest("alpha", at: 0)
+        _ = tracker.ingest("alpha", at: 160)
+        let request = tryUnwrap(tracker.beginStableMutation())
+
+        XCTAssertFalse(tracker.acknowledge(request.receipt(observedTail: "omega")))
+        XCTAssertFalse(tracker.acknowledge(request.receipt(observedTail: String(repeating: "x", count: 65))))
+        XCTAssertTrue(tracker.acknowledge(request.receipt))
     }
 
     func testExactUTF16IdentityRejectsCanonicalLookalikes() {
@@ -285,7 +292,7 @@ final class LiveInsertionPolicyTests: XCTestCase {
         var tracker = StableTranscriptTracker()
         _ = tracker.ingest(decomposed, at: 0)
         _ = tracker.ingest(decomposed, at: 160)
-        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation())))
+        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation()).receipt))
         XCTAssertEqual(tracker.ingest(composed, at: 161).phase, .frozenFinal)
     }
 
@@ -293,7 +300,7 @@ final class LiveInsertionPolicyTests: XCTestCase {
         var tracker = StableTranscriptTracker()
         _ = tracker.ingest("alpha", at: 0)
         _ = tracker.ingest("alpha", at: 160)
-        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation())))
+        XCTAssertTrue(tracker.acknowledge(tryUnwrap(tracker.beginStableMutation()).receipt))
 
         let migrated = tracker.ingest("alpha \t", at: 161)
         XCTAssertEqual(migrated.phase, .live)
@@ -311,24 +318,88 @@ final class LiveInsertionPolicyTests: XCTestCase {
         XCTAssertLessThanOrEqual(tracker.retainedUTF16Length, 64)
     }
 
-    func testConcurrentSchedulesSerialiseInvalidationAndNeverReviveTracker() async {
+    func testConcurrentSchedulesInterleaveAllSliceOneEventsWithoutBreakingInvariants() async {
         actor Harness {
-            var tracker = StableTranscriptTracker()
-            func ingest(_ text: String, _ time: Int) -> LiveInsertionPhase {
-                tracker.ingest(text, at: time).phase
+            struct Snapshot: Sendable {
+                let trackerIsFrozen: Bool
+                let deliveryCount: Int
+                let ownedTailRoutedToFallback: Bool
+                let bufferHasExactlyOneLatestValue: Bool
+                let retiredGateStayedRetired: Bool
             }
-            func invalidate() { tracker.invalidateOwnership() }
+
+            var tracker = StableTranscriptTracker()
+            var session = SealedLiveInsertionSession()
+            var buffer = LatestWinsBuffer<Int>()
+            var retirementGate = MutationGenerationGate(nextSerialForTesting: UInt64.max - 1)
+            var routes: [LiveInsertionStopRoute] = []
+            var ownedTailSeen = false
+            var retirementVerified = false
+
+            func run(operation: Int, seed: Int) {
+                switch operation % 7 {
+                case 0: // ingest
+                    _ = tracker.ingest("word-\(seed % 100)", at: seed)
+                case 1: // acknowledgement handshake
+                    let text = "stable-\(seed % 100)"
+                    _ = tracker.ingest(text, at: seed * 10)
+                    _ = tracker.ingest(text, at: seed * 10 + 160)
+                    if let request = tracker.beginStableMutation(), tracker.acknowledge(request.receipt) {
+                        session.recordAcknowledgedTailWrite()
+                        ownedTailSeen = true
+                    }
+                case 2: // throttle
+                    session.throttle()
+                case 3: // secure input
+                    session.secureInputActivated()
+                case 4: // stop
+                    routes.append(session.stop(ownershipVerified: seed.isMultiple(of: 2)))
+                case 5: // ownership invalidation
+                    tracker.invalidateOwnership()
+                    session.invalidateOwnership()
+                default: // latest-wins overflow and counter retirement
+                    for offset in 0 ..< 100 { buffer.replace(with: seed * 100 + offset) }
+                    _ = retirementGate.beginMutation()
+                    retirementGate.invalidate()
+                    retirementVerified = retirementGate.beginMutation() == nil
+                }
+            }
+
+            func snapshot() -> Snapshot {
+                let terminal = tracker.ingest("must-stay-frozen", at: Int.max).phase == .frozenFinal
+                let delivered = routes.filter { $0 != .noOp }.count
+                let fallbackAfterOwnedTail = ownedTailSeen && routes.contains(.fallbackFinal)
+                let latest = buffer.takeLatest()
+                let exactlyOneLatest = latest != nil && buffer.takeLatest() == nil
+                let stillRetired = retirementVerified && retirementGate.beginMutation() == nil
+                return Snapshot(
+                    trackerIsFrozen: terminal,
+                    deliveryCount: delivered,
+                    ownedTailRoutedToFallback: fallbackAfterOwnedTail,
+                    bufferHasExactlyOneLatestValue: exactlyOneLatest,
+                    retiredGateStayedRetired: stillRetired
+                )
+            }
         }
 
-        let harness = Harness()
-        await withTaskGroup(of: Void.self) { group in
-            for value in 0 ..< 500 {
-                group.addTask { _ = await harness.ingest("word \(value)", value) }
+        for seed in 0 ..< 500 {
+            let harness = Harness()
+            await withTaskGroup(of: Void.self) { group in
+                for operation in 0 ..< 14 {
+                    group.addTask { await harness.run(operation: operation + seed, seed: seed) }
+                }
             }
-            group.addTask { await harness.invalidate() }
+            // End every schedule with invalidation so the terminal invariant is
+            // deterministic while preceding operations remain task-interleaved.
+            await harness.run(operation: 5, seed: seed)
+            await harness.run(operation: 6, seed: seed)
+            let result = await harness.snapshot()
+            XCTAssertTrue(result.trackerIsFrozen, "seed \(seed)")
+            XCTAssertLessThanOrEqual(result.deliveryCount, 1, "seed \(seed)")
+            XCTAssertFalse(result.ownedTailRoutedToFallback, "seed \(seed)")
+            XCTAssertTrue(result.bufferHasExactlyOneLatestValue, "seed \(seed)")
+            XCTAssertTrue(result.retiredGateStayedRetired, "seed \(seed)")
         }
-        let terminalPhase = await harness.ingest("later", 1_000)
-        XCTAssertEqual(terminalPhase, .frozenFinal)
     }
 
     func testGenerationGateRetiresInsteadOfWrapping() {
@@ -382,6 +453,31 @@ final class LiveInsertionPolicyTests: XCTestCase {
         XCTAssertEqual(event.tailLength, .sixtyFiveToOneTwentyEight)
         XCTAssertEqual(event.revisionDepth, .oneToFour)
     }
+
+    #if SAYMARK_POLICY_PERFORMANCE
+    /// Deliberately excluded from ordinary unit runs. Invoke through
+    /// Scripts/benchmark-live-insertion-policy.sh on the recorded release
+    /// machine; wall-clock thresholds are an acceptance measurement, not a
+    /// portable correctness assertion.
+    func testOptInNormalPolicyUpdatePerformanceAcceptance() {
+        let clock = ContinuousClock()
+        var samples: [Duration] = []
+        samples.reserveCapacity(10_000)
+
+        for value in 0 ..< 10_000 {
+            var tracker = StableTranscriptTracker()
+            _ = tracker.ingest("alpha \(value)", at: 0)
+            let start = clock.now
+            _ = tracker.ingest("alpha \(value)", at: 160)
+            samples.append(start.duration(to: clock.now))
+        }
+
+        let sorted = samples.sorted()
+        let p95 = sorted[Int(Double(sorted.count - 1) * 0.95)]
+        XCTAssertLessThanOrEqual(p95, .milliseconds(1))
+        XCTAssertLessThanOrEqual(sorted.last!, .milliseconds(5))
+    }
+    #endif
 
     private func tryUnwrap<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) -> T {
         guard let value else {

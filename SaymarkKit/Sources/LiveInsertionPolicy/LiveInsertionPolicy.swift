@@ -100,16 +100,58 @@ public struct MutationGenerationGate: Sendable {
         inFlight = nil
         return true
     }
+
+    fileprivate var hasInFlight: Bool { inFlight != nil }
 }
 
 public struct StableMutationRequest: Sendable, Equatable {
     /// The exact field prefix a future coordinator must acknowledge after a
     /// current-generation operation. It is not an authority to mutate.
     public let candidatePrefix: String
+    /// The exact bounded UTF-16 tail expected to be present when the future
+    /// coordinator acknowledges this operation.  It is deliberately captured
+    /// with the request so a caller cannot later substitute arbitrary field
+    /// content into the throttling snapshot.
+    public let expectedTail: String
     fileprivate let token: MutationToken
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.token == rhs.token && exactUTF16Equal(lhs.candidatePrefix, rhs.candidatePrefix)
+        lhs.token == rhs.token &&
+            exactUTF16Equal(lhs.candidatePrefix, rhs.candidatePrefix) &&
+            exactUTF16Equal(lhs.expectedTail, rhs.expectedTail)
+    }
+
+    /// This receipt is opaque outside the policy module.  A future coordinator
+    /// may only acknowledge the exact candidate and tail it was issued; it
+    /// cannot construct an acknowledgement for arbitrary observed text.
+    public var receipt: MutationReceipt {
+        receipt(observedTail: expectedTail)
+    }
+
+    /// Models the exact tail read back by a future coordinator. The policy
+    /// accepts it only when it is byte-for-byte the expected bounded tail.
+    public func receipt(observedTail: String) -> MutationReceipt {
+        MutationReceipt(candidatePrefix: candidatePrefix, expectedTail: observedTail, token: token)
+    }
+}
+
+/// Opaque proof that a particular bounded mutation request was acknowledged.
+/// It carries no authority to mutate another application.
+public struct MutationReceipt: Sendable, Equatable {
+    public let candidatePrefix: String
+    public let expectedTail: String
+    fileprivate let token: MutationToken
+
+    fileprivate init(candidatePrefix: String, expectedTail: String, token: MutationToken) {
+        self.candidatePrefix = candidatePrefix
+        self.expectedTail = expectedTail
+        self.token = token
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.token == rhs.token &&
+            exactUTF16Equal(lhs.candidatePrefix, rhs.candidatePrefix) &&
+            exactUTF16Equal(lhs.expectedTail, rhs.expectedTail)
     }
 }
 
@@ -137,10 +179,6 @@ public struct StableTranscriptTracker: Sendable {
     private var candidates: [Fragment] = []
     private var gate = MutationGenerationGate()
     private var fieldResidentTail = ""
-    /// Exactly one acknowledgement receipt is valid, and only until the next
-    /// recogniser observation. This prevents a delayed coordinator result from
-    /// claiming a tail for a superseded candidate/generation.
-    private var pendingFieldTailAcknowledgement: StableMutationRequest?
     private var state: State = .live
     private var lastMonotonicMilliseconds = 0
 
@@ -153,7 +191,10 @@ public struct StableTranscriptTracker: Sendable {
     /// content or make age arithmetic overflow.
     public mutating func ingest(_ hypothesis: String, at milliseconds: Int) -> StableTranscriptUpdate {
         let now = monotonic(milliseconds)
-        pendingFieldTailAcknowledgement = nil
+        // Any newer recogniser observation retires a not-yet-acknowledged
+        // request, even if the text happens to be equal. The receipt is a
+        // proof for one generation, not a reusable permission.
+        if gate.hasInFlight { gate.invalidate() }
         switch state {
         case let .throttled(fieldCommitted, fieldTail):
             return update(
@@ -249,39 +290,32 @@ public struct StableTranscriptTracker: Sendable {
     /// The caller must later call `acknowledge` after an explicit, current-
     /// generation acknowledgement. This core cannot issue the operation itself.
     public mutating func beginStableMutation() -> StableMutationRequest? {
+        let expectedTail = stableCandidates.joined()
         guard case .live = state, !stableCandidates.isEmpty,
+              expectedTail.utf16.count <= policy.maximumTailUTF16Length,
               let token = gate.beginMutation() else { return nil }
-        return StableMutationRequest(candidatePrefix: committed.joined() + stableCandidates.joined(), token: token)
+        return StableMutationRequest(
+            candidatePrefix: committed.joined() + expectedTail,
+            expectedTail: expectedTail,
+            token: token
+        )
     }
 
     /// Commits only a request that is still the gate's current in-flight
     /// generation and still names the exact candidate. Stale acknowledgements
     /// have no effect.
     @discardableResult
-    public mutating func acknowledge(_ request: StableMutationRequest) -> Bool {
+    public mutating func acknowledge(_ receipt: MutationReceipt) -> Bool {
         guard case .live = state,
-              exactUTF16Equal(request.candidatePrefix, committed.joined() + stableCandidates.joined()),
-              gate.complete(request.token) else { return false }
+              receipt.expectedTail.utf16.count <= policy.maximumTailUTF16Length,
+              exactUTF16Equal(receipt.expectedTail, stableCandidates.joined()),
+              exactUTF16Equal(receipt.candidatePrefix, committed.joined() + stableCandidates.joined()),
+              gate.complete(receipt.token) else { return false }
         committed += stableCandidates
         stableCandidates = []
-        pendingFieldTailAcknowledgement = request
-        return true
-    }
-
-    /// Records a tail only after a separate coordinator's explicit successful
-    /// acknowledgement. It exists so throttling can preserve *field* state,
-    /// not merely the latest recogniser hypothesis.
-    @discardableResult
-    public mutating func acknowledgeFieldResidentTail(
-        _ exactTail: String,
-        for request: StableMutationRequest
-    ) -> Bool {
-        guard case .live = state,
-              let pending = pendingFieldTailAcknowledgement,
-              pending == request,
-              exactUTF16Equal(request.candidatePrefix, committed.joined()) else { return false }
-        fieldResidentTail = exactTail
-        pendingFieldTailAcknowledgement = nil
+        // Retain only the exact, request-bound tail after all identity and
+        // cap checks have passed. This snapshot is what throttling freezes.
+        fieldResidentTail = receipt.expectedTail
         return true
     }
 
@@ -297,7 +331,6 @@ public struct StableTranscriptTracker: Sendable {
         candidates = []
         gate = MutationGenerationGate()
         fieldResidentTail = ""
-        pendingFieldTailAcknowledgement = nil
         state = .live
         lastMonotonicMilliseconds = 0
     }
@@ -306,7 +339,6 @@ public struct StableTranscriptTracker: Sendable {
         let currentCommitted = committed.joined()
         state = .frozen(committed: currentCommitted, tail: fieldResidentTail)
         gate.invalidate()
-        pendingFieldTailAcknowledgement = nil
     }
 
     private func frozenUpdate() -> StableTranscriptUpdate {
@@ -443,7 +475,8 @@ public struct SealedLiveInsertionSession: Sendable {
     /// copy/HUD and it grants no mutation capability.
     public mutating func secureInputActivated() {
         switch state {
-        case .activeOwnedTail, .tailThrottledOwnedTail, .activeNoTail, .tailThrottledNoTail:
+        case .activeOwnedTail, .tailThrottledOwnedTail, .activeNoTail,
+             .tailThrottledNoTail, .frozenFinal:
             state = .secureFinal
         default:
             break

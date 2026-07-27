@@ -113,10 +113,12 @@ commit and toolchain, and fails the slice when any of the following is false:
 | Counter retirement | Generation/serial exhaustion retires mutation issuance; it never wraps into a valid token. |
 | Memory | 20 repetitions of the 10,000-update schedule have <=1 MB settled RSS growth attributable to the policy harness after autorelease cleanup; record baseline, peak, and settled values. |
 
-The time and memory figures are measured by an opt-in local performance harness,
-not generic CI. CI executes the deterministic overflow, boundary, and
-concurrency/invalidation schedules as correctness tests. These Slice 1 limits
-do not relax the user-visible live-insertion gates above.
+The time and memory figures are measured by the opt-in local performance
+harness (`Scripts/benchmark-live-insertion-policy.sh`) on the recorded arm64
+release machine, not generic CI. CI executes deterministic bounded-state,
+overflow, boundary, and concurrency/invalidation schedules as correctness
+tests; it makes no wall-clock assertion. These Slice 1 limits do not relax the
+user-visible live-insertion gates above.
 
 ### Feed-cadence experiment
 
