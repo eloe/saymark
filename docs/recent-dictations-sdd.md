@@ -211,12 +211,18 @@ reconciliation executes a fresh metadata query. If metadata/deletion commits
 but proof/checkpoint fails, the committed metadata remains authoritative while
 the store latches every history read and write closed and the controller neither
 mirrors defaults nor publishes availability until launch/retry cleanup succeeds.
-Clear and Off stream every saved
-transcript through an owner-only controlled proof spool one record at a time,
-as do purge, Session, and every bounded transition for the rows each removes.
-Proof verification scans all controlled artifacts in bounded 64-row chunks,
-then zeroes, truncates, fsyncs,
-and unlink the spool. There is no row-count cap. Off closes the in-process write
+Every destructive path first streams each selected row id and exact transcript
+through an owner-only, versioned proof spool. The complete spool is fsynced and
+atomically promoted from `.cleanup-proof.pending` to `.cleanup-proof` before
+deletion can begin. Proof verification scans exact UTF-8 plus SQLite-tokenized,
+FTS-normalized tokens of at least 12 bytes and 12-byte prefix/suffix fragments
+for tokens of at least 24 bytes across all controlled artifacts in bounded
+64-row chunks. The specificity floor avoids falsely attributing SQLite schema
+bytes or tokens still owned by retained rows. It then zeroes, truncates, fsyncs,
+and unlinks the spool. There is no row-count cap. A crash with only the pending
+name is pre-deletion and is scrubbed safely; a validated active proof is replayed
+by exact id/text on startup, checkpointed, verified, and scrubbed. Invalid active
+proofs fail closed and remain available for repair. Off closes the in-process write
 gate before cleanup begins and remains fail-closed if proof or checkpointing is
 incomplete. Idle cleanup runs at background priority only after at least five
 seconds without user input and while no recording, history window, or pending
@@ -367,10 +373,10 @@ does not extend existing rows; it applies only to future rows. Only after that
 transaction/checkpoint succeeds is the UserDefaults mirror changed. A crash
 between these writes can shorten retention, never extend it.
 
-Single-delete is transactional: delete the record and all search-index entries,
+Single-delete is transactional: activate its resumable proof, delete the record and all search-index entries,
 perform secure deletion/checkpoint, then refresh UI. Before reporting complete,
-the store scans descriptor-opened DB/WAL/SHM artifacts for the exact deleted
-text bytes; a busy checkpoint or residual sequence is an honest partial-cleanup
+the store scans descriptor-opened DB/WAL/SHM/FTS/temp artifacts for exact text
+and privacy-relevant normalized token fragments; a busy checkpoint or residual sequence is an honest partial-cleanup
 error, never a success message. Clear History and Off use
 explicit confirmation, one delete transaction, secure deletion, and
 `wal_checkpoint(TRUNCATE)` before saying local store files no longer contain the
@@ -664,13 +670,13 @@ merely because it appears in a test name.
 | `HistoryStoreTests` default/eligibility/state/search/limits/deadline cases | RD-U01–U14, U16, U21, U23, U25; exact policy and delivery-state behavior, default-Off no-files, literal bound search, cancellation, advisory lock, symlink rejection. |
 | `testCheckpointFailureReconcilesFromCommittedOffMetadataAndFailsClosed` and `testProofFailureAfterDownwardCommitUsesDurablePolicyAndBlocksRowsUntilRecovery` | RD-U13/U21 and startup authority: injected failure after SQLite commit proves a fresh metadata read wins, the in-process store exposes no rows/accepts no writes, and relaunch resumes cleanup. |
 | `testSchemaZeroCreationRollsBackAtomicallyOnInjectedFailure` | RD-U15/I05 as applicable to the only supported v0 state. v0 is an empty SQLite database, not a released transcript schema; the test proves transactional creation/validation rollback, `user_version == 0`, zero schema objects, and no backup/migration file. Future row-bearing migrations require new evidence. |
-| `testUnicodeSearchContractCoversNormalizationScriptsAndLiteralGrammar` and `testTenThousandGeneratedUnicodeQueriesProduceOnlyBoundedQuotedGrammar` | RD-U09/U10/I06: named normalization/script/operator cases plus 10,000 deterministic generated query strings; only implementation-authored quoted-prefix grammar is produced. Malformed UTF-8 is repaired at Swift's `String` boundary before storage. |
+| `testUnicodeSearchContractCoversNormalizationScriptsAndLiteralGrammar` and `testTenThousandGeneratedUnicodeQueriesUseRealSQLiteUnicode61WithoutCrash` | RD-U09/U10/I06: SQLite's configured `unicode61 remove_diacritics 2` tokenizer is the sole query-token authority, including normalization, RTL, emoji, category Co/private-use, operators, and 10,000 generated real-database queries. Only implementation-authored quoted-prefix grammar reaches MATCH. Malformed UTF-8 is repaired at Swift's `String` boundary before storage. |
 | `testConcurrentReadsWritesDeletesAndPolicyChangesRemainSerialized` | RD-I03: 120 mixed actor operations complete without `BUSY`, deadlock, resurrection, or cap violation. Reader snapshot isolation remains SQLite's WAL transaction guarantee; the app owns one connection and never exposes a long-lived read transaction. |
-| `testTenThousandRecordSearchAndPurgeAcceptance` | RD-I07/I08/I12: real 10,000-row SQLite+FTS fixture, twenty 25-row searches with <=100 ms p95 on the executing Mac, <30 s background purge budget, logical empty result, and first/last sentinel absence across every controlled artifact. The test reports measured values on failure rather than recording machine identity in the repository. |
-| `testPurgeAndSessionTransitionsByteScanEveryControlledArtifact`, Clear/Off/delete tests | RD-U12–U14/U21 and RD-I12: proof spools cover all removed rows without a row cap for delete, Clear, Off, Session, expiry purge, and downward transitions; DB/WAL/SHM/FTS/lock/marker/proof/unexpected artifacts are descriptor scanned. |
+| `testTenThousandRecordSearchAndPurgeAcceptance` | RD-I07/I08/I12: real 10,000-row SQLite+FTS fixture, cold and detached/non-main list checks, twenty searches with <=100 ms p95, <30 s purge budget, logical empty, controlled-artifact proof, and a scan of newly-created external temp artifacts. Test output records macOS, memory, SQLite, fixture size, and measured timings. |
+| `testEveryDestructivePathRemovesFullAndFTSNormalizedTokenFragments`, proof recovery, and subprocess SIGKILL tests | RD-U12–U14/U21 and RD-I01/I02/I12: delete, Clear, Off, Session, expiry purge, and downward transitions remove full text plus normalized token/prefix/suffix probes; failed proof persists; pre-activation pending proof is scrubbed; invalid active proof fails closed; validated active proof replays after injected failure and actual SIGKILL while WAL/lock are live. |
 | `DiagnosticLoggingTests.testHistoryDiagnosticsAcceptOnlyLiteralEventAndClosedBoundedValues` plus hosted source/privacy tests | RD-U20/I09/I13: only literal `history.operation` with closed operation/outcome/retention and bounded count/duration values crosses diagnostics. History sources contain no PostHog call; the whole-flow negative assertion is compile-time/source evidence because there is no history analytics dependency to inject. |
 | `testStoreIsExcludedFromBackupAndSpotlightDiscovery` | RD-I14: backup exclusion, `.metadata_never_index`, and an `mdfind -onlyin` negative sentinel check. |
-| `RecentDictationsPresentationTests` | RD-UI03/05/06/09/11/12/13 as deterministic hosted evidence: private/non-restorable window, static title, bounded preview/full selectable value, exact Copy, 20→25 paging contract, spelling/recents controls, exact reinsert, Accessibility/secure-input/failed-target fallbacks, PID mismatch no-post, announcement, and 500 ms maximum. |
+| `RecentDictationsPresentationTests` | RD-I11 and RD-UI03/05/06/09/11/12/13 as deterministic hosted evidence: 21-row lookahead means exactly 20 never advertises more; 20→25 paging, committed-clear failure closes/clears published state, integrated history-before-delivery inserts exactly once with or without a history record, plus the private-window/copy/reinsert/accessibility/privacy cases. |
 
 Two platform checks stay release-environment gates rather than ordinary
 developer-account tests:

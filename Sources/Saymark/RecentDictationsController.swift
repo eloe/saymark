@@ -22,6 +22,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     private var previousApplication: NSRunningApplication?
     private var refreshGeneration: UInt64 = 0
     private var resultLimit = 20
+    private var hasMoreResults = false
     private(set) var activeRetention: RecentDictationsRetention = .off
     private(set) var isStartupComplete = false
     private(set) var isHistoryAvailable = false
@@ -240,6 +241,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             } catch {
                 SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .unavailable)
                 if error as? HistoryStoreError == .cleanupIncomplete {
+                    invalidatePresentationAfterCommittedCleanupFailure()
                     errorMessage = "History is removed from the active list, but Saymark could not finish cleaning every local database artifact. Try again when no other Saymark window is using history."
                 } else {
                     errorMessage = "Couldn’t clear Recent Dictations."
@@ -257,16 +259,18 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             if store == nil, activeRetention != .off {
                 store = try makeStore(.off)
             }
+            let requestedLimit = resultLimit == 20 ? 21 : resultLimit
             let snapshot = try await store?.records(
                 query: requestedQuery,
-                limit: resultLimit,
+                limit: requestedLimit,
                 cancellation: cancellation
             ) ?? []
             // Search and closing the private window can race slow I/O. A stale
             // response must never repopulate a cleared/closed presentation.
             guard requestedGeneration == refreshGeneration, self.query == requestedQuery else { return }
-            records = snapshot
-            resultSummary = "\(snapshot.count) \(snapshot.count == 1 ? "result" : "results")"
+            hasMoreResults = snapshot.count > resultLimit
+            records = Array(snapshot.prefix(resultLimit))
+            resultSummary = "\(records.count) \(records.count == 1 ? "result" : "results")"
             announce(resultSummary)
         } catch {
             guard requestedGeneration == refreshGeneration else { return }
@@ -282,6 +286,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         searchCancellation?.interrupt()
         query = value
         resultLimit = 20
+        hasMoreResults = false
         refreshGeneration &+= 1
         let requestedGeneration = refreshGeneration
         let cancellation = HistoryWriteCancellation()
@@ -296,7 +301,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     }
 
     var canLoadMore: Bool {
-        resultLimit < SQLiteHistoryStore.maximumResultLimit && records.count == resultLimit
+        resultLimit < SQLiteHistoryStore.maximumResultLimit && hasMoreResults
     }
 
     func loadMore() {
@@ -508,8 +513,9 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     }
 
     func setRecordsForTesting(_ records: [HistoryRecord]) {
-        self.records = records
         resultLimit = 20
+        hasMoreResults = records.count > resultLimit
+        self.records = Array(records.prefix(resultLimit))
     }
 
     func resetReinsertSeamsForTesting() {
@@ -542,10 +548,30 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         resultSummary = "0 results"
         query = ""
         resultLimit = 20
+        hasMoreResults = false
         previousApplication = nil
         pendingReinsert = nil
         pendingDeletion = nil
         errorMessage = nil
+        window = nil
+    }
+
+    func invalidatePresentationAfterCommittedCleanupFailure() {
+        refreshGeneration &+= 1
+        searchTask?.cancel()
+        searchTask = nil
+        searchCancellation?.interrupt()
+        searchCancellation = nil
+        records = []
+        query = ""
+        resultSummary = "0 results"
+        resultLimit = 20
+        hasMoreResults = false
+        pendingReinsert = nil
+        pendingDeletion = nil
+        previousApplication = nil
+        isHistoryAvailable = false
+        window?.orderOut(nil)
         window = nil
     }
 

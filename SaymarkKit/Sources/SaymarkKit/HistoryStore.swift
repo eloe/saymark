@@ -111,8 +111,9 @@ public actor SQLiteHistoryStore: HistoryStore {
     private static let controlledArtifactNames: Set<String> = [
         databaseName, "\(databaseName)-wal", "\(databaseName)-shm",
         ".history.lock", ".metadata_never_index", ".cleanup-proof",
-        ".migration-temp"
+        ".cleanup-proof.pending", ".migration-temp"
     ]
+    private static let cleanupProofMagic = Data("SMHXCP02".utf8)
 
     private let directoryURL: URL
     private let databaseURL: URL
@@ -310,7 +311,7 @@ public actor SQLiteHistoryStore: HistoryStore {
         }
         let effectiveNow = try readEffectiveNow()
         let boundedLimit = min(max(limit, 1), Self.maximumResultLimit)
-        let tokens = Array(Self.literalTokens(query ?? "").prefix(Self.maximumSearchTokens))
+        let tokens = try sqliteTokens(query ?? "", maximum: Self.maximumSearchTokens)
         let sql: String
         if tokens.isEmpty {
             sql = """
@@ -359,10 +360,11 @@ public actor SQLiteHistoryStore: HistoryStore {
 
     public func delete(id: String) throws -> Bool {
         try reconcilePolicyBeforeGate()
-        if cleanupFailureLatched { throw HistoryStoreError.cleanupIncomplete }
+        try recoverLatchedCleanupForRetry()
         guard policy.isEnabled else { return false }
         try openIfNeeded()
-        let removedText = try textForRecord(id: id)
+        let proof = try createCleanupProof(whereClause: "id = ?", textBindings: [id])
+        defer { close(proof) }
         let changes = try transaction {
             let statement = try prepare("DELETE FROM records WHERE id = ?")
             defer { sqlite3_finalize(statement) }
@@ -373,27 +375,27 @@ public actor SQLiteHistoryStore: HistoryStore {
         if changes > 0 {
             do {
                 try checkpointAfterDeletion()
-                try verifyRemovedTextIsAbsent(removedText.map { [$0] } ?? [])
+                try verifyCleanupProof(proof)
+                try destroyCleanupProof(proof)
                 cleanupFailureLatched = false
             } catch {
                 cleanupFailureLatched = true
                 throw error
             }
             generation &+= 1
+        } else {
+            try destroyCleanupProof(proof)
         }
         return changes > 0
     }
 
     public func clear() throws {
         try reconcilePolicyBeforeGate()
-        if cleanupFailureLatched { throw HistoryStoreError.cleanupIncomplete }
+        try recoverLatchedCleanupForRetry()
         guard policy.isEnabled else { return }
         try openIfNeeded()
         let proof = try createCleanupProof()
-        defer {
-            try? destroyCleanupProof(proof)
-            close(proof)
-        }
+        defer { close(proof) }
         do {
             try transaction { try execute("DELETE FROM records") }
             try checkpointAfterDeletion()
@@ -408,6 +410,8 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     public func setRetentionPolicy(_ policy: HistoryRetentionPolicy) throws {
+        try reconcilePolicyBeforeGate()
+        try recoverLatchedCleanupForRetry()
         if policy == .off {
             // Off intent closes the write gate immediately and remains
             // fail-closed even if checkpoint/artifact cleanup is incomplete.
@@ -451,6 +455,7 @@ public actor SQLiteHistoryStore: HistoryStore {
 
     public func purgeExpired() throws {
         try reconcilePolicyBeforeGate()
+        try recoverLatchedCleanupForRetry()
         guard policy.isEnabled else { return }
         try openIfNeeded()
         let effectiveNow = try advanceHighWaterMarkForMutation()
@@ -458,10 +463,7 @@ public actor SQLiteHistoryStore: HistoryStore {
             whereClause: "expires_at_ms IS NOT NULL AND expires_at_ms <= ?",
             integerBindings: [effectiveNow]
         )
-        defer {
-            try? destroyCleanupProof(proof)
-            close(proof)
-        }
+        defer { close(proof) }
         do {
             try transaction {
                 let statement = try prepare("DELETE FROM records WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?")
@@ -538,6 +540,8 @@ public actor SQLiteHistoryStore: HistoryStore {
             } else {
                 try validateExactSchema()
             }
+            try createPrivateQueryTokenizer()
+            try recoverInterruptedCleanup()
             try protectSQLiteArtifacts()
             try verifyProtectedSQLiteArtifacts()
             inMemoryHighWaterMark = try storedHighWaterMark()
@@ -818,10 +822,7 @@ public actor SQLiteHistoryStore: HistoryStore {
             // No existing expiry is extended and no row is removed.
             proof = try createCleanupProof(whereClause: "0")
         }
-        defer {
-            try? destroyCleanupProof(proof)
-            close(proof)
-        }
+        defer { close(proof) }
         try transaction {
             try metadataSet("retention_policy", policy.rawValue)
             switch policy {
@@ -907,10 +908,22 @@ public actor SQLiteHistoryStore: HistoryStore {
     /// controlled artifact, securely truncated and unlinked before success.
     private func createCleanupProof(
         whereClause: String? = nil,
-        integerBindings: [Int64] = []
+        integerBindings: [Int64] = [],
+        textBindings: [String] = []
     ) throws -> Int32 {
         let descriptor = try withHistoryDirectoryDescriptor { directory in
-            let fd = openat(directory, ".cleanup-proof", O_CREAT | O_TRUNC | O_RDWR | O_NOFOLLOW, 0o600)
+            let active = openat(directory, ".cleanup-proof", O_RDONLY | O_NOFOLLOW)
+            if active >= 0 {
+                close(active)
+                throw HistoryStoreError.cleanupIncomplete
+            }
+            guard errno == ENOENT else { throw HistoryStoreError.cleanupIncomplete }
+            let fd = openat(
+                directory,
+                ".cleanup-proof.pending",
+                O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW,
+                0o600
+            )
             guard fd >= 0 else { throw HistoryStoreError.ioFailed }
             guard fchmod(fd, 0o600) == 0 else {
                 close(fd)
@@ -919,58 +932,122 @@ public actor SQLiteHistoryStore: HistoryStore {
             try verifyPrivateRegularFileDescriptor(fd)
             return fd
         }
+        var activated = false
         do {
+            try Self.cleanupProofMagic.withUnsafeBytes { try writeAll($0, to: descriptor) }
             let predicate = whereClause.map { " WHERE \($0)" } ?? ""
-            let statement = try prepare("SELECT CAST(text AS BLOB) FROM records\(predicate) ORDER BY rowid")
+            let statement = try prepare("SELECT id, CAST(text AS BLOB) FROM records\(predicate) ORDER BY rowid")
             defer { sqlite3_finalize(statement) }
-            for (offset, value) in integerBindings.enumerated() {
-                try bind(value, to: statement, at: Int32(offset + 1))
+            var bindingIndex: Int32 = 1
+            for value in integerBindings {
+                try bind(value, to: statement, at: bindingIndex)
+                bindingIndex += 1
+            }
+            for value in textBindings {
+                try bind(value, to: statement, at: bindingIndex)
+                bindingIndex += 1
             }
             while true {
                 let result = sqlite3_step(statement)
                 if result == SQLITE_DONE { break }
-                guard result == SQLITE_ROW else { throw mapSQLiteError(result) }
-                let byteCount = Int(sqlite3_column_bytes(statement, 0))
+                guard result == SQLITE_ROW,
+                      let idPointer = sqlite3_column_text(statement, 0)
+                else { throw mapSQLiteError(result) }
+                let id = Data(String(cString: idPointer).utf8)
+                guard !id.isEmpty, id.count <= 1_024 else { throw HistoryStoreError.corrupt }
+                let byteCount = Int(sqlite3_column_bytes(statement, 1))
                 guard byteCount > 0, byteCount <= Self.maximumFinalTextBytes,
-                      let pointer = sqlite3_column_blob(statement, 0)
+                      let pointer = sqlite3_column_blob(statement, 1)
                 else { throw HistoryStoreError.corrupt }
-                var length = UInt32(byteCount).littleEndian
-                try withUnsafeBytes(of: &length) { try writeAll($0, to: descriptor) }
+                var idLength = UInt16(id.count).littleEndian
+                var textLength = UInt32(byteCount).littleEndian
+                try withUnsafeBytes(of: &idLength) { try writeAll($0, to: descriptor) }
+                try withUnsafeBytes(of: &textLength) { try writeAll($0, to: descriptor) }
+                try id.withUnsafeBytes { try writeAll($0, to: descriptor) }
                 try writeAll(UnsafeRawBufferPointer(start: pointer, count: byteCount), to: descriptor)
             }
-            guard fsync(descriptor) == 0 else {
-                throw HistoryStoreError.ioFailed
+            var terminator = UInt16(0)
+            try withUnsafeBytes(of: &terminator) { try writeAll($0, to: descriptor) }
+            guard fsync(descriptor) == 0 else { throw HistoryStoreError.ioFailed }
+            try withHistoryDirectoryDescriptor { directory in
+                guard renameat(
+                    directory, ".cleanup-proof.pending",
+                    directory, ".cleanup-proof"
+                ) == 0 else { throw HistoryStoreError.ioFailed }
+                activated = true
+                guard fsync(directory) == 0 else { throw HistoryStoreError.ioFailed }
             }
             return descriptor
         } catch {
+            try? destroyCleanupProof(
+                descriptor,
+                name: activated ? ".cleanup-proof" : ".cleanup-proof.pending"
+            )
             close(descriptor)
-            try? withHistoryDirectoryDescriptor { _ = unlinkat($0, ".cleanup-proof", 0) }
             throw error
         }
     }
 
+    private func resetAndValidateCleanupProof(_ proof: Int32) throws {
+        guard lseek(proof, 0, SEEK_SET) >= 0,
+              let magic = try readExact(Self.cleanupProofMagic.count, from: proof),
+              magic == Self.cleanupProofMagic
+        else { throw HistoryStoreError.cleanupIncomplete }
+    }
+
+    private func readCleanupProofEntry(_ proof: Int32) throws -> (id: String, text: String)? {
+        guard let idLengthBytes = try readExact(2, from: proof) else {
+            throw HistoryStoreError.cleanupIncomplete
+        }
+        let idLength = idLengthBytes.withUnsafeBytes {
+            UInt16(littleEndian: $0.loadUnaligned(as: UInt16.self))
+        }
+        if idLength == 0 {
+            guard try readExact(1, from: proof) == nil else {
+                throw HistoryStoreError.cleanupIncomplete
+            }
+            return nil
+        }
+        guard idLength <= 1_024,
+              let textLengthBytes = try readExact(4, from: proof)
+        else { throw HistoryStoreError.cleanupIncomplete }
+        let textLength = textLengthBytes.withUnsafeBytes {
+            UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self))
+        }
+        guard textLength > 0, textLength <= Self.maximumFinalTextBytes,
+              let idBytes = try readExact(Int(idLength), from: proof),
+              let textBytes = try readExact(Int(textLength), from: proof),
+              let id = String(data: idBytes, encoding: .utf8), !id.isEmpty,
+              let text = String(data: textBytes, encoding: .utf8), !text.isEmpty
+        else { throw HistoryStoreError.cleanupIncomplete }
+        return (id, text)
+    }
+
     private func verifyCleanupProof(_ proof: Int32) throws {
         if testProofFailure { throw HistoryStoreError.cleanupIncomplete }
-        guard lseek(proof, 0, SEEK_SET) >= 0 else { throw HistoryStoreError.cleanupIncomplete }
+        try resetAndValidateCleanupProof(proof)
+        var reachedTerminator = false
         while true {
             // Bound memory while avoiding one full artifact scan per row.
-            // Every row is still covered; only the batch size is capped.
+            // Every row and each privacy-relevant FTS fragment is still covered.
             var sentinels: [Data] = []
-            sentinels.reserveCapacity(64)
+            sentinels.reserveCapacity(256)
             for _ in 0..<64 {
-                guard let lengthBytes = try readExact(4, from: proof) else { break }
-                let length = lengthBytes.withUnsafeBytes {
-                    UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self))
+                guard let entry = try readCleanupProofEntry(proof) else {
+                    reachedTerminator = true
+                    break
                 }
-                guard length > 0, length <= Self.maximumFinalTextBytes,
-                      let sentinel = try readExact(Int(length), from: proof)
-                else { throw HistoryStoreError.cleanupIncomplete }
-                sentinels.append(sentinel)
+                sentinels.append(contentsOf: try cleanupPrivacyProbes(for: entry.text))
             }
-            if sentinels.isEmpty { break }
+            if sentinels.isEmpty {
+                guard reachedTerminator else { throw HistoryStoreError.cleanupIncomplete }
+                break
+            }
             try withHistoryDirectoryDescriptor { directory in
                 try verifyNoUnexpectedArtifacts(directory)
-                for name in Self.controlledArtifactNames where name != ".cleanup-proof" {
+                for name in Self.controlledArtifactNames
+                    where name != ".cleanup-proof" && name != ".cleanup-proof.pending"
+                {
                     let artifact = openat(directory, name, O_RDONLY | O_NOFOLLOW)
                     if artifact < 0 {
                         guard errno == ENOENT else { throw HistoryStoreError.cleanupIncomplete }
@@ -983,10 +1060,141 @@ public actor SQLiteHistoryStore: HistoryStore {
                     }
                 }
             }
+            if reachedTerminator { break }
         }
     }
 
-    private func destroyCleanupProof(_ descriptor: Int32) throws {
+    private func recoverInterruptedCleanup() throws {
+        try withHistoryDirectoryDescriptor { directory in
+            let pending = openat(directory, ".cleanup-proof.pending", O_RDWR | O_NOFOLLOW)
+            if pending >= 0 {
+                defer { close(pending) }
+                try verifyPrivateRegularFileDescriptor(pending)
+                // The active name is installed only after a complete proof is
+                // fsynced. A pending file therefore cannot have authorized a
+                // deletion and is safe to scrub rather than replay.
+                try destroyCleanupProof(pending, name: ".cleanup-proof.pending")
+            } else if errno != ENOENT {
+                throw HistoryStoreError.cleanupIncomplete
+            }
+        }
+
+        let proof = try withHistoryDirectoryDescriptor { directory -> Int32? in
+            let descriptor = openat(directory, ".cleanup-proof", O_RDWR | O_NOFOLLOW)
+            if descriptor < 0 {
+                guard errno == ENOENT else { throw HistoryStoreError.cleanupIncomplete }
+                return nil
+            }
+            do {
+                try verifyPrivateRegularFileDescriptor(descriptor)
+                return descriptor
+            } catch {
+                close(descriptor)
+                throw error
+            }
+        }
+        guard let proof else { return }
+        defer { close(proof) }
+
+        try resetAndValidateCleanupProof(proof)
+        try transaction {
+            while let entry = try readCleanupProofEntry(proof) {
+                if let existing = try textForRecord(id: entry.id), existing != entry.text {
+                    throw HistoryStoreError.cleanupIncomplete
+                }
+                let statement = try prepare("DELETE FROM records WHERE id = ?")
+                defer { sqlite3_finalize(statement) }
+                try bind(entry.id, to: statement, at: 1)
+                try stepDone(statement)
+            }
+        }
+        try checkpointAfterDeletion()
+        try verifyCleanupProof(proof)
+        try destroyCleanupProof(proof)
+        cleanupFailureLatched = false
+    }
+
+    private func recoverLatchedCleanupForRetry() throws {
+        guard cleanupFailureLatched else { return }
+        try recoverInterruptedCleanup()
+        policy = try storedRetentionPolicy()
+    }
+
+    /// Exact UTF-8 plus stable unicode61-like tokens cover both the content
+    /// table and privacy-relevant FTS fragments. Very short tokens are omitted
+    /// because they cannot be attributed safely in SQLite structural bytes.
+    private func cleanupPrivacyProbes(for text: String) throws -> [Data] {
+        var output = [Data(text.utf8)]
+        var seen = Set<Data>(output)
+        for token in try sqliteTokens(text, maximum: Int.max) {
+            let bytes = Data(token.utf8)
+            guard bytes.count >= 12, seen.insert(bytes).inserted else { continue }
+            output.append(bytes)
+            if bytes.count >= 24 {
+                for fragment in [Data(bytes.prefix(12)), Data(bytes.suffix(12))]
+                    where seen.insert(fragment).inserted
+                {
+                    output.append(fragment)
+                }
+            }
+        }
+        return output
+    }
+
+    private func createPrivateQueryTokenizer() throws {
+        try execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS temp.history_query_tokens
+            USING fts5(text, tokenize='unicode61 remove_diacritics 2')
+            """)
+        try execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS temp.history_query_vocab
+            USING fts5vocab(history_query_tokens, 'instance')
+            """)
+        try execute("INSERT INTO temp.history_query_tokens(history_query_tokens, rank) VALUES('secure-delete', 1)")
+    }
+
+    /// Routes both user queries and cleanup proof fragments through SQLite's
+    /// actual configured unicode61 tokenizer. This avoids approximation gaps
+    /// for combining marks, private-use scalars, and Unicode category Co.
+    private func sqliteTokens(_ text: String, maximum: Int) throws -> [String] {
+        guard !text.isEmpty, maximum > 0 else { return [] }
+        try execute("DELETE FROM temp.history_query_tokens")
+        defer { try? execute("DELETE FROM temp.history_query_tokens") }
+        let insert = try prepare("INSERT INTO temp.history_query_tokens(rowid, text) VALUES (1, ?)")
+        defer { sqlite3_finalize(insert) }
+        try bind(text, to: insert, at: 1)
+        try stepDone(insert)
+        let query = try prepare("""
+            SELECT term FROM temp.history_query_vocab
+            WHERE doc = 1 ORDER BY offset
+            """)
+        defer { sqlite3_finalize(query) }
+        var output: [String] = []
+        var seen = Set<String>()
+        var reachedLimit = false
+        while sqlite3_step(query) == SQLITE_ROW {
+            guard let term = sqlite3_column_text(query, 0) else {
+                throw HistoryStoreError.corrupt
+            }
+            let value = String(cString: term)
+            if seen.insert(value).inserted {
+                output.append(value)
+                if output.count == maximum {
+                    reachedLimit = true
+                    break
+                }
+            }
+        }
+        guard reachedLimit || sqlite3_errcode(database) == SQLITE_DONE else {
+            throw mapSQLiteError(sqlite3_errcode(database))
+        }
+        return output
+    }
+
+    private func destroyCleanupProof(
+        _ descriptor: Int32,
+        name: String = ".cleanup-proof"
+    ) throws {
         guard lseek(descriptor, 0, SEEK_SET) >= 0 else { throw HistoryStoreError.cleanupIncomplete }
         let zeros = [UInt8](repeating: 0, count: 16_384)
         var remaining = lseek(descriptor, 0, SEEK_END)
@@ -1002,9 +1210,10 @@ public actor SQLiteHistoryStore: HistoryStore {
             throw HistoryStoreError.cleanupIncomplete
         }
         try withHistoryDirectoryDescriptor { directory in
-            if unlinkat(directory, ".cleanup-proof", 0) != 0 && errno != ENOENT {
+            if unlinkat(directory, name, 0) != 0 && errno != ENOENT {
                 throw HistoryStoreError.cleanupIncomplete
             }
+            guard fsync(directory) == 0 else { throw HistoryStoreError.cleanupIncomplete }
         }
     }
 
@@ -1034,30 +1243,6 @@ public actor SQLiteHistoryStore: HistoryStore {
             offset += result
         }
         return data
-    }
-
-    /// Successful deletion is only reported after SQLite's truncating
-    /// checkpoint and a descriptor-relative scan of every store artifact.  It
-    /// is not a forensic-erasure promise: if SQLite leaves a matching byte
-    /// sequence behind, the operation is reported as incomplete.
-    private func verifyRemovedTextIsAbsent(_ values: [String]) throws {
-        let sentinels = values.filter { !$0.isEmpty }.map { Data($0.utf8) }
-        guard !sentinels.isEmpty else { return }
-        try withHistoryDirectoryDescriptor { descriptor in
-            try verifyNoUnexpectedArtifacts(descriptor)
-            for name in Self.controlledArtifactNames {
-                let artifact = openat(descriptor, name, O_RDONLY | O_NOFOLLOW)
-                if artifact < 0 {
-                    guard errno == ENOENT else { throw HistoryStoreError.ioFailed }
-                    continue
-                }
-                defer { close(artifact) }
-                try verifyPrivateRegularFileDescriptor(artifact)
-                if try artifactContainsAnySentinel(artifact, sentinels: sentinels) {
-                    throw HistoryStoreError.cleanupIncomplete
-                }
-            }
-        }
     }
 
     private func artifactContainsAnySentinel(_ descriptor: Int32, sentinels: [Data]) throws -> Bool {
@@ -1178,22 +1363,6 @@ public actor SQLiteHistoryStore: HistoryStore {
     /// literal search text rather than executable grammar.
     static func ftsQuery(_ tokens: [String]) -> String {
         tokens.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"*" }.joined(separator: " AND ")
-    }
-
-    /// Mirrors the unicode61 notion of a word closely enough to avoid exposing
-    /// any punctuation or FTS operators as grammar. The FTS layer remains the
-    /// authority for case/diacritic folding and matching.
-    static func literalTokens(_ query: String) -> [String] {
-        let allowed = CharacterSet.alphanumerics.union(.nonBaseCharacters)
-        let parts = query.components(separatedBy: allowed.inverted).filter { !$0.isEmpty }
-        var seen = Set<String>()
-        let stableLocale = Locale(identifier: "en_US_POSIX")
-        return parts.filter {
-            seen.insert($0.folding(
-                options: [.caseInsensitive, .diacriticInsensitive],
-                locale: stableLocale
-            )).inserted
-        }
     }
 
     private func requireBeforeDeadline(_ deadline: UInt64?, cancellation: HistoryWriteCancellation? = nil) throws {

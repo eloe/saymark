@@ -5,6 +5,23 @@ import SaymarkKit
 import Observation
 import PostHog
 
+/// Keeps optional history strictly before, and non-authoritative to, the one
+/// user-visible insertion. Delivery is invoked exactly once whether history
+/// records successfully, times out, or returns no record.
+enum FinalDeliveryCoordinator {
+    @MainActor
+    static func deliver(
+        recordBeforeDelivery: () async -> HistoryRecord?,
+        insertExactlyOnce: () -> HistoryDeliveryState,
+        markDelivery: (HistoryRecord?, HistoryDeliveryState) -> Void
+    ) async -> (record: HistoryRecord?, outcome: HistoryDeliveryState) {
+        let record = await recordBeforeDelivery()
+        let outcome = insertExactlyOnce()
+        markDelivery(record, outcome)
+        return (record, outcome)
+    }
+}
+
 /// Thin SwiftUI-facing wrapper around `SaymarkKit.DictationSession`: maps the
 /// shared pipeline to an `@Observable` menu-bar state, wires the Carbon hotkey
 /// to start/stop, and injects the final transcript into the focused field.
@@ -280,21 +297,31 @@ final class DictationController {
                 detail: String(localized: "Try again and speak a little longer")
             )
         } else {
-            let historyRecord = await RecentDictationsController.shared.recordFinal(
-                final,
-                enabledAtStart: historyWasEnabledAtStart,
-                secureInputActive: TextInjector.secureInputActive,
-                isHUDOnly: InsertMode.current == .hudOnly
-            )
             if InsertMode.current == .inField {
-                let outcome = insertFinal(final, sessionID: diagnosticSessionID)
-                RecentDictationsController.shared.markDelivery(historyRecord, state: outcome)
-                if outcome != .inserted, historyRecord != nil {
+                let delivery = await FinalDeliveryCoordinator.deliver {
+                    await RecentDictationsController.shared.recordFinal(
+                        final,
+                        enabledAtStart: historyWasEnabledAtStart,
+                        secureInputActive: TextInjector.secureInputActive,
+                        isHUDOnly: false
+                    )
+                } insertExactlyOnce: {
+                    insertFinal(final, sessionID: diagnosticSessionID)
+                } markDelivery: {
+                    RecentDictationsController.shared.markDelivery($0, state: $1)
+                }
+                if delivery.outcome != .inserted, delivery.record != nil {
                     hud.offerRecentDictationsRecovery {
                         RecentDictationsController.shared.present()
                     }
                 }
             } else {
+                _ = await RecentDictationsController.shared.recordFinal(
+                    final,
+                    enabledAtStart: historyWasEnabledAtStart,
+                    secureInputActive: TextInjector.secureInputActive,
+                    isHUDOnly: true
+                )
                 hud.finish(final)
             }
         }

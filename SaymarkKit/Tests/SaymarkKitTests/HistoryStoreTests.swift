@@ -9,8 +9,12 @@ final class HistoryStoreTests: XCTestCase {
     private var now: Int64!
 
     override func setUpWithError() throws {
-        directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("saymark-history-\(UUID().uuidString)", isDirectory: true)
+        if let subprocessDirectory = ProcessInfo.processInfo.environment["SAYMARK_HISTORY_CRASH_DIRECTORY"] {
+            directory = URL(fileURLWithPath: subprocessDirectory, isDirectory: true)
+        } else {
+            directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("saymark-history-\(UUID().uuidString)", isDirectory: true)
+        }
         now = 1_700_000_000_000
     }
 
@@ -82,6 +86,7 @@ final class HistoryStoreTests: XCTestCase {
             "İstanbul Türkiye",
             "مرحبا بالعالم",
             "AND OR NOT \"quoted\" star* caret^ dash-",
+            "private\u{E000}use unicode category Co",
         ]
         for fixture in fixtures {
             _ = try await store.recordFinal(.init(text: fixture))
@@ -95,13 +100,15 @@ final class HistoryStoreTests: XCTestCase {
         let boolean = try await store.records(query: "AND OR NOT")
         let grammar = try await store.records(query: "\"quoted\" star* caret^ dash-")
         let emojiOnly = try await store.records(query: "🧪✨")
+        let privateUse = try await store.records(query: "private\u{E000}use")
         XCTAssertEqual(cafe.count, 2)
         XCTAssertEqual(german.count, 1)
         XCTAssertEqual(turkish.count, 1)
         XCTAssertEqual(rtl.count, 1)
         XCTAssertEqual(boolean.count, 1)
         XCTAssertEqual(grammar.count, 1)
-        XCTAssertEqual(emojiOnly.count, fixtures.count)
+        XCTAssertTrue(emojiOnly.isEmpty)
+        XCTAssertEqual(privateUse.count, 1)
 
         let repairedMalformed = String(decoding: [0x66, 0x80, 0x6f], as: UTF8.self)
         _ = try await store.recordFinal(.init(text: repairedMalformed))
@@ -109,11 +116,15 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(malformedResults.count, 1)
     }
 
-    func testTenThousandGeneratedUnicodeQueriesProduceOnlyBoundedQuotedGrammar() {
+    func testTenThousandGeneratedUnicodeQueriesUseRealSQLiteUnicode61WithoutCrash() async throws {
+        let store = try makeStore()
+        _ = try await store.recordFinal(.init(
+            text: "café Straße İ مرحبا עברית AND quoted token42 private\u{E000}use"
+        ))
         let metacharacters = [
             "\"", "'", "*", "^", "-", ":", "(", ")", "{", "}", "[", "]",
             "AND", "OR", "NOT", "NEAR", "café", "cafe\u{301}", "ß", "İ",
-            "مرحبا", "עברית", "🧪", "\n", ";DROP TABLE records;--",
+            "مرحبا", "עברית", "🧪", "\u{E000}", "\n", ";DROP TABLE records;--",
         ]
         for index in 0..<10_000 {
             let query = [
@@ -121,13 +132,8 @@ final class HistoryStoreTests: XCTestCase {
                 metacharacters[(index * 7 + 3) % metacharacters.count],
                 "token\(index % 97)",
             ].joined(separator: " ")
-            let tokens = SQLiteHistoryStore.literalTokens(query)
-            XCTAssertLessThanOrEqual(tokens.count, SQLiteHistoryStore.maximumSearchTokens)
-            let grammar = SQLiteHistoryStore.ftsQuery(tokens)
-            for token in tokens {
-                let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
-                XCTAssertTrue(grammar.contains("\"\(escaped)\"*"))
-            }
+            let results = try await store.records(query: query)
+            XCTAssertLessThanOrEqual(results.count, SQLiteHistoryStore.maximumResultLimit)
         }
     }
 
@@ -248,14 +254,173 @@ final class HistoryStoreTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(try await failing.records()) { error in
             XCTAssertEqual(error as? HistoryStoreError, .cleanupIncomplete)
         }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".cleanup-proof").path
+        ))
         await failing.shutdown()
 
         let recovered = try SQLiteHistoryStore(directoryURL: directory, policy: .untilDeleted, now: { self.now })
         let recoveredPolicy = try await recovered.durableRetentionPolicy()
         XCTAssertEqual(recoveredPolicy, .days7)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".cleanup-proof").path
+        ))
         try await recovered.purgeExpired()
         let recoveredRecords = try await recovered.records()
         XCTAssertTrue(recoveredRecords.isEmpty)
+    }
+
+    func testPendingProofFromPreActivationCrashIsScrubbedWithoutDeletingRows() async throws {
+        var store: SQLiteHistoryStore? = try makeStore()
+        _ = try await store?.recordFinal(.init(text: "row survives pending proof"))
+        await store?.shutdown()
+        store = nil
+        let pending = directory.appendingPathComponent(".cleanup-proof.pending")
+        try Data("incomplete-private-proof".utf8).write(to: pending)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pending.path)
+
+        let reopened = try makeStore()
+        let records = try await reopened.records()
+
+        XCTAssertEqual(records.map(\.text), ["row survives pending proof"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pending.path))
+        XCTAssertFalse(try controlledArtifactsContain(Data("incomplete-private-proof".utf8)))
+    }
+
+    func testInvalidActivatedProofFailsClosedAndIsNotSilentlyDiscarded() async throws {
+        var store: SQLiteHistoryStore? = try makeStore()
+        _ = try await store?.recordFinal(.init(text: "must remain fail closed"))
+        await store?.shutdown()
+        store = nil
+        let proof = directory.appendingPathComponent(".cleanup-proof")
+        try Data("invalid-activated-proof".utf8).write(to: proof)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: proof.path)
+
+        let reopened = try makeStore()
+        await XCTAssertThrowsErrorAsync(try await reopened.records()) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .cleanupIncomplete)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: proof.path))
+    }
+
+    func testSubprocessSIGKILLReleasesLockAndResumesCommittedWALCleanup() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["SAYMARK_HISTORY_CRASH_CHILD"] == "1" {
+            var setup: SQLiteHistoryStore? = try SQLiteHistoryStore(
+                directoryURL: directory,
+                policy: .days30,
+                now: { self.now }
+            )
+            _ = try await setup?.recordFinal(.init(
+                text: environment["SAYMARK_HISTORY_CRASH_SENTINEL"]!
+            ))
+            await setup?.shutdown()
+            setup = nil
+            let store = try SQLiteHistoryStore(
+                directoryURL: directory,
+                policy: .days30,
+                now: { self.now },
+                testProofFailure: true
+            )
+            do {
+                try await store.clear()
+                XCTFail("Injected proof failure unexpectedly succeeded")
+            } catch {
+                guard error as? HistoryStoreError == .cleanupIncomplete else { throw error }
+            }
+            XCTAssertTrue(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(".cleanup-proof").path
+            ))
+            kill(getpid(), SIGKILL)
+            return
+        }
+
+        let sentinel = "subprocesscrashprivacytoken\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let process = Process()
+        process.executableURL = URL(
+            fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest"
+        )
+        process.arguments = [
+            "-XCTest",
+            "HistoryStoreTests/testSubprocessSIGKILLReleasesLockAndResumesCommittedWALCleanup",
+            Bundle(for: type(of: self)).bundleURL.path,
+        ]
+        var childEnvironment = environment
+        childEnvironment["SAYMARK_HISTORY_CRASH_CHILD"] = "1"
+        childEnvironment["SAYMARK_HISTORY_CRASH_DIRECTORY"] = directory.path
+        childEnvironment["SAYMARK_HISTORY_CRASH_SENTINEL"] = sentinel
+        process.environment = childEnvironment
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        try process.run()
+        process.waitUntilExit()
+        let childOutput = String(
+            decoding: standardOutput.fileHandleForReading.readDataToEndOfFile()
+                + standardError.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+
+        XCTAssertEqual(process.terminationReason, .uncaughtSignal, childOutput)
+        XCTAssertEqual(process.terminationStatus, SIGKILL, childOutput)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".cleanup-proof").path
+        ))
+
+        let recovered = try makeStore()
+        let rows = try await recovered.records()
+        XCTAssertTrue(rows.isEmpty)
+        await recovered.shutdown()
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".cleanup-proof").path
+        ))
+        XCTAssertFalse(try controlledArtifactsContain(Data(sentinel.lowercased().utf8)))
+    }
+
+    func testEveryDestructivePathRemovesFullAndFTSNormalizedTokenFragments() async throws {
+        enum DestructivePath: CaseIterable { case delete, clear, off, session, purge, downward }
+        let root = directory!
+        for (index, path) in DestructivePath.allCases.enumerated() {
+            directory = root.appendingPathComponent("path-\(index)", isDirectory: true)
+            now = 1_700_000_000_000
+            let normalizedToken = "privacytoken\(index)abcdefghijklmnopqrstuv"
+            let fullText = "Café \(normalizedToken.uppercased())"
+            let initialPolicy: HistoryRetentionPolicy = path == .downward ? .untilDeleted : .days7
+            let store = try makeStore(policy: initialPolicy)
+            let inserted = try await store.recordFinal(.init(text: fullText))
+            let record = try XCTUnwrap(inserted)
+            XCTAssertTrue(try controlledArtifactsContain(Data(normalizedToken.utf8)))
+
+            switch path {
+            case .delete:
+                let deleted = try await store.delete(id: record.id)
+                XCTAssertTrue(deleted)
+            case .clear:
+                try await store.clear()
+            case .off:
+                try await store.setRetentionPolicy(.off)
+            case .session:
+                try await store.setRetentionPolicy(.session)
+            case .purge:
+                now += HistoryRetentionPolicy.days7.durationMilliseconds! + 1
+                try await store.purgeExpired()
+            case .downward:
+                now += HistoryRetentionPolicy.days7.durationMilliseconds! + 1
+                try await store.setRetentionPolicy(.days7)
+            }
+
+            await store.shutdown()
+            for probe in [
+                Data(fullText.utf8),
+                Data(normalizedToken.utf8),
+                Data(normalizedToken.prefix(12).utf8),
+                Data(normalizedToken.suffix(12).utf8),
+            ] {
+                XCTAssertFalse(try controlledArtifactsContain(probe), "\(path) retained \(String(decoding: probe, as: UTF8.self))")
+            }
+        }
+        directory = root
     }
 
     func testPurgeAndSessionTransitionsByteScanEveryControlledArtifact() async throws {
@@ -277,6 +442,7 @@ final class HistoryStoreTests: XCTestCase {
 
     func testTenThousandRecordSearchAndPurgeAcceptance() async throws {
         let fixturePrefix = "rd-10k-\(UUID().uuidString)"
+        let externalTempBefore = try topLevelTemporaryArtifacts()
         var setup: SQLiteHistoryStore? = try makeStore(policy: .days30)
         try await setup?.warmUp()
         await setup?.shutdown()
@@ -284,6 +450,27 @@ final class HistoryStoreTests: XCTestCase {
         try seedFixtures(count: 10_000, prefix: fixturePrefix)
 
         let store = try SQLiteHistoryStore(directoryURL: directory, policy: .off, now: { self.now })
+        let coldStarted = ContinuousClock.now
+        let coldRows = try await store.records(limit: 25)
+        let coldMilliseconds = milliseconds(since: coldStarted)
+        XCTAssertEqual(coldRows.count, 25)
+        XCTAssertLessThanOrEqual(coldMilliseconds, 100, "10k cold list was \(coldMilliseconds) ms")
+
+        let detachedList = try await Task.detached {
+            let started = ContinuousClock.now
+            let rows = try await store.records(limit: 25)
+            return (pthread_main_np() != 0, rows.count, started.duration(to: .now))
+        }.value
+        XCTAssertFalse(detachedList.0, "10k list acceptance ran on the main thread")
+        XCTAssertEqual(detachedList.1, 25)
+        let detachedMilliseconds =
+            Double(detachedList.2.components.seconds) * 1_000
+            + Double(detachedList.2.components.attoseconds) / 1_000_000_000_000_000
+        XCTAssertLessThanOrEqual(
+            detachedMilliseconds,
+            100
+        )
+
         var queryDurations: [Double] = []
         for _ in 0..<20 {
             let started = ContinuousClock.now
@@ -293,6 +480,13 @@ final class HistoryStoreTests: XCTestCase {
         }
         let p95 = queryDurations.sorted()[18]
         XCTAssertLessThanOrEqual(p95, 100, "10k warm query p95 was \(p95) ms")
+        fputs(
+            "RD-I07 macOS=\(ProcessInfo.processInfo.operatingSystemVersionString) "
+                + "memory=\(ProcessInfo.processInfo.physicalMemory) "
+                + "sqlite=\(String(cString: sqlite3_libversion())) fixture=10000 "
+                + "cold_ms=\(coldMilliseconds) list_ms=\(detachedMilliseconds) p95_ms=\(p95)\n",
+            stderr
+        )
 
         now += HistoryRetentionPolicy.days30.durationMilliseconds! + 20_000
         let purgeStarted = ContinuousClock.now
@@ -304,6 +498,14 @@ final class HistoryStoreTests: XCTestCase {
         await store.shutdown()
         XCTAssertFalse(try controlledArtifactsContain(Data("\(fixturePrefix)-0".utf8)))
         XCTAssertFalse(try controlledArtifactsContain(Data("\(fixturePrefix)-9999".utf8)))
+        let newExternalArtifacts = try topLevelTemporaryArtifacts().subtracting(externalTempBefore)
+        for artifact in newExternalArtifacts where !artifact.path.hasPrefix(directory.path) {
+            let values = try? artifact.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values?.isRegularFile == true, (values?.fileSize ?? .max) <= 10_000_000,
+                  let data = try? Data(contentsOf: artifact)
+            else { continue }
+            XCTAssertNil(data.range(of: Data(fixturePrefix.utf8)), "external temp leaked fixture sentinel")
+        }
     }
 
     func testConcurrentReadsWritesDeletesAndPolicyChangesRemainSerialized() async throws {
@@ -511,6 +713,14 @@ final class HistoryStoreTests: XCTestCase {
             if data.range(of: sentinel) != nil { return true }
         }
         return false
+    }
+
+    private func topLevelTemporaryArtifacts() throws -> Set<URL> {
+        Set(try FileManager.default.contentsOfDirectory(
+            at: FileManager.default.temporaryDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ))
     }
 
     private func pragmaInt(_ name: String, database: OpaquePointer?) throws -> Int32 {

@@ -181,9 +181,66 @@ final class RecentDictationsPresentationTests: XCTestCase {
     func testHistoryPagingStartsAtTwentyAndOffersOnlyFiveMore() {
         let controller = RecentDictationsController.shared
         controller.setRecordsForTesting((0..<20).map { makeRecord(text: "row \($0)") })
+        XCTAssertFalse(controller.canLoadMore)
+        controller.setRecordsForTesting((0..<21).map { makeRecord(text: "row \($0)") })
         XCTAssertTrue(controller.canLoadMore)
+        XCTAssertEqual(controller.records.count, 20)
         controller.setRecordsForTesting((0..<19).map { makeRecord(text: "row \($0)") })
         XCTAssertFalse(controller.canLoadMore)
+    }
+
+    func testCommittedCleanupFailureImmediatelyClearsPublishedPresentation() {
+        let controller = RecentDictationsController.shared
+        controller.setRecordsForTesting((0..<21).map { makeRecord(text: "private row \($0)") })
+
+        controller.invalidatePresentationAfterCommittedCleanupFailure()
+
+        XCTAssertTrue(controller.records.isEmpty)
+        XCTAssertEqual(controller.query, "")
+        XCTAssertEqual(controller.resultSummary, "0 results")
+        XCTAssertFalse(controller.canLoadMore)
+        XCTAssertFalse(controller.isHistoryAvailable)
+    }
+
+    func testIntegratedFinalDeliveryInsertsExactlyOnceAndMarksTheSameRecord() async {
+        let expected = makeRecord(text: "integrated exact delivery")
+        var insertions = 0
+        var marked: [(String?, HistoryDeliveryState)] = []
+
+        let result = await FinalDeliveryCoordinator.deliver {
+            expected
+        } insertExactlyOnce: {
+            insertions += 1
+            return .inserted
+        } markDelivery: {
+            marked.append(($0?.id, $1))
+        }
+
+        XCTAssertEqual(insertions, 1)
+        XCTAssertEqual(result.record?.id, expected.id)
+        XCTAssertEqual(result.outcome, .inserted)
+        XCTAssertEqual(marked.count, 1)
+        XCTAssertEqual(marked.first?.0, expected.id)
+        XCTAssertEqual(marked.first?.1, .inserted)
+    }
+
+    func testIntegratedFinalDeliveryStillInsertsExactlyOnceWhenHistoryIsUnavailable() async {
+        var insertions = 0
+        var marks = 0
+
+        let result = await FinalDeliveryCoordinator.deliver {
+            nil
+        } insertExactlyOnce: {
+            insertions += 1
+            return .insertionFailed
+        } markDelivery: { _, _ in
+            marks += 1
+        }
+
+        XCTAssertEqual(insertions, 1)
+        XCTAssertNil(result.record)
+        XCTAssertEqual(result.outcome, .insertionFailed)
+        XCTAssertEqual(marks, 1)
     }
 
     func testRecentDictationsSourcesContainNoPostHogOrHardcodedLibraryPath() throws {
