@@ -611,13 +611,15 @@ PR/release evidence.
    exact revisions before any language capability registry is introduced. The
    current source alone proves neither a supported-language list nor language
    identification quality.
-2. **Normalization implementation:** Unicode 15.1.0 is the required contract;
-   select and vendor the Swift implementation/table set before Slice A. There is
-   no established pure-Swift dependency known to provide pinned NFKC, full case
-   folding, and UAX #29 *word* segmentation together; Swift standard library
-   grapheme breaking is insufficient. Size/build-or-source that dependency and
-   its table update policy before committing implementation. Add golden tests
-   before treating its NFKC/case-folding behavior as compatible.
+2. **Normalization implementation:** Resolved for Slice A by the checked-in,
+   generated pure-Swift Unicode 15.1.0 core documented in
+   [unicode-15.1-evidence.md](unicode-15.1-evidence.md). It vendors NFKC,
+   default full case folding, and UAX #29 word-boundary data; it does not call
+   host ICU/Foundation or Swift grapheme breaking. Full official Normalization,
+   CaseFolding, and WordBreak fixtures are a CI gate. Any update must follow the
+   documented hash review, deterministic generation, attribution, and macOS
+   15/26 evidence procedure; the vocabulary document remains read-only when its
+   pinned `unicodeVersion` is unsupported.
 3. **Raw-text retention UX:** Decide where raw ASR is exposed and for how long;
    do not quietly create transcript history while implementing the fallback.
 4. **Import interoperability:** Decide whether the v1 JSON schema is public and
@@ -626,9 +628,9 @@ PR/release evidence.
 5. **Ambiguous natural speech:** Exact aliases cannot reliably resolve all
    proper nouns. Avoid marketing them as pronunciation training until a
    model-native bias capability passes the separate evidence gate.
-6. **UI approval:** The six mockup categories in section 7, including the
-   English badge, fallback final, and per-entry import diff, need user approval
-   before any Settings/HUD/import surface is implemented.
+6. **UI approval:** Resolved on 2026-07-26. The user approved the binding
+   Vocabulary package in section 7, including the English badge, fallback final,
+   and per-entry import diff. Implementation must preserve it exactly.
 7. **Correction-versus-insertion interaction:** The live-insertion feature must
    consume only the rendered text it owns, retain its ownership safety contract,
    and never treat a correction as permission to overwrite user text.
