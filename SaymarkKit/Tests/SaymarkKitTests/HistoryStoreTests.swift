@@ -423,6 +423,125 @@ final class HistoryStoreTests: XCTestCase {
         directory = root
     }
 
+    func testDeleteAllowsDuplicateTextAndSharedTokensStillOwnedByRetainedRows() async throws {
+        let store = try makeStore()
+        let shared = "sharedprivacytokenabcdefghijklmnopqrstuv"
+        let duplicateText = "duplicate exact \(shared)"
+        let firstValue = try await store.recordFinal(.init(text: duplicateText))
+        let secondValue = try await store.recordFinal(.init(text: duplicateText))
+        let distinctValue = try await store.recordFinal(.init(text: "different owner \(shared)"))
+        let first = try XCTUnwrap(firstValue)
+        let second = try XCTUnwrap(secondValue)
+        let distinct = try XCTUnwrap(distinctValue)
+
+        let deletedFirst = try await store.delete(id: first.id)
+        XCTAssertTrue(deletedFirst)
+        var rows = try await store.records(query: shared)
+        XCTAssertEqual(Set(rows.map(\.id)), Set([second.id, distinct.id]))
+        let deletedSecond = try await store.delete(id: second.id)
+        XCTAssertTrue(deletedSecond)
+        rows = try await store.records(query: shared)
+        XCTAssertEqual(rows.map(\.id), [distinct.id])
+        let deletedDistinct = try await store.delete(id: distinct.id)
+        XCTAssertTrue(deletedDistinct)
+        let finalRows = try await store.records()
+        XCTAssertTrue(finalRows.isEmpty)
+    }
+
+    func testSubprocessProofDisposalRecoversFromKillAtEveryTerminalBoundary() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        if let boundary = environment["SAYMARK_HISTORY_DISPOSAL_CRASH_BOUNDARY"] {
+            var setup: SQLiteHistoryStore? = try makeStore()
+            _ = try await setup?.recordFinal(.init(
+                text: environment["SAYMARK_HISTORY_CRASH_SENTINEL"]!
+            ))
+            await setup?.shutdown()
+            setup = nil
+            let store = try SQLiteHistoryStore(
+                directoryURL: directory,
+                policy: .days30,
+                now: { self.now },
+                testProofDisposalBoundary: { reached in
+                    if reached == boundary { kill(getpid(), SIGKILL) }
+                }
+            )
+            try await store.clear()
+            XCTFail("Child did not stop at proof disposal boundary \(boundary)")
+            return
+        }
+
+        let root = directory!
+        for boundary in ["renamed_disposable", "scrubbed", "truncated", "unlinked"] {
+            directory = root.appendingPathComponent(boundary, isDirectory: true)
+            let sentinel = "disposalcrashprivacytoken\(boundary)abcdefghijkl"
+            let result = try runCrashSubprocess(
+                test: "HistoryStoreTests/testSubprocessProofDisposalRecoversFromKillAtEveryTerminalBoundary",
+                environment: [
+                    "SAYMARK_HISTORY_DISPOSAL_CRASH_BOUNDARY": boundary,
+                    "SAYMARK_HISTORY_CRASH_DIRECTORY": directory.path,
+                    "SAYMARK_HISTORY_CRASH_SENTINEL": sentinel,
+                ]
+            )
+            XCTAssertEqual(result.reason, .uncaughtSignal, result.output)
+            XCTAssertEqual(result.status, SIGKILL, result.output)
+
+            let recovered = try makeStore()
+            let recoveredRows = try await recovered.records()
+            XCTAssertTrue(recoveredRows.isEmpty)
+            await recovered.shutdown()
+            XCTAssertFalse(try controlledArtifactsContain(Data(sentinel.utf8)))
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(".cleanup-proof.disposable").path
+            ))
+        }
+        directory = root
+    }
+
+    func testSubprocessKillAfterCommitBeforeCheckpointRecoversLiveWAL() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["SAYMARK_HISTORY_LIVE_WAL_CHILD"] == "1" {
+            var setup: SQLiteHistoryStore? = try makeStore()
+            _ = try await setup?.recordFinal(.init(
+                text: environment["SAYMARK_HISTORY_CRASH_SENTINEL"]!
+            ))
+            await setup?.shutdown()
+            setup = nil
+            let store = try SQLiteHistoryStore(
+                directoryURL: directory,
+                policy: .days30,
+                now: { self.now },
+                testBeforeDeletionCheckpoint: { kill(getpid(), SIGKILL) }
+            )
+            try await store.clear()
+            XCTFail("Child reached past the pre-checkpoint kill boundary")
+            return
+        }
+
+        let sentinel = "livewalprivacytoken\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let result = try runCrashSubprocess(
+            test: "HistoryStoreTests/testSubprocessKillAfterCommitBeforeCheckpointRecoversLiveWAL",
+            environment: [
+                "SAYMARK_HISTORY_LIVE_WAL_CHILD": "1",
+                "SAYMARK_HISTORY_CRASH_DIRECTORY": directory.path,
+                "SAYMARK_HISTORY_CRASH_SENTINEL": sentinel,
+            ]
+        )
+        XCTAssertEqual(result.reason, .uncaughtSignal, result.output)
+        XCTAssertEqual(result.status, SIGKILL, result.output)
+        let wal = directory.appendingPathComponent("\(SQLiteHistoryStore.databaseName)-wal")
+        let walSize = try wal.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        XCTAssertGreaterThan(walSize, 32, "child did not leave committed WAL frames")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".cleanup-proof").path
+        ))
+
+        let recovered = try makeStore()
+        let recoveredRows = try await recovered.records()
+        XCTAssertTrue(recoveredRows.isEmpty)
+        await recovered.shutdown()
+        XCTAssertFalse(try controlledArtifactsContain(Data(sentinel.utf8)))
+    }
+
     func testPurgeAndSessionTransitionsByteScanEveryControlledArtifact() async throws {
         let purgeSentinel = "purge-byte-sentinel-\(UUID().uuidString)"
         var store: SQLiteHistoryStore? = try makeStore(policy: .days7)
@@ -721,6 +840,32 @@ final class HistoryStoreTests: XCTestCase {
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
             options: [.skipsHiddenFiles]
         ))
+    }
+
+    private func runCrashSubprocess(
+        test: String,
+        environment additions: [String: String]
+    ) throws -> (reason: Process.TerminationReason, status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(
+            fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest"
+        )
+        process.arguments = ["-XCTest", test, Bundle(for: type(of: self)).bundleURL.path]
+        var environment = ProcessInfo.processInfo.environment
+        for (key, value) in additions { environment[key] = value }
+        process.environment = environment
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        try process.run()
+        process.waitUntilExit()
+        let output = String(
+            decoding: standardOutput.fileHandleForReading.readDataToEndOfFile()
+                + standardError.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        return (process.terminationReason, process.terminationStatus, output)
     }
 
     private func pragmaInt(_ name: String, database: OpaquePointer?) throws -> Int32 {

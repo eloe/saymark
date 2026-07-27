@@ -189,17 +189,20 @@ final class RecentDictationsPresentationTests: XCTestCase {
         XCTAssertFalse(controller.canLoadMore)
     }
 
-    func testCommittedCleanupFailureImmediatelyClearsPublishedPresentation() {
+    func testEveryCommittedCleanupFailurePathImmediatelyClearsPublishedPresentation() {
         let controller = RecentDictationsController.shared
-        controller.setRecordsForTesting((0..<21).map { makeRecord(text: "private row \($0)") })
+        for path in RecentDictationsController.CommittedCleanupPath.allCases {
+            controller.setRecordsForTesting((0..<21).map { makeRecord(text: "private row \($0)") })
+            controller.setHistoryAvailableForTesting(true)
 
-        controller.invalidatePresentationAfterCommittedCleanupFailure()
+            controller.invalidatePresentationAfterCommittedCleanupFailure(path)
 
-        XCTAssertTrue(controller.records.isEmpty)
-        XCTAssertEqual(controller.query, "")
-        XCTAssertEqual(controller.resultSummary, "0 results")
-        XCTAssertFalse(controller.canLoadMore)
-        XCTAssertFalse(controller.isHistoryAvailable)
+            XCTAssertTrue(controller.records.isEmpty, "\(path)")
+            XCTAssertEqual(controller.query, "", "\(path)")
+            XCTAssertEqual(controller.resultSummary, "0 results", "\(path)")
+            XCTAssertFalse(controller.canLoadMore, "\(path)")
+            XCTAssertFalse(controller.isHistoryAvailable, "\(path)")
+        }
     }
 
     func testIntegratedFinalDeliveryInsertsExactlyOnceAndMarksTheSameRecord() async {

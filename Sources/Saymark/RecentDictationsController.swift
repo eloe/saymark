@@ -9,6 +9,9 @@ import SwiftUI
 @MainActor
 @Observable
 final class RecentDictationsController: NSObject, NSWindowDelegate {
+    enum CommittedCleanupPath: CaseIterable {
+        case singleDelete, clear, retention, off
+    }
     static let shared = RecentDictationsController()
 
     private(set) var records: [HistoryRecord] = []
@@ -158,6 +161,9 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             return true
         } catch HistoryStoreError.cleanupIncomplete {
             await reconcileToDurablePolicy(mirrorDefaults: false, publishAvailability: false)
+            invalidatePresentationAfterCommittedCleanupFailure(
+                retention == .off ? .off : .retention
+            )
             errorMessage = "History was removed, but Saymark could not finish cleaning its local database. Quit other Saymark windows and try again."
             return false
         } catch {
@@ -241,7 +247,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             } catch {
                 SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .unavailable)
                 if error as? HistoryStoreError == .cleanupIncomplete {
-                    invalidatePresentationAfterCommittedCleanupFailure()
+                    invalidatePresentationAfterCommittedCleanupFailure(.clear)
                     errorMessage = "History is removed from the active list, but Saymark could not finish cleaning every local database artifact. Try again when no other Saymark window is using history."
                 } else {
                     errorMessage = "Couldn’t clear Recent Dictations."
@@ -363,6 +369,9 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             do {
                 _ = try await store?.delete(id: record.id)
                 await refresh()
+            } catch HistoryStoreError.cleanupIncomplete {
+                invalidatePresentationAfterCommittedCleanupFailure(.singleDelete)
+                errorMessage = "This dictation was removed, but Saymark could not finish cleaning its local database."
             } catch {
                 errorMessage = "Couldn’t delete this dictation."
             }
@@ -518,6 +527,10 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         self.records = Array(records.prefix(resultLimit))
     }
 
+    func setHistoryAvailableForTesting(_ available: Bool) {
+        isHistoryAvailable = available
+    }
+
     func resetReinsertSeamsForTesting() {
         reinsertAccessibilityTrusted = { Accessibility.isTrusted }
         reinsertSecureInputActive = { TextInjector.secureInputActive }
@@ -556,7 +569,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         window = nil
     }
 
-    func invalidatePresentationAfterCommittedCleanupFailure() {
+    func invalidatePresentationAfterCommittedCleanupFailure(_: CommittedCleanupPath) {
         refreshGeneration &+= 1
         searchTask?.cancel()
         searchTask = nil

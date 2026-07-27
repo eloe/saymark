@@ -217,16 +217,24 @@ atomically promoted from `.cleanup-proof.pending` to `.cleanup-proof` before
 deletion can begin. Proof verification scans exact UTF-8 plus SQLite-tokenized,
 FTS-normalized tokens of at least 12 bytes and 12-byte prefix/suffix fragments
 for tokens of at least 24 bytes across all controlled artifacts in bounded
-64-row chunks. The specificity floor avoids falsely attributing SQLite schema
-bytes or tokens still owned by retained rows. It then zeroes, truncates, fsyncs,
-and unlinks the spool. There is no row-count cap. A crash with only the pending
-name is pre-deletion and is scrubbed safely; a validated active proof is replayed
-by exact id/text on startup, checkpointed, verified, and scrubbed. Invalid active
-proofs fail closed and remain available for repair. Off closes the in-process write
-gate before cleanup begins and remains fail-closed if proof or checkpointing is
-incomplete. Idle cleanup runs at background priority only after at least five
-seconds without user input and while no recording, history window, or pending
-history action exists.
+64-row chunks. Before the raw-artifact scan, the store derives the same probes
+from retained rows and excludes probes those rows legitimately own; unique
+deleted full-text probes remain mandatory. The specificity floor also avoids
+falsely attributing SQLite schema bytes. After verification, the active proof is
+atomically renamed to `.cleanup-proof.disposable` and the directory is fsynced.
+Only that terminal disposable file may then be zeroed, truncated, fsynced, and
+unlinked; the active proof is never modified in place. There is no row-count
+cap. A crash with only the pending name is pre-deletion and is scrubbed safely;
+a validated active proof is replayed by exact id/text on startup, checkpointed,
+verified, and promoted to disposable. A crash at any disposable boundary resumes
+safe disposal without parsing its potentially partial contents. Invalid active
+proofs fail closed and remain available for repair. Off closes the in-process
+write gate before cleanup begins and remains fail-closed if proof or
+checkpointing is incomplete. Any cleanup failure after a committed delete,
+Clear, retention decrease, or Off transition immediately clears and disables
+the published private presentation. Idle cleanup runs at background priority
+only after at least five seconds without user input and while no recording,
+history window, or pending history action exists.
 
 ### 3.2 Storage location and format
 
@@ -673,10 +681,10 @@ merely because it appears in a test name.
 | `testUnicodeSearchContractCoversNormalizationScriptsAndLiteralGrammar` and `testTenThousandGeneratedUnicodeQueriesUseRealSQLiteUnicode61WithoutCrash` | RD-U09/U10/I06: SQLite's configured `unicode61 remove_diacritics 2` tokenizer is the sole query-token authority, including normalization, RTL, emoji, category Co/private-use, operators, and 10,000 generated real-database queries. Only implementation-authored quoted-prefix grammar reaches MATCH. Malformed UTF-8 is repaired at Swift's `String` boundary before storage. |
 | `testConcurrentReadsWritesDeletesAndPolicyChangesRemainSerialized` | RD-I03: 120 mixed actor operations complete without `BUSY`, deadlock, resurrection, or cap violation. Reader snapshot isolation remains SQLite's WAL transaction guarantee; the app owns one connection and never exposes a long-lived read transaction. |
 | `testTenThousandRecordSearchAndPurgeAcceptance` | RD-I07/I08/I12: real 10,000-row SQLite+FTS fixture, cold and detached/non-main list checks, twenty searches with <=100 ms p95, <30 s purge budget, logical empty, controlled-artifact proof, and a scan of newly-created external temp artifacts. Test output records macOS, memory, SQLite, fixture size, and measured timings. |
-| `testEveryDestructivePathRemovesFullAndFTSNormalizedTokenFragments`, proof recovery, and subprocess SIGKILL tests | RD-U12–U14/U21 and RD-I01/I02/I12: delete, Clear, Off, Session, expiry purge, and downward transitions remove full text plus normalized token/prefix/suffix probes; failed proof persists; pre-activation pending proof is scrubbed; invalid active proof fails closed; validated active proof replays after injected failure and actual SIGKILL while WAL/lock are live. |
+| `testEveryDestructivePathRemovesFullAndFTSNormalizedTokenFragments`, duplicate/shared-token ownership, proof recovery, and subprocess SIGKILL tests | RD-U12–U14/U21 and RD-I01/I02/I12: delete, Clear, Off, Session, expiry purge, and downward transitions remove full text plus normalized token/prefix/suffix probes; retained duplicate text and shared tokens do not false-latch cleanup; failed proof persists; pre-activation pending proof is scrubbed; invalid active proof fails closed; validated active proof replays after injected failure and SIGKILL with committed frames still live in WAL before checkpoint; kill at every terminal proof-disposal boundary recovers without an invalid active proof. |
 | `DiagnosticLoggingTests.testHistoryDiagnosticsAcceptOnlyLiteralEventAndClosedBoundedValues` plus hosted source/privacy tests | RD-U20/I09/I13: only literal `history.operation` with closed operation/outcome/retention and bounded count/duration values crosses diagnostics. History sources contain no PostHog call; the whole-flow negative assertion is compile-time/source evidence because there is no history analytics dependency to inject. |
 | `testStoreIsExcludedFromBackupAndSpotlightDiscovery` | RD-I14: backup exclusion, `.metadata_never_index`, and an `mdfind -onlyin` negative sentinel check. |
-| `RecentDictationsPresentationTests` | RD-I11 and RD-UI03/05/06/09/11/12/13 as deterministic hosted evidence: 21-row lookahead means exactly 20 never advertises more; 20→25 paging, committed-clear failure closes/clears published state, integrated history-before-delivery inserts exactly once with or without a history record, plus the private-window/copy/reinsert/accessibility/privacy cases. |
+| `RecentDictationsPresentationTests` | RD-I11 and RD-UI03/05/06/09/11/12/13 as deterministic hosted evidence: 21-row lookahead means exactly 20 never advertises more; 20→25 paging; every committed-cleanup failure path (single delete, Clear, retention decrease, and Off) closes and clears published state; integrated history-before-delivery inserts exactly once with or without a history record, plus the private-window/copy/reinsert/accessibility/privacy cases. |
 
 Two platform checks stay release-environment gates rather than ordinary
 developer-account tests:

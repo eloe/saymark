@@ -111,7 +111,7 @@ public actor SQLiteHistoryStore: HistoryStore {
     private static let controlledArtifactNames: Set<String> = [
         databaseName, "\(databaseName)-wal", "\(databaseName)-shm",
         ".history.lock", ".metadata_never_index", ".cleanup-proof",
-        ".cleanup-proof.pending", ".migration-temp"
+        ".cleanup-proof.pending", ".cleanup-proof.disposable", ".migration-temp"
     ]
     private static let cleanupProofMagic = Data("SMHXCP02".utf8)
 
@@ -128,6 +128,8 @@ public actor SQLiteHistoryStore: HistoryStore {
     private let testCheckpointFailure: Bool
     private let testProofFailure: Bool
     private let testSchemaCreationFailure: Bool
+    private let testBeforeDeletionCheckpoint: (@Sendable () -> Void)?
+    private let testProofDisposalBoundary: (@Sendable (String) -> Void)?
 
     /// Passing `.off` is intentionally side-effect free: no directory, database,
     /// WAL, or metadata file is created until an explicit enabled policy arrives.
@@ -138,7 +140,9 @@ public actor SQLiteHistoryStore: HistoryStore {
         testPreCommitDelayMicroseconds: useconds_t = 0,
         testCheckpointFailure: Bool = false,
         testProofFailure: Bool = false,
-        testSchemaCreationFailure: Bool = false
+        testSchemaCreationFailure: Bool = false,
+        testBeforeDeletionCheckpoint: (@Sendable () -> Void)? = nil,
+        testProofDisposalBoundary: (@Sendable (String) -> Void)? = nil
     ) throws {
         self.directoryURL = directoryURL
         self.databaseURL = directoryURL.appendingPathComponent(Self.databaseName, isDirectory: false)
@@ -148,6 +152,8 @@ public actor SQLiteHistoryStore: HistoryStore {
         self.testCheckpointFailure = testCheckpointFailure
         self.testProofFailure = testProofFailure
         self.testSchemaCreationFailure = testSchemaCreationFailure
+        self.testBeforeDeletionCheckpoint = testBeforeDeletionCheckpoint
+        self.testProofDisposalBoundary = testProofDisposalBoundary
         // Do not create the store in an initializer.  This preserves the
         // default-Off no-files guarantee even if a caller only constructs a
         // dependency container and never records a final transcript.
@@ -1043,10 +1049,18 @@ public actor SQLiteHistoryStore: HistoryStore {
                 guard reachedTerminator else { throw HistoryStoreError.cleanupIncomplete }
                 break
             }
+            let retained = try probesOwnedByRetainedRows(Set(sentinels))
+            sentinels.removeAll { retained.contains($0) }
+            if sentinels.isEmpty {
+                if reachedTerminator { break }
+                continue
+            }
             try withHistoryDirectoryDescriptor { directory in
                 try verifyNoUnexpectedArtifacts(directory)
                 for name in Self.controlledArtifactNames
-                    where name != ".cleanup-proof" && name != ".cleanup-proof.pending"
+                    where name != ".cleanup-proof"
+                        && name != ".cleanup-proof.pending"
+                        && name != ".cleanup-proof.disposable"
                 {
                     let artifact = openat(directory, name, O_RDONLY | O_NOFOLLOW)
                     if artifact < 0 {
@@ -1064,7 +1078,57 @@ public actor SQLiteHistoryStore: HistoryStore {
         }
     }
 
+    private func probesOwnedByRetainedRows(_ candidates: Set<Data>) throws -> Set<Data> {
+        guard !candidates.isEmpty else { return [] }
+        var owned = Set<Data>()
+        var lastRowID: Int64 = 0
+        while owned.count < candidates.count {
+            var batch: [(Int64, String)] = []
+            let statement = try prepare("""
+                SELECT rowid, text FROM records
+                WHERE rowid > ? ORDER BY rowid LIMIT 64
+                """)
+            try bind(lastRowID, to: statement, at: 1)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let text = sqlite3_column_text(statement, 1) else {
+                    sqlite3_finalize(statement)
+                    throw HistoryStoreError.corrupt
+                }
+                batch.append((
+                    sqlite3_column_int64(statement, 0),
+                    String(cString: text)
+                ))
+            }
+            let result = sqlite3_errcode(database)
+            sqlite3_finalize(statement)
+            guard result == SQLITE_DONE else { throw mapSQLiteError(result) }
+            guard !batch.isEmpty else { break }
+            lastRowID = batch.last!.0
+            for (_, text) in batch {
+                for probe in try cleanupPrivacyProbes(for: text)
+                    where candidates.contains(probe)
+                {
+                    owned.insert(probe)
+                }
+            }
+        }
+        return owned
+    }
+
     private func recoverInterruptedCleanup() throws {
+        try withHistoryDirectoryDescriptor { directory in
+            let disposable = openat(directory, ".cleanup-proof.disposable", O_RDWR | O_NOFOLLOW)
+            if disposable >= 0 {
+                defer { close(disposable) }
+                try verifyPrivateRegularFileDescriptor(disposable)
+                // Promotion to this terminal name happens only after deletion,
+                // checkpoint, and proof verification succeeded. Its contents
+                // may be partly scrubbed after a crash and need no re-parse.
+                try destroyCleanupProof(disposable, name: ".cleanup-proof.disposable")
+            } else if errno != ENOENT {
+                throw HistoryStoreError.cleanupIncomplete
+            }
+        }
         try withHistoryDirectoryDescriptor { directory in
             let pending = openat(directory, ".cleanup-proof.pending", O_RDWR | O_NOFOLLOW)
             if pending >= 0 {
@@ -1195,6 +1259,19 @@ public actor SQLiteHistoryStore: HistoryStore {
         _ descriptor: Int32,
         name: String = ".cleanup-proof"
     ) throws {
+        var disposableName = name
+        if name == ".cleanup-proof" {
+            try withHistoryDirectoryDescriptor { directory in
+                guard renameat(
+                    directory, ".cleanup-proof",
+                    directory, ".cleanup-proof.disposable"
+                ) == 0,
+                fsync(directory) == 0
+                else { throw HistoryStoreError.cleanupIncomplete }
+            }
+            disposableName = ".cleanup-proof.disposable"
+            testProofDisposalBoundary?("renamed_disposable")
+        }
         guard lseek(descriptor, 0, SEEK_SET) >= 0 else { throw HistoryStoreError.cleanupIncomplete }
         let zeros = [UInt8](repeating: 0, count: 16_384)
         var remaining = lseek(descriptor, 0, SEEK_END)
@@ -1206,13 +1283,19 @@ public actor SQLiteHistoryStore: HistoryStore {
             try zeros.withUnsafeBytes { try writeAll(UnsafeRawBufferPointer(rebasing: $0.prefix(count)), to: descriptor) }
             remaining -= off_t(count)
         }
-        guard fsync(descriptor) == 0, ftruncate(descriptor, 0) == 0, fsync(descriptor) == 0 else {
+        guard fsync(descriptor) == 0 else {
             throw HistoryStoreError.cleanupIncomplete
         }
+        testProofDisposalBoundary?("scrubbed")
+        guard ftruncate(descriptor, 0) == 0, fsync(descriptor) == 0 else {
+            throw HistoryStoreError.cleanupIncomplete
+        }
+        testProofDisposalBoundary?("truncated")
         try withHistoryDirectoryDescriptor { directory in
-            if unlinkat(directory, name, 0) != 0 && errno != ENOENT {
+            if unlinkat(directory, disposableName, 0) != 0 && errno != ENOENT {
                 throw HistoryStoreError.cleanupIncomplete
             }
+            testProofDisposalBoundary?("unlinked")
             guard fsync(directory) == 0 else { throw HistoryStoreError.cleanupIncomplete }
         }
     }
@@ -1262,6 +1345,7 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     private func checkpointAfterDeletion() throws {
+        testBeforeDeletionCheckpoint?()
         if testCheckpointFailure { throw HistoryStoreError.cleanupIncomplete }
         let statement = try prepare("PRAGMA wal_checkpoint(TRUNCATE)")
         defer { sqlite3_finalize(statement) }
@@ -1472,7 +1556,11 @@ public actor SQLiteHistoryStore: HistoryStore {
                 }
                 defer { close(descriptor) }
                 try verifyPrivateRegularFileDescriptor(descriptor)
-                if name == ".cleanup-proof" || name == ".migration-temp" {
+                if name == ".cleanup-proof"
+                    || name == ".cleanup-proof.pending"
+                    || name == ".cleanup-proof.disposable"
+                    || name == ".migration-temp"
+                {
                     throw HistoryStoreError.cleanupIncomplete
                 }
             }
