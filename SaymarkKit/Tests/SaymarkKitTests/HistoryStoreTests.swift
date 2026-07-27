@@ -92,9 +92,9 @@ final class HistoryStoreTests: XCTestCase {
 
     func testDeleteAndClearRemoveSearchableRows() async throws {
         let store = try makeStore()
-        let inserted = try await store.recordFinal(.init(text: "remove alpha"))
+        let inserted = try await store.recordFinal(.init(text: "remove alpha sentinel-A1"))
         let first = try XCTUnwrap(inserted)
-        _ = try await store.recordFinal(.init(text: "remove beta"))
+        _ = try await store.recordFinal(.init(text: "remove beta sentinel-B2"))
 
         let deleted = try await store.delete(id: first.id)
         let alpha = try await store.records(query: "alpha")
@@ -105,6 +105,59 @@ final class HistoryStoreTests: XCTestCase {
         let beta = try await store.records(query: "beta")
         XCTAssertTrue(all.isEmpty)
         XCTAssertTrue(beta.isEmpty)
+    }
+
+    func testExternalDeadlineInterruptRollsBackWithoutLateRow() async throws {
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days30,
+            now: { self.now },
+            testPreCommitDelayMicroseconds: 300_000
+        )
+        let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+        let attempt = Task {
+            try await store.recordFinal(.init(text: "must never become a late row"), deadlineUptimeNanoseconds: deadline)
+        }
+
+        // This does not await the actor: it uses the same nonisolated path the
+        // 100 ms delivery gate uses while SQLite is executing synchronously.
+        try await Task.sleep(nanoseconds: 30_000_000)
+        store.interruptActiveWrite()
+
+        await XCTAssertThrowsErrorAsync(try await attempt.value) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .deadlineExceeded)
+        }
+        let records = try await store.records()
+        XCTAssertTrue(records.isEmpty, "an interrupted pre-delivery write must never commit later")
+    }
+
+    func testQueuedWritePastDeadlineNeverCommitsLate() async throws {
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days30,
+            now: { self.now },
+            testPreCommitDelayMicroseconds: 180_000
+        )
+        let first = Task { try await store.recordFinal(.init(text: "first writer")) }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        let expiredWhileQueued = DispatchTime.now().uptimeNanoseconds + 40_000_000
+        await XCTAssertThrowsErrorAsync(
+            try await store.recordFinal(.init(text: "queued late writer"), deadlineUptimeNanoseconds: expiredWhileQueued)
+        ) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .deadlineExceeded)
+        }
+        _ = try await first.value
+        let records = try await store.records()
+        XCTAssertEqual(records.map(\.text), ["first writer"])
+    }
+
+    func testAdvisoryLockFailsClosedRatherThanSharingWriter() async throws {
+        let first = try makeStore()
+        _ = try await first.recordFinal(.init(text: "lock holder"))
+        let second = try SQLiteHistoryStore(directoryURL: directory, policy: .days30, now: { self.now })
+        await XCTAssertThrowsErrorAsync(try await second.records()) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .busy)
+        }
     }
 
     func testRecordCapAndLimitClamp() async throws {

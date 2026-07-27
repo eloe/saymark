@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Observation
 import SaymarkKit
+import SwiftUI
 
 /// Main-actor bridge for the private Recent Dictations window. Transcript text
 /// stays in the store/window; it is never placed in diagnostics or telemetry.
@@ -20,6 +21,8 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var previousApplication: NSRunningApplication?
     private var refreshGeneration: UInt64 = 0
+    @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
 
     private override init() {}
 
@@ -53,6 +56,20 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Retention cannot rely on a window opening.  Run a small, cancellable
+    /// maintenance pass while Saymark is idle and retry later after a busy WAL
+    /// checkpoint without ever putting that work on the delivery path.
+    func startRecurringIdleMaintenance() {
+        maintenanceTask?.cancel()
+        maintenanceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runIdleMaintenance()
+                do { try await Task.sleep(nanoseconds: 15 * 60 * 1_000_000_000) }
+                catch { return }
+            }
+        }
+    }
+
     /// The store changes policy before the preferences mirror changes.  That
     /// ordering prevents the UI from claiming a destructive privacy transition
     /// succeeded when its transaction/checkpoint failed.
@@ -72,9 +89,17 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                 query = ""
                 return true
             }
-            let store = try makeStore(retention)
-            try await store.setRetentionPolicy(retention.historyPolicy)
-            self.store = store
+            // Policy transitions deliberately reuse the already-warm writer.
+            // Opening a second connection would make retention changes contend
+            // with a dictation and could leave an old connection alive.
+            let activeStore: SQLiteHistoryStore
+            if let store {
+                activeStore = store
+            } else {
+                activeStore = try makeStore(retention)
+                self.store = activeStore
+            }
+            try await activeStore.setRetentionPolicy(retention.historyPolicy)
             UserDefaults.standard.set(retention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
             await refresh()
             return true
@@ -131,7 +156,11 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                 SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .committed)
             } catch {
                 SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .unavailable)
-                errorMessage = "Couldn’t clear Recent Dictations."
+                if error as? HistoryStoreError == .cleanupIncomplete {
+                    errorMessage = "History is removed from the active list, but Saymark could not finish cleaning every local database artifact. Try again when no other Saymark window is using history."
+                } else {
+                    errorMessage = "Couldn’t clear Recent Dictations."
+                }
             }
         }
     }
@@ -154,6 +183,23 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         } catch {
             guard requestedGeneration == refreshGeneration else { return }
             errorMessage = "Recent Dictations is unavailable on this Mac."
+        }
+    }
+
+    /// At most one delayed search is outstanding.  Each replacement cancels
+    /// the previous task and carries a generation check through the async store
+    /// call, so closing the window can never repopulate it with a late result.
+    func scheduleSearch(_ value: String) {
+        searchTask?.cancel()
+        query = value
+        refreshGeneration &+= 1
+        let requestedGeneration = refreshGeneration
+        searchTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 180_000_000) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            guard let self, self.refreshGeneration == requestedGeneration else { return }
+            await self.refresh(query: value)
         }
     }
 
@@ -303,6 +349,8 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         // Do not keep search terms, selected text, records, or the destination
         // PID alive after the private history window is dismissed.
         refreshGeneration &+= 1
+        searchTask?.cancel()
+        searchTask = nil
         records = []
         resultSummary = "0 results"
         query = ""
@@ -339,7 +387,12 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                     ? deadline - DispatchTime.now().uptimeNanoseconds : 0
                 try? await Task.sleep(nanoseconds: remaining)
                 let result: RecordAttempt = .deadline
-                guard gate.resolve(continuation, with: result) else { return }
+                guard gate.resolve(continuation, with: result, beforeResume: {
+                    // This is deliberately nonisolated: a synchronous SQLite
+                    // call occupies the history actor, so awaiting an actor
+                    // message here could permit a late commit.
+                    store.interruptActiveWrite()
+                }) else { return }
                 await self?.applyRecordAttempt(result)
             }
         }
@@ -347,17 +400,17 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
 
     private func applyRecordAttempt(_ result: RecordAttempt) {
         switch result {
-        case .record:
+        case .record(_):
             break
         case .deadline:
             SaymarkDiagnostics.logHistoryOperation(.record, outcome: .deadlineExceeded)
             errorMessage = "Recent Dictations was skipped to keep dictation instant."
         case .failure(let error):
             switch error {
-            case .recordTooLarge:
+            case .some(.recordTooLarge):
                 SaymarkDiagnostics.logHistoryOperation(.record, outcome: .skipped)
                 errorMessage = "This dictation is too large to save in Recent Dictations."
-            case HistoryStoreError.deadlineExceeded:
+            case .some(.deadlineExceeded):
                 SaymarkDiagnostics.logHistoryOperation(.record, outcome: .deadlineExceeded)
                 errorMessage = "Recent Dictations was skipped to keep dictation instant."
             default:
@@ -383,7 +436,8 @@ private final class RecordDeadlineGate: @unchecked Sendable {
 
     func resolve(
         _ continuation: CheckedContinuation<HistoryRecord?, Never>,
-        with result: RecordAttempt
+        with result: RecordAttempt,
+        beforeResume: () -> Void = {}
     ) -> Bool {
         let didWin = lock.withLock {
             guard !resolved else { return false }
@@ -391,6 +445,7 @@ private final class RecordDeadlineGate: @unchecked Sendable {
             return true
         }
         guard didWin else { return false }
+        beforeResume()
         switch result {
         case .record(let record): continuation.resume(returning: record)
         case .deadline, .failure: continuation.resume(returning: nil)

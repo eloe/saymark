@@ -285,6 +285,11 @@ final class DictationController {
             if InsertMode.current == .inField {
                 let outcome = insertFinal(final, sessionID: diagnosticSessionID)
                 RecentDictationsController.shared.markDelivery(historyRecord, state: outcome)
+                if outcome != .inserted, historyRecord != nil {
+                    hud.offerRecentDictationsRecovery {
+                        RecentDictationsController.shared.present()
+                    }
+                }
             } else {
                 hud.finish(final)
             }

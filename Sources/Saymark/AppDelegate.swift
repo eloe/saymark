@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         RecentDictationsController.shared.clearPriorSessionAtLaunch()
         Task {
             await RecentDictationsController.shared.prepareForDelivery()
-            await RecentDictationsController.shared.runIdleMaintenance()
+            RecentDictationsController.shared.startRecurringIdleMaintenance()
         }
         SaymarkDiagnostics.log(.info, "app.launched", fields: [
             "bundle_id": Bundle.main.bundleIdentifier ?? "unknown",

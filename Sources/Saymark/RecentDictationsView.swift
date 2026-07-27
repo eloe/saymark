@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import SaymarkKit
 
 struct RecentDictationsView: View {
     let controller: RecentDictationsController
@@ -16,14 +17,7 @@ struct RecentDictationsView: View {
                 .frame(height: 28)
                 .padding(12)
                 .onChange(of: search) { _, value in
-                    Task {
-                        // Avoid issuing a database search per keystroke. The
-                        // controller's generation check discards a request that
-                        // loses this race or follows a window close.
-                        try? await Task.sleep(nanoseconds: 180_000_000)
-                        guard !Task.isCancelled else { return }
-                        await controller.refresh(query: value)
-                    }
+                    controller.scheduleSearch(value)
                 }
 
             Text(controller.resultSummary)
@@ -123,14 +117,10 @@ private struct HistorySearchField: NSViewRepresentable {
         field.delegate = context.coordinator
         field.placeholderString = "Search recent dictations"
         field.recentsAutosaveName = nil
-        field.isContinuousSpellCheckingEnabled = false
-        field.isGrammarCheckingEnabled = false
-        field.isAutomaticSpellingCorrectionEnabled = false
-        field.isAutomaticTextReplacementEnabled = false
-        field.isAutomaticQuoteSubstitutionEnabled = false
-        field.isAutomaticDashSubstitutionEnabled = false
-        field.isAutomaticTextCompletionEnabled = false
-        field.accessibilityIdentifier = "recent-dictations.search"
+        // NSTextField delegates editing to a shared field editor.  Configure
+        // that editor when editing begins rather than attempting to set these
+        // NSTextView-only options on NSSearchField itself.
+        field.setAccessibilityIdentifier("recent-dictations.search")
         return field
     }
 
@@ -141,6 +131,18 @@ private struct HistorySearchField: NSViewRepresentable {
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         let parent: HistorySearchField
         init(_ parent: HistorySearchField) { self.parent = parent }
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            guard let field = obj.object as? NSSearchField,
+                  let editor = field.currentEditor() as? NSTextView
+            else { return }
+            editor.isContinuousSpellCheckingEnabled = false
+            editor.isGrammarCheckingEnabled = false
+            editor.isAutomaticSpellingCorrectionEnabled = false
+            editor.isAutomaticTextReplacementEnabled = false
+            editor.isAutomaticQuoteSubstitutionEnabled = false
+            editor.isAutomaticDashSubstitutionEnabled = false
+            editor.isAutomaticTextCompletionEnabled = false
+        }
         func controlTextDidChange(_ obj: Notification) {
             parent.text = (obj.object as? NSSearchField)?.stringValue ?? ""
         }
@@ -163,7 +165,7 @@ private struct SelectableHistoryText: NSViewRepresentable {
         view.isAutomaticQuoteSubstitutionEnabled = false
         view.isAutomaticDashSubstitutionEnabled = false
         view.isAutomaticTextCompletionEnabled = false
-        view.accessibilityIdentifier = "recent-dictations.detail"
+        view.setAccessibilityIdentifier("recent-dictations.detail")
         scroll.documentView = view
         scroll.hasVerticalScroller = true
         return scroll

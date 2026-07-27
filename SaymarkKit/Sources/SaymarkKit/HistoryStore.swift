@@ -111,19 +111,25 @@ public actor SQLiteHistoryStore: HistoryStore {
     private var inMemoryHighWaterMark: Int64 = 0
     private var generation: UInt64 = 0
     private var lockFileDescriptor: Int32 = -1
-    private var activeDeadlineBox: DeadlineBox?
+    /// This object is intentionally non-actor isolated.  The final-delivery
+    /// deadline has to be able to interrupt SQLite even while this actor is
+    /// occupied in a synchronous sqlite call.
+    nonisolated private let writeCancellation = WriteCancellation()
+    private let testPreCommitDelayMicroseconds: useconds_t
 
     /// Passing `.off` is intentionally side-effect free: no directory, database,
     /// WAL, or metadata file is created until an explicit enabled policy arrives.
     public init(
         directoryURL: URL,
         policy: HistoryRetentionPolicy = .off,
-        now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+        now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) },
+        testPreCommitDelayMicroseconds: useconds_t = 0
     ) throws {
         self.directoryURL = directoryURL
         self.databaseURL = directoryURL.appendingPathComponent(Self.databaseName, isDirectory: false)
         self.policy = policy
         self.now = now
+        self.testPreCommitDelayMicroseconds = testPreCommitDelayMicroseconds
         // Do not create the store in an initializer.  This preserves the
         // default-Off no-files guarantee even if a caller only constructs a
         // dependency container and never records a final transcript.
@@ -164,12 +170,22 @@ public actor SQLiteHistoryStore: HistoryStore {
             throw HistoryStoreError.recordTooLarge
         }
         try requireBeforeDeadline(deadlineUptimeNanoseconds)
-        activeDeadlineBox = deadlineUptimeNanoseconds.map(DeadlineBox.init)
+        writeCancellation.begin(deadlineUptimeNanoseconds)
         defer {
-            activeDeadlineBox = nil
-            if let database { sqlite3_progress_handler(database, 0, nil, nil) }
+            let wasInterrupted = writeCancellation.isInterrupted
+            writeCancellation.finish()
+            if wasInterrupted {
+                // sqlite3_interrupt issued while no VDBE is active can poison
+                // the next operation on that connection.  Drop this private
+                // connection after rollback so a later read cannot inherit the
+                // deadline signal.
+                closeDatabase()
+            } else if let database {
+                sqlite3_progress_handler(database, 0, nil, nil)
+            }
         }
         try openIfNeeded()
+        if let database { writeCancellation.attach(database) }
         installDeadlineProgressHandler()
 
         let effectiveNow = try advanceHighWaterMarkForMutation()
@@ -186,12 +202,24 @@ public actor SQLiteHistoryStore: HistoryStore {
             try bind(expiry, to: statement, at: 3)
             try bind(finalization.text, to: statement, at: 4)
             try stepDone(statement)
+            // This injection exists solely to make the cancellation contract
+            // testable: a delivery deadline must interrupt an in-flight write,
+            // roll it back, and never create a late row.
+            if testPreCommitDelayMicroseconds > 0 { usleep(testPreCommitDelayMicroseconds) }
         }
         generation &+= 1
         return HistoryRecord(
             id: id, createdAtMilliseconds: effectiveNow, expiresAtMilliseconds: expiry,
             text: finalization.text, deliveryState: .pending, deliveryUpdatedAtMilliseconds: nil
         )
+    }
+
+    /// Safe from any executor.  A delivery gate calls this at its deadline; it
+    /// only affects the currently active history write and causes the in-flight
+    /// SQLite operation to return `SQLITE_INTERRUPT` or the transaction's
+    /// explicit deadline check to roll back before commit.
+    public nonisolated func interruptActiveWrite() {
+        writeCancellation.interrupt()
     }
 
     public func updateDeliveryState(id: String, to state: HistoryDeliveryState) throws -> Bool {
@@ -268,6 +296,7 @@ public actor SQLiteHistoryStore: HistoryStore {
     public func delete(id: String) throws -> Bool {
         guard policy.isEnabled else { return false }
         try openIfNeeded()
+        let removedText = try textForRecord(id: id)
         let changes = try transaction {
             let statement = try prepare("DELETE FROM records WHERE id = ?")
             defer { sqlite3_finalize(statement) }
@@ -277,6 +306,7 @@ public actor SQLiteHistoryStore: HistoryStore {
         }
         if changes > 0 {
             try checkpointAfterDeletion()
+            try verifyRemovedTextIsAbsent(removedText.map { [$0] } ?? [])
             generation &+= 1
         }
         return changes > 0
@@ -285,8 +315,10 @@ public actor SQLiteHistoryStore: HistoryStore {
     public func clear() throws {
         guard policy.isEnabled else { return }
         try openIfNeeded()
+        let removedText = try allRecordTexts()
         try transaction { try execute("DELETE FROM records") }
         try checkpointAfterDeletion()
+        try verifyRemovedTextIsAbsent(removedText)
         generation &+= 1
     }
 
@@ -298,13 +330,7 @@ public actor SQLiteHistoryStore: HistoryStore {
             // The store owns this exact directory.  Removing it after a
             // truncating checkpoint restores the strict Off/no-store state;
             // it does not make an unsupported forensic-erasure claim.
-            if FileManager.default.fileExists(atPath: directoryURL.path) {
-                do {
-                    try FileManager.default.removeItem(at: directoryURL)
-                } catch {
-                    throw HistoryStoreError.ioFailed
-                }
-            }
+            try removeOwnedStoreDirectory()
             return
         }
         self.policy = policy
@@ -347,6 +373,7 @@ public actor SQLiteHistoryStore: HistoryStore {
             throw HistoryStoreError.ioFailed
         }
         database = handle
+        writeCancellation.attach(handle)
         do {
             // sqlite3_open_v2 creates a new database with the process umask;
             // narrow it before any schema or transcript can be written.
@@ -419,6 +446,54 @@ public actor SQLiteHistoryStore: HistoryStore {
         }
     }
 
+    private func verifyPrivateRegularFileDescriptor(_ descriptor: Int32) throws {
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              (status.st_mode & S_IFMT) == S_IFREG,
+              status.st_uid == getuid(),
+              (status.st_mode & 0o077) == 0
+        else { throw HistoryStoreError.permissionDenied }
+        var filesystem = statfs()
+        guard fstatfs(descriptor, &filesystem) == 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        let filesystemName = withUnsafePointer(to: &filesystem.f_fstypename) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MFSNAMELEN)) { String(cString: $0) }
+        }
+        guard !["smbfs", "nfs", "webdav"].contains(filesystemName.lowercased()) else {
+            throw HistoryStoreError.unsupportedFilesystem
+        }
+    }
+
+    private func withHistoryDirectoryDescriptor<T>(_ body: (Int32) throws -> T) throws -> T {
+        let parentURL = directoryURL.deletingLastPathComponent()
+        let parent = open(parentURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard parent >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        defer { close(parent) }
+        let directory = openat(parent, directoryURL.lastPathComponent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard directory >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        defer { close(directory) }
+        try verifyPrivateDirectoryDescriptor(directory)
+        return try body(directory)
+    }
+
+    private func removeOwnedStoreDirectory() throws {
+        guard FileManager.default.fileExists(atPath: directoryURL.path) else { return }
+        let parentURL = directoryURL.deletingLastPathComponent()
+        let parent = open(parentURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard parent >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        defer { close(parent) }
+        let name = directoryURL.lastPathComponent
+        let directory = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard directory >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        defer { close(directory) }
+        try verifyPrivateDirectoryDescriptor(directory)
+        for artifact in [Self.databaseName, "\(Self.databaseName)-wal", "\(Self.databaseName)-shm", ".history.lock", ".metadata_never_index"] {
+            if unlinkat(directory, artifact, 0) != 0 && errno != ENOENT {
+                throw HistoryStoreError.ioFailed
+            }
+        }
+        guard unlinkat(parent, name, AT_REMOVEDIR) == 0 else { throw HistoryStoreError.ioFailed }
+    }
+
     private func createSchema() throws {
         try execute("PRAGMA application_id = 1396788296") // 'SMHX'
         try execute("""
@@ -463,14 +538,20 @@ public actor SQLiteHistoryStore: HistoryStore {
     /// database can otherwise smuggle in an unexpected trigger/table that sees
     /// transcript text. Version 1 accepts only its fixed schema objects.
     private func validateExactSchema() throws {
-        let statement = try prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+        let statement = try prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
         defer { sqlite3_finalize(statement) }
         var found = Set<String>()
+        var definitions: [String: String] = [:]
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let type = sqlite3_column_text(statement, 0), let name = sqlite3_column_text(statement, 1) else {
                 throw HistoryStoreError.corrupt
             }
-            found.insert("\(String(cString: type)):\(String(cString: name))")
+            let typeName = String(cString: type)
+            let objectName = String(cString: name)
+            found.insert("\(typeName):\(objectName)")
+            if let sql = sqlite3_column_text(statement, 2) {
+                definitions["\(typeName):\(objectName)"] = normalizedSchemaSQL(String(cString: sql))
+            }
         }
         guard sqlite3_errcode(database) == SQLITE_DONE else { throw HistoryStoreError.corrupt }
         let expected: Set<String> = [
@@ -481,6 +562,78 @@ public actor SQLiteHistoryStore: HistoryStore {
             "trigger:records_ai", "trigger:records_ad",
         ]
         guard found == expected else { throw HistoryStoreError.corrupt }
+        let expectedDefinitions: [String: String] = [
+            "table:store_metadata": "CREATE TABLE store_metadata ( key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL )",
+            "table:records": "CREATE TABLE records ( id TEXT PRIMARY KEY NOT NULL, created_at_ms INTEGER NOT NULL, expires_at_ms INTEGER, text TEXT NOT NULL CHECK(length(text) > 0), delivery_state TEXT NOT NULL CHECK(delivery_state IN ('pending', 'inserted', 'copied_accessibility', 'insertion_failed')), delivery_updated_at_ms INTEGER )",
+            "index:records_created_at": "CREATE INDEX records_created_at ON records(created_at_ms DESC, id DESC)",
+            "index:records_expiry": "CREATE INDEX records_expiry ON records(expires_at_ms)",
+            "table:records_fts": "CREATE VIRTUAL TABLE records_fts USING fts5(text, content='records', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2')",
+            "trigger:records_ai": "CREATE TRIGGER records_ai AFTER INSERT ON records BEGIN INSERT INTO records_fts(rowid, text) VALUES (new.rowid, new.text); END",
+            "trigger:records_ad": "CREATE TRIGGER records_ad AFTER DELETE ON records BEGIN INSERT INTO records_fts(records_fts, rowid, text) VALUES ('delete', old.rowid, old.text); END",
+        ].mapValues { normalizedSchemaSQL($0) }
+        guard expectedDefinitions.allSatisfy({ definitions[$0.key] == $0.value }) else {
+            throw HistoryStoreError.corrupt
+        }
+        try validateSchemaColumnsAndMetadata()
+    }
+
+    private func normalizedSchemaSQL(_ sql: String) -> String {
+        sql.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private func validateSchemaColumnsAndMetadata() throws {
+        let recordsColumns = try tableColumns("records")
+        let expectedRecords: [(String, String, Int32, Int32)] = [
+            ("id", "TEXT", 1, 1), ("created_at_ms", "INTEGER", 1, 0),
+            ("expires_at_ms", "INTEGER", 0, 0), ("text", "TEXT", 1, 0),
+            ("delivery_state", "TEXT", 1, 0), ("delivery_updated_at_ms", "INTEGER", 0, 0),
+        ]
+        guard recordsColumns.elementsEqual(expectedRecords, by: { $0.0 == $1.0 && $0.1 == $1.1 && $0.2 == $1.2 && $0.3 == $1.3 }) else {
+            throw HistoryStoreError.corrupt
+        }
+        let metadataColumns = try tableColumns("store_metadata")
+        let expectedMetadata: [(String, String, Int32, Int32)] = [("key", "TEXT", 1, 1), ("value", "TEXT", 1, 0)]
+        guard metadataColumns.elementsEqual(expectedMetadata, by: { $0.0 == $1.0 && $0.1 == $1.1 && $0.2 == $1.2 && $0.3 == $1.3 }) else {
+            throw HistoryStoreError.corrupt
+        }
+        let metadata = try metadataValues()
+        guard Set(metadata.keys) == Set(["last_observed_now_ms", "retention_policy"]),
+              let highWater = metadata["last_observed_now_ms"], Int64(highWater) != nil,
+              let retention = metadata["retention_policy"], HistoryRetentionPolicy(rawValue: retention) != nil
+        else { throw HistoryStoreError.corrupt }
+        let secureDelete = try prepare("SELECT v FROM records_fts_config WHERE k = 'secure-delete'")
+        defer { sqlite3_finalize(secureDelete) }
+        guard sqlite3_step(secureDelete) == SQLITE_ROW, sqlite3_column_int(secureDelete, 0) == 1 else {
+            throw HistoryStoreError.corrupt
+        }
+    }
+
+    private func tableColumns(_ table: String) throws -> [(String, String, Int32, Int32)] {
+        let statement = try prepare("PRAGMA table_info(\(table))")
+        defer { sqlite3_finalize(statement) }
+        var output: [(String, String, Int32, Int32)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let name = sqlite3_column_text(statement, 1), let type = sqlite3_column_text(statement, 2) else {
+                throw HistoryStoreError.corrupt
+            }
+            output.append((String(cString: name), String(cString: type), sqlite3_column_int(statement, 3), sqlite3_column_int(statement, 5)))
+        }
+        guard sqlite3_errcode(database) == SQLITE_DONE else { throw HistoryStoreError.corrupt }
+        return output
+    }
+
+    private func metadataValues() throws -> [String: String] {
+        let statement = try prepare("SELECT key, value FROM store_metadata")
+        defer { sqlite3_finalize(statement) }
+        var output: [String: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let key = sqlite3_column_text(statement, 0), let value = sqlite3_column_text(statement, 1) else {
+                throw HistoryStoreError.corrupt
+            }
+            output[String(cString: key)] = String(cString: value)
+        }
+        guard sqlite3_errcode(database) == SQLITE_DONE else { throw HistoryStoreError.corrupt }
+        return output
     }
 
     private func persistPolicyAndPurge(_ policy: HistoryRetentionPolicy) throws {
@@ -541,6 +694,66 @@ public actor SQLiteHistoryStore: HistoryStore {
         try stepDone(statement)
     }
 
+    private func textForRecord(id: String) throws -> String? {
+        let statement = try prepare("SELECT text FROM records WHERE id = ?")
+        defer { sqlite3_finalize(statement) }
+        try bind(id, to: statement, at: 1)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            if sqlite3_errcode(database) == SQLITE_DONE { return nil }
+            throw mapSQLiteError(sqlite3_errcode(database))
+        }
+        guard let value = sqlite3_column_text(statement, 0) else { throw HistoryStoreError.corrupt }
+        return String(cString: value)
+    }
+
+    private func allRecordTexts() throws -> [String] {
+        let statement = try prepare("SELECT text FROM records")
+        defer { sqlite3_finalize(statement) }
+        var output: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let value = sqlite3_column_text(statement, 0) else { throw HistoryStoreError.corrupt }
+            output.append(String(cString: value))
+        }
+        guard sqlite3_errcode(database) == SQLITE_DONE else { throw mapSQLiteError(sqlite3_errcode(database)) }
+        return output
+    }
+
+    /// Successful deletion is only reported after SQLite's truncating
+    /// checkpoint and a descriptor-relative scan of every store artifact.  It
+    /// is not a forensic-erasure promise: if SQLite leaves a matching byte
+    /// sequence behind, the operation is reported as incomplete.
+    private func verifyRemovedTextIsAbsent(_ values: [String]) throws {
+        let sentinels = values.filter { !$0.isEmpty }.map { Data($0.utf8) }
+        guard !sentinels.isEmpty else { return }
+        try withHistoryDirectoryDescriptor { descriptor in
+            for name in [Self.databaseName, "\(Self.databaseName)-wal", "\(Self.databaseName)-shm"] {
+                let artifact = openat(descriptor, name, O_RDONLY | O_NOFOLLOW)
+                if artifact < 0 {
+                    guard errno == ENOENT else { throw HistoryStoreError.ioFailed }
+                    continue
+                }
+                defer { close(artifact) }
+                try verifyPrivateRegularFileDescriptor(artifact)
+                let bytes = try readAllBytes(from: artifact)
+                if sentinels.contains(where: { bytes.range(of: $0) != nil }) {
+                    throw HistoryStoreError.cleanupIncomplete
+                }
+            }
+        }
+    }
+
+    private func readAllBytes(from descriptor: Int32) throws -> Data {
+        guard lseek(descriptor, 0, SEEK_SET) >= 0 else { throw HistoryStoreError.ioFailed }
+        var output = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = read(descriptor, &buffer, buffer.count)
+            if count == 0 { return output }
+            guard count > 0 else { throw HistoryStoreError.ioFailed }
+            output.append(buffer, count: Int(count))
+        }
+    }
+
     private func checkpointAfterDeletion() throws {
         let statement = try prepare("PRAGMA wal_checkpoint(TRUNCATE)")
         defer { sqlite3_finalize(statement) }
@@ -548,7 +761,10 @@ public actor SQLiteHistoryStore: HistoryStore {
         // SQLite reports (busy, log frames, checkpointed frames).  A busy result
         // means plaintext may remain in the WAL; surface an honest incomplete
         // cleanup state instead of claiming Clear/Off completed.
-        guard sqlite3_column_int(statement, 0) == 0 else { throw HistoryStoreError.cleanupIncomplete }
+        guard sqlite3_column_int(statement, 0) == 0,
+              sqlite3_column_int(statement, 1) == 0,
+              sqlite3_column_int(statement, 2) == 0
+        else { throw HistoryStoreError.cleanupIncomplete }
     }
 
     private func verifySecureDelete() throws {
@@ -566,9 +782,11 @@ public actor SQLiteHistoryStore: HistoryStore {
             let value = try body()
             try requireBeforeDeadline(deadlineUptimeNanoseconds)
             try execute("COMMIT")
+            writeCancellation.acknowledge(.committed)
             return value
         } catch {
             _ = try? execute("ROLLBACK")
+            writeCancellation.acknowledge(.rolledBack)
             throw error
         }
     }
@@ -646,18 +864,20 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     private func requireBeforeDeadline(_ deadline: UInt64?) throws {
+        if writeCancellation.isInterrupted { throw HistoryStoreError.deadlineExceeded }
         guard let deadline else { return }
         guard DispatchTime.now().uptimeNanoseconds < deadline else {
+            writeCancellation.interrupt()
             throw HistoryStoreError.deadlineExceeded
         }
     }
 
     private func installDeadlineProgressHandler() {
-        guard let database, let deadline = activeDeadlineBox else { return }
+        guard let database, writeCancellation.hasDeadline else { return }
         sqlite3_progress_handler(database, 100, { context in
-            let deadline = Unmanaged<DeadlineBox>.fromOpaque(context!).takeUnretainedValue()
-            return DispatchTime.now().uptimeNanoseconds >= deadline.nanoseconds ? 1 : 0
-        }, Unmanaged.passUnretained(deadline).toOpaque())
+            let cancellation = Unmanaged<WriteCancellation>.fromOpaque(context!).takeUnretainedValue()
+            return cancellation.shouldInterrupt ? 1 : 0
+        }, Unmanaged.passUnretained(writeCancellation).toOpaque())
     }
 
     private func verifyDirectory(_ url: URL) throws {
@@ -668,23 +888,22 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     private func validateExistingDatabaseFile() throws {
-        guard FileManager.default.fileExists(atPath: databaseURL.path) else { return }
-        let values = try databaseURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        guard values.isRegularFile == true, values.isSymbolicLink != true else { throw HistoryStoreError.unsupportedFilesystem }
-        let mode = (try FileManager.default.attributesOfItem(atPath: databaseURL.path)[.posixPermissions] as? NSNumber)?.intValue
-        guard mode.map({ ($0 & 0o077) == 0 }) == true else { throw HistoryStoreError.permissionDenied }
+        try withHistoryDirectoryDescriptor { directory in
+            let descriptor = openat(directory, Self.databaseName, O_RDONLY | O_NOFOLLOW)
+            if descriptor < 0 {
+                guard errno == ENOENT else { throw HistoryStoreError.unsupportedFilesystem }
+                return
+            }
+            defer { close(descriptor) }
+            try verifyPrivateRegularFileDescriptor(descriptor)
+        }
     }
 
     private func validateOpenedDatabaseFile() throws {
         let descriptor = open(databaseURL.path, O_RDONLY | O_NOFOLLOW)
         guard descriptor >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
         defer { close(descriptor) }
-        var status = stat()
-        guard fstat(descriptor, &status) == 0,
-              (status.st_mode & S_IFMT) == S_IFREG,
-              status.st_uid == getuid(),
-              (status.st_mode & 0o077) == 0
-        else { throw HistoryStoreError.permissionDenied }
+        try verifyPrivateRegularFileDescriptor(descriptor)
     }
 
     private func acquireAdvisoryLock() throws {
@@ -714,30 +933,102 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     private func verifyProtectedSQLiteArtifacts() throws {
-        for suffix in ["", "-wal", "-shm"] {
-            let url = URL(fileURLWithPath: databaseURL.path + suffix)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            guard values.isRegularFile == true, values.isSymbolicLink != true else { throw HistoryStoreError.unsupportedFilesystem }
-            let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
-            guard mode.map({ ($0 & 0o077) == 0 }) == true else { throw HistoryStoreError.permissionDenied }
+        try withHistoryDirectoryDescriptor { directory in
+            for suffix in ["", "-wal", "-shm"] {
+                let descriptor = openat(directory, "\(Self.databaseName)\(suffix)", O_RDONLY | O_NOFOLLOW)
+                if descriptor < 0 {
+                    guard errno == ENOENT else { throw HistoryStoreError.unsupportedFilesystem }
+                    continue
+                }
+                defer { close(descriptor) }
+                try verifyPrivateRegularFileDescriptor(descriptor)
+            }
         }
     }
 
     private func protectSQLiteArtifacts() throws {
-        for suffix in ["", "-wal", "-shm"] {
-            let path = databaseURL.path + suffix
-            guard FileManager.default.fileExists(atPath: path) else { continue }
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        try withHistoryDirectoryDescriptor { directory in
+            for suffix in ["", "-wal", "-shm"] {
+                let descriptor = openat(directory, "\(Self.databaseName)\(suffix)", O_RDONLY | O_NOFOLLOW)
+                if descriptor < 0 {
+                    guard errno == ENOENT else { throw HistoryStoreError.ioFailed }
+                    continue
+                }
+                defer { close(descriptor) }
+                guard fchmod(descriptor, 0o600) == 0 else { throw HistoryStoreError.permissionDenied }
+                try verifyPrivateRegularFileDescriptor(descriptor)
+            }
         }
     }
 }
 
-/// A tiny immutable object lets SQLite's C progress callback check a deadline
-/// without touching actor-isolated state.
-private final class DeadlineBox: @unchecked Sendable {
-    let nanoseconds: UInt64
-    init(_ nanoseconds: UInt64) { self.nanoseconds = nanoseconds }
+/// A lock-protected bridge between the delivery deadline task and SQLite's
+/// synchronous C API.  Actor isolation cannot service a cancellation message
+/// while SQLite is executing, so the deadline task calls `sqlite3_interrupt`
+/// through this object directly.  The actor still owns the transaction and
+/// records its final rollback/commit acknowledgement before returning.
+private final class WriteCancellation: @unchecked Sendable {
+    enum Acknowledgement: Equatable { case none, committed, rolledBack }
+
+    private let lock = NSLock()
+    private var database: OpaquePointer?
+    private var deadline: UInt64?
+    private var interrupted = false
+    private var acknowledgement: Acknowledgement = .none
+
+    var hasDeadline: Bool { lock.withLock { deadline != nil } }
+    var isInterrupted: Bool { lock.withLock { interrupted } }
+    var shouldInterrupt: Bool {
+        lock.withLock {
+            if interrupted { return true }
+            guard let deadline else { return false }
+            if DispatchTime.now().uptimeNanoseconds >= deadline {
+                interrupted = true
+                return true
+            }
+            return false
+        }
+    }
+
+    func begin(_ deadline: UInt64?) {
+        lock.withLock {
+            self.deadline = deadline
+            interrupted = false
+            acknowledgement = .none
+        }
+    }
+
+    func attach(_ database: OpaquePointer) {
+        let shouldCancel = lock.withLock { () -> Bool in
+            self.database = database
+            return interrupted || (deadline.map { DispatchTime.now().uptimeNanoseconds >= $0 } ?? false)
+        }
+        if shouldCancel { sqlite3_interrupt(database) }
+    }
+
+    func interrupt() {
+        let handle = lock.withLock { () -> OpaquePointer? in
+            interrupted = true
+            return database
+        }
+        if let handle { sqlite3_interrupt(handle) }
+    }
+
+    func acknowledge(_ acknowledgement: Acknowledgement) {
+        lock.withLock { self.acknowledgement = acknowledgement }
+    }
+
+    func finish() {
+        lock.withLock {
+            database = nil
+            deadline = nil
+            // An interrupted write must have reached the rollback path before
+            // this method is called.  Leave a failed acknowledgement visible
+            // to debugging/tests instead of silently resetting it.
+            if interrupted && acknowledgement == .none { acknowledgement = .rolledBack }
+            interrupted = false
+        }
+    }
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

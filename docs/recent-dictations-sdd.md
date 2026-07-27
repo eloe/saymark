@@ -104,9 +104,12 @@ how to tell the person that this recovery copy was not saved.
    attempt** to insert the final text transactionally with `delivery_state =
    pending`. It has a 75 ms p95 budget and a 100 ms hard deadline; timeout,
    `SQLITE_BUSY`, cancellation, full disk, or any store error rolls back/abandons
-   the attempt and immediately fails open to delivery. It may not retry in the
-   background or delay/prevent final delivery. Retention purge is never on this
-   path; it runs at launch and idle maintenance.
+   the attempt and immediately fails open to delivery. The deadline gate uses a
+   nonisolated `sqlite3_interrupt` path rather than waiting behind the history
+   actor; the writer rolls back/acknowledges an interrupted transaction before
+   its connection is reused, while paste is never held for that acknowledgement.
+   It may not retry in the background or delay/prevent final delivery. Retention
+   purge is never on this path; it runs at launch and recurring idle maintenance.
 4. The existing live/final delivery code runs exactly once. When a row exists,
    it maps its only canonical outcomes to `inserted`, `copied_accessibility`,
    or `insertion_failed`. If the process ends or state update fails
@@ -330,7 +333,10 @@ transaction/checkpoint succeeds is the UserDefaults mirror changed. A crash
 between these writes can shorten retention, never extend it.
 
 Single-delete is transactional: delete the record and all search-index entries,
-perform secure deletion/checkpoint, then refresh UI. Clear History and Off use
+perform secure deletion/checkpoint, then refresh UI. Before reporting complete,
+the store scans descriptor-opened DB/WAL/SHM artifacts for the exact deleted
+text bytes; a busy checkpoint or residual sequence is an honest partial-cleanup
+error, never a success message. Clear History and Off use
 explicit confirmation, one delete transaction, secure deletion, and
 `wal_checkpoint(TRUNCATE)` before saying local store files no longer contain the
 text. A concurrent stale writer must re-check metadata in its transaction and
@@ -572,6 +578,7 @@ revision, and fixture revision as required by `performance-acceptance.md`.
 | RD-U22 | Simulated abnormal termination while holding advisory lock permits next launch to open the store; no stale lockfile permanently disables history. |
 | RD-U23 | Secure input sampled at finalization produces no row/FTS row and no sentinel byte in store files, regardless of retention policy. |
 | RD-U24 | A history row requires enabled policy at both dictation start and finalization; enabling only mid-dictation never retains earlier speech. |
+| RD-U25 | A delayed writer and a queued writer each cross the pre-delivery deadline: the gate externally interrupts the active SQLite connection, writer rollback is acknowledged before reuse, no late row appears, and advisory-lock contention fails closed as `busy`. |
 
 ### 7.2 Integration, crash, concurrency, performance, and security tests
 
