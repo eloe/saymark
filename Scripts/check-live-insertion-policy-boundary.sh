@@ -88,10 +88,9 @@ fi
 # them with a package name so `package import` remains a compiler-valid case.
 [[ -d "$fixture_root" ]] || fail "missing boundary negative fixtures"
 while IFS= read -r -d '' fixture; do
-  # Fixtures must remain compiler-valid Swift 6. This demonstrates that a
-  # rejected form is a genuine import/dependency route, rather than a
-  # synthetic string that could never enter the policy target.
-  if ! "${swiftc_command[@]}" -swift-version 6 -package-name LiveInsertionPolicyFixtures -typecheck "$fixture" >/dev/null 2>&1; then
+  # Fixtures must remain parser-valid Swift 6. Use parsing rather than module
+  # resolution so Apple-only imports remain valid negative cases on Linux CI.
+  if ! "${swiftc_command[@]}" -swift-version 6 -package-name LiveInsertionPolicyFixtures -parse "$fixture" >/dev/null 2>&1; then
     fail "negative fixture is not valid Swift 6 syntax: ${fixture#"$repo_root"/}"
   fi
 
@@ -106,7 +105,7 @@ done < <(find "$fixture_root" -maxdepth 1 -type f -name '*.swift' -print0)
 positive_fixture_root="$fixture_root/allowed"
 [[ -d "$positive_fixture_root" ]] || fail "missing boundary positive fixtures"
 while IFS= read -r -d '' fixture; do
-  if ! "${swiftc_command[@]}" -swift-version 6 -package-name LiveInsertionPolicyFixtures -typecheck "$fixture" >/dev/null 2>&1; then
+  if ! "${swiftc_command[@]}" -swift-version 6 -package-name LiveInsertionPolicyFixtures -parse "$fixture" >/dev/null 2>&1; then
     fail "positive fixture is not valid Swift 6 syntax: ${fixture#"$repo_root"/}"
   fi
 
