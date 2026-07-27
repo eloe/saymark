@@ -275,9 +275,13 @@ connection**, including read, schema-creation, test, and recovery connections, m
 set and verify `secure_delete=ON` before opening/creating history tables or
 executing any statement. After every
 delete, clear, Off transition, expiry purge, or migration, finish the mutation
-with `wal_checkpoint(TRUNCATE)` before reporting deletion complete. A busy
-checkpoint is retried only by idle maintenance; deletion UI must say it is
-still completing, never claim completion early.
+by issuing the FTS5-native `optimize` command inside the existing protected
+database, then `wal_checkpoint(TRUNCATE)`, before reporting deletion complete.
+The merge lets FTS5 secure-delete retire tombstone segments before the
+descriptor-based proof scan; it does not create an external database copy.
+An optimize or busy-checkpoint failure remains a committed-cleanup failure and
+is retried only by idle maintenance; deletion UI must say it is still
+completing, never claim completion early.
 
 Version 1 does not run `VACUUM`: it can copy text outside the protected
 directory. Every history connection sets `temp_store=MEMORY` before schema or
@@ -395,9 +399,10 @@ the store scans descriptor-opened DB/WAL/SHM/FTS/temp artifacts for exact text
 and privacy-relevant normalized token fragments; a busy checkpoint or residual sequence is an honest partial-cleanup
 error, never a success message. Clear History and Off use
 explicit confirmation, one delete transaction, secure deletion, and
-`wal_checkpoint(TRUNCATE)` before saying local store files no longer contain the
-text. A concurrent stale writer must re-check metadata in its transaction and
-cannot recreate a row after Off. There is no v1 VACUUM action. These controls
+FTS5 `optimize` followed by `wal_checkpoint(TRUNCATE)` before saying local store
+files no longer contain the text. A concurrent stale writer must re-check
+metadata in its transaction and cannot recreate a row after Off. There is no
+v1 VACUUM action. These controls
 remove plaintext from the app's current database/WAL/SHM/FTS/temp artifacts,
 but cannot erase prior snapshots or backups already made; future backup and
 Spotlight inclusion are prevented at directory creation.
