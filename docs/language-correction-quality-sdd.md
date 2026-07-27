@@ -428,17 +428,25 @@ prohibited.
 
 ## 7. Accessibility and UI/design approval
 
-The following requires user design approval before implementation. No mockup is
-included in this phase.
+**Approved UI direction (binding):** one native **Vocabulary** Settings section,
+not separate Vocabulary/Replacements tabs. It contains native empty, populated,
+search, and add/edit states; the editor labels are **Write** and **When I say**.
+Its preview explicitly says it changes written text only and does not train the
+speech model. Corrected output has a disclosure to show/copy the raw transcript.
+Import uses per-entry diffs, URL acknowledgement, Merge, Replace all, cancel,
+and destructive confirmation. Replace the HUD `AUTO` badge with truthful `EN`
+while English is the only supported language. All controls are native, fully
+keyboard-operable, and VoiceOver-labelled. This direction supersedes the pending
+approval status below; implementation must follow it exactly.
 
 | Decision needing approval | Minimum mockup |
 | --- | --- |
-| Vocabulary settings information architecture, list density, terminology, and whether “Vocabulary” and “Replacements” are one section or separate tabs. | One Settings window state with empty, populated/search, and add/edit sheet states. |
-| Rule-editor labels and preview treatment, including how an exact match is explained without suggesting acoustic learning. | Editor with written value, several heard-as aliases, preview input/result, validation error, and conflict state. |
-| Display/recovery of raw ASR text beside corrected text, including whether it is inline, disclosure, copy action, or post-dictation HUD affordance. | HUD/final-result state showing corrected output, raw fallback, Nemotron-fallback final that differs from draft, and keyboard focus order. |
-| Import merge/replace flow, destructive confirmation, conflict resolution, and sensitive-data warning. | Import summary with valid, invalid, conflict, Merge, Replace all, cancel, confirmation, and per-entry old-to-new/URL acknowledgement states. |
-| Language truth presentation: removal of `AUTO` or its exact replacement by `EN`, an unsupported-language state, and a future selection affordance. | Current HUD/Settings English state plus an unsupported/experimental explanatory state. |
-| Accessibility wording and error presentation. | VoiceOver focus order/labels and full-keyboard traversal annotations for list, editor, preview, and import sheet. |
+| Vocabulary settings information architecture, list density, terminology, and one-section choice. | **Approved:** one Vocabulary section with native empty, populated/search, and add/edit states. |
+| Rule-editor labels and preview treatment. | **Approved:** Write / When I say; preview says written-text-only and no speech-model training. |
+| Display/recovery of raw ASR text beside corrected text. | **Approved:** corrected output with a disclosure to show/copy raw transcript. |
+| Import merge/replace flow, destructive confirmation, conflict resolution, and sensitive-data warning. | **Approved:** per-entry diffs, URL acknowledgement, Merge, Replace all, cancel, and destructive confirmation. |
+| Language truth presentation. | **Approved:** replace HUD AUTO with EN while English-only. |
+| Accessibility wording and error presentation. | **Approved:** native controls, full keyboard operation, and VoiceOver labels. |
 
 Implementation must use native SwiftUI/AppKit controls, respect Dynamic Type and
 increased contrast, expose clear VoiceOver labels/hints and validation messages,
