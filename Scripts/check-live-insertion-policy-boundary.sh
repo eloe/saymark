@@ -5,6 +5,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 policy_root="$repo_root/SaymarkKit/Sources/LiveInsertionPolicy"
 package_file="$repo_root/SaymarkKit/Package.swift"
 fixture_root="$repo_root/Scripts/fixtures/live-insertion-policy-boundary"
+swiftc_command=(swiftc)
+if command -v xcrun >/dev/null 2>&1; then
+  swiftc_command=(xcrun swiftc)
+fi
 
 fail() {
   printf 'live-insertion-policy-boundary: %s\n' "$1" >&2
@@ -36,26 +40,26 @@ check_source() {
   local source parse_tree matches
 
   while IFS= read -r -d '' source; do
-    if ! parse_tree="$(xcrun swiftc -swift-version 6 -dump-parse "$source" 2>&1)"; then
+    if ! parse_tree="$("${swiftc_command[@]}" -swift-version 6 -dump-parse "$source" 2>&1)"; then
       printf '%s\n' "$parse_tree" >&2
-      printf '%s: Swift parser rejected source\n' "${source#$repo_root/}" >&2
+      printf '%s: Swift parser rejected source\n' "${source#"$repo_root"/}" >&2
       return 1
     fi
 
     if printf '%s\n' "$parse_tree" | rg -q '\(import_decl([[:space:]]|$)'; then
-      printf '%s: explicit Swift import declaration\n' "${source#$repo_root/}" >&2
+      printf '%s: explicit Swift import declaration\n' "${source#"$repo_root"/}" >&2
       return 1
     fi
 
     if rg -q '^[[:space:]]*#(if|elseif|else|endif)([[:space:]]|$)' "$source"; then
-      if ! parse_tree="$(perl -pe 'if (/^\s*#(?:if|elseif|else|endif)\b/) { s/[^\r\n]/ /g }' "$source" | xcrun swiftc -swift-version 6 -dump-parse - 2>&1)"; then
+      if ! parse_tree="$(perl -pe 'if (/^\s*#(?:if|elseif|else|endif)\b/) { s/[^\r\n]/ /g }' "$source" | "${swiftc_command[@]}" -swift-version 6 -dump-parse - 2>&1)"; then
         printf '%s\n' "$parse_tree" >&2
-        printf '%s: Swift parser rejected conditionally flattened source\n' "${source#$repo_root/}" >&2
+        printf '%s: Swift parser rejected conditionally flattened source\n' "${source#"$repo_root"/}" >&2
         return 1
       fi
 
       if printf '%s\n' "$parse_tree" | rg -q '\(import_decl([[:space:]]|$)'; then
-        printf '%s: explicit Swift import declaration in conditional branch\n' "${source#$repo_root/}" >&2
+        printf '%s: explicit Swift import declaration in conditional branch\n' "${source#"$repo_root"/}" >&2
         return 1
       fi
     fi
@@ -87,12 +91,12 @@ while IFS= read -r -d '' fixture; do
   # Fixtures must remain compiler-valid Swift 6. This demonstrates that a
   # rejected form is a genuine import/dependency route, rather than a
   # synthetic string that could never enter the policy target.
-  if ! swiftc -swift-version 6 -package-name LiveInsertionPolicyFixtures -typecheck "$fixture" >/dev/null 2>&1; then
-    fail "negative fixture is not valid Swift 6 syntax: ${fixture#$repo_root/}"
+  if ! "${swiftc_command[@]}" -swift-version 6 -package-name LiveInsertionPolicyFixtures -typecheck "$fixture" >/dev/null 2>&1; then
+    fail "negative fixture is not valid Swift 6 syntax: ${fixture#"$repo_root"/}"
   fi
 
   if check_source "$fixture" >/dev/null 2>&1; then
-    fail "negative fixture escaped boundary gate: ${fixture#$repo_root/}"
+    fail "negative fixture escaped boundary gate: ${fixture#"$repo_root"/}"
   fi
 done < <(find "$fixture_root" -maxdepth 1 -type f -name '*.swift' -print0)
 
@@ -102,12 +106,12 @@ done < <(find "$fixture_root" -maxdepth 1 -type f -name '*.swift' -print0)
 positive_fixture_root="$fixture_root/allowed"
 [[ -d "$positive_fixture_root" ]] || fail "missing boundary positive fixtures"
 while IFS= read -r -d '' fixture; do
-  if ! swiftc -swift-version 6 -package-name LiveInsertionPolicyFixtures -typecheck "$fixture" >/dev/null 2>&1; then
-    fail "positive fixture is not valid Swift 6 syntax: ${fixture#$repo_root/}"
+  if ! "${swiftc_command[@]}" -swift-version 6 -package-name LiveInsertionPolicyFixtures -typecheck "$fixture" >/dev/null 2>&1; then
+    fail "positive fixture is not valid Swift 6 syntax: ${fixture#"$repo_root"/}"
   fi
 
   if ! check_source "$fixture"; then
-    fail "positive fixture was rejected by boundary gate: ${fixture#$repo_root/}"
+    fail "positive fixture was rejected by boundary gate: ${fixture#"$repo_root"/}"
   fi
 done < <(find "$positive_fixture_root" -type f -name '*.swift' -print0)
 
