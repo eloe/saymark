@@ -50,14 +50,13 @@ Committed prefix is irrevocably released and is never selected or changed. Revis
 idle → capture-target → live(lease) → settle-owned-tail → idle
                          │     │           │
                          │     ├ tail >64 → tail-throttled (HUD carries excess; no further live field writes)
-                         │     │                   │
-                         ├─────┴ unsupported ──────┤
-                         │                         ▼
-                         │                    fallback-final → existing atomic final once → idle
+                         │     │                   ├ verified ownership → settle-owned-tail → idle
+                         │     │                   └ ownership loss → frozen-final → copy-only / explicit approved recovery → idle
+                         ├ unsupported before a tail write ─→ fallback-final → existing atomic final once → idle
                          └ ownership loss ───────→ frozen-final → copy-only / explicit approved recovery → idle
 ~~~
 
-tail-throttled is a live-lease substate: the existing capped tail remains untouched, later provisional content is HUD-only, and no further live field write is attempted until a safe settlement or loss of ownership. fallback-final is reachable only before a live tail is written. A secure-input transition with no tail written routes here; the existing atomic path itself refuses secure paste and leaves the final result for copy/HUD recovery. Where automatic insertion is available, fallback-final uses the current settled field string: final transcript plus one ASCII trailing space. frozen-final is reachable after any tail write whose ownership cannot be re-proven. It leaves residual field text untouched, performs no automatic final insertion, and offers only copy until the user explicitly chooses an approved recovery. It never delivers full final text blindly at the current cursor.
+tail-throttled is a live-lease substate: the existing capped tail remains untouched, later provisional content is HUD-only, and no further live field write is attempted. On stop, it routes to settle-owned-tail only when ownership is re-proven; otherwise it routes to frozen-final. It never routes directly to fallback-final because a tail was already written. fallback-final is reachable only before a live tail is written. A secure-input transition with no tail written routes here; the existing atomic path itself refuses secure paste and leaves the final result for copy/HUD recovery. Where automatic insertion is available, fallback-final uses the current settled field string: final transcript plus one ASCII trailing space. frozen-final is reachable after any tail write whose ownership cannot be re-proven. It leaves residual field text untouched, performs no automatic final insertion, and offers only copy until the user explicitly chooses an approved recovery. It never delivers full final text blindly at the current cursor.
 
 ### Stability policy
 
@@ -101,7 +100,7 @@ Fakes must model AX ranges, read-only ranged-tail read-back, notifications, focu
 | LI-U22…U25 | Unit | Ordered coalescing, one operation in flight, cancellation, idempotent cleanup. |
 | LI-U26…U29 | Unit | Secure start/mid-session means no synthetic event **and no AX mutation**; no provisional clipboard; newer-copy preservation; concealed/transient snapshot is not restored. |
 | LI-U30…U34 | Unit/property | Exact-once state accounting and randomized event schedules never rewrite released prefix or write after invalidation. |
-| LI-U35 | Unit | Same-length content substitution at identical offsets is detected by bounded selected-tail read-back. |
+| LI-U35 | Unit | Same-length content substitution at identical offsets is detected by bounded read-only ranged-tail read-back. |
 | LI-U36 | Unit | frozen-final emits zero AX mutations and zero synthetic paste events. |
 | LI-U37 | Unit | AX write refused for secure role and IsSecureEventInputEnabled. |
 | LI-U38 | Unit | 25 ms secure poll detects activation within the 125 ms bound. |

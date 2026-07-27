@@ -16,7 +16,7 @@ The reviewer read the initial live-insertion design, TextInjector, DictationCont
 | Finding | Disposition | Required evidence before live mutation |
 | --- | --- | --- |
 | B-01 — no public acknowledged AX mutation primitive | Preserved as a hard pre-Slice-2 gate. Tier A API/UI is not committed. | Reference NSTextView spike measuring select/replace transport result, notification ordering/coalescing, and self/user origin ambiguity. Ambiguity means Tier A is not shippable. |
-| B-02 — range equality cannot detect same-offset substitution | SDD permits a narrow selected-tail read-back of Saymark-authored text only, capped at 64 UTF-16 code units; it is immediately discarded and never logged. | Privacy review and adversarial same-length/same-offset substitution proof. |
+| B-02 — range equality cannot detect same-offset substitution | Superseded wording: the final SDD requires a narrow **read-only ranged** tail read of Saymark-authored text only, capped at 64 UTF-16 code units; it is immediately discarded and never logged. | Privacy review and adversarial same-length/same-offset substitution proof. |
 | B-03 — blind atomic paste after lease loss duplicates/guesses | LI-05 now separates fallback-final from frozen-final. frozen-final permits zero AX writes and zero synthetic paste, with copy-only recovery. | LI-U36 / B-03 evidence and D-03/D-06 approval. |
 | B-04 — secure input does not prove AX writes are safe | Protected state now forbids both synthetic events and AX mutation. Polling is 25 ms with 125 ms last-possible-mutation bound; secure AX behavior remains unassumed. | Secure-input × AX-write matrix for secure roles and secure event input. |
 | B-05 — AXObserver/run-loop and synchronous IPC were unspecified | Future observer has a dedicated CFRunLoop thread; AX I/O is off-main with 100 ms messaging timeout and timeout fails closed. | Hung-target/timeout experiment and LI-S07. |
@@ -77,3 +77,7 @@ LI-U35 through LI-U42, LI-I22 through LI-I25, LI-P06, and LI-S07 are required in
 | R-08 model identifier | This record uses the exact identifier `claude-opus-5`; High is recorded as effort. |
 
 The follow-up preserves every B-01 through B-05 missing-evidence blocker and every D-01 through D-07 design approval. Slice 1 remains policy-only and is not yet implemented; Slices 2–5 remain blocked.
+
+## Final verification correction
+
+The final verification found V-01: the prior diagram incorrectly allowed tail-throttled to reach fallback-final even though a capped tail was already written. The SDD now routes tail-throttled to settle-owned-tail only after ownership is re-proven, otherwise to frozen-final. It never reaches fallback-final. The earlier “selected-tail” wording is superseded by read-only ranged-tail wording in both the SDD and this record. This correction required no additional reviewer round.
