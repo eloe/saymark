@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
+      draft_deferred: ${{ steps.scope.outputs.draft_deferred }}
       query_suite: ${{ steps.scope.outputs.query_suite }}
       run_codeql: ${{ steps.scope.outputs.run_codeql }}
     steps:
@@ -41,7 +42,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
+          echo "draft_deferred=false" >> "$GITHUB_OUTPUT"
+
           if [[ "$EVENT_NAME" == "pull_request" && "$PR_DRAFT" == "true" ]]; then
+            echo "draft_deferred=true" >> "$GITHUB_OUTPUT"
             echo "run_codeql=false" >> "$GITHUB_OUTPUT"
             echo "query_suite=default" >> "$GITHUB_OUTPUT"
             echo "Skipping traced Swift build while the pull request is a draft."
@@ -189,10 +193,17 @@ jobs:
         env:
           ANALYZE_RESULT: ${{ needs.analyze.result }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
+          DRAFT_DEFERRED: ${{ needs.classify.outputs.draft_deferred }}
           RUN_CODEQL: ${{ needs.classify.outputs.run_codeql }}
         run: |
           [[ "$CLASSIFY_RESULT" == "success" ]] ||
             { echo "CodeQL scope classification failed." >&2; exit 1; }
+
+          if [[ "$DRAFT_DEFERRED" == "true" ]]; then
+            echo "CodeQL analysis is deferred while this pull request is a draft." >&2
+            echo "Mark the pull request ready for review to run the required scan." >&2
+            exit 1
+          fi
 
           if [[ "$RUN_CODEQL" == "true" ]]; then
             [[ "$ANALYZE_RESULT" == "success" ]] ||
