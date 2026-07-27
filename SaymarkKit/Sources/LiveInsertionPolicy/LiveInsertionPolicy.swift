@@ -450,9 +450,14 @@ public struct SealedLiveInsertionSession: Sendable {
 
     /// Internal coordinator hand-off only. Keeping this non-public prevents a
     /// compatibility caller from forging "a tail was written" at stop time.
-    mutating func recordAcknowledgedTailWrite() {
-        guard state == .activeNoTail else { return }
+    /// Records an acknowledged tail only while this session can still own it.
+    /// A delayed acknowledgement after a terminal stop must not retroactively
+    /// turn an already-delivered fallback into an "owned tail" route.
+    @discardableResult
+    mutating func recordAcknowledgedTailWrite() -> Bool {
+        guard state == .activeNoTail else { return false }
         state = .activeOwnedTail
+        return true
     }
 
     public mutating func throttle() {

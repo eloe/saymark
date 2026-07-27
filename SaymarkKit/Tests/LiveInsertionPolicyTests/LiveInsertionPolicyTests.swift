@@ -168,6 +168,27 @@ final class LiveInsertionPolicyTests: XCTestCase {
         XCTAssertEqual(session.state, .settled)
     }
 
+    /// Regression for the seed-81 schedule: a stop can be serialized before a
+    /// later tracker acknowledgement. That acknowledgement did not create an
+    /// owned session tail, so it must not be used to reinterpret the earlier
+    /// fallback as an owned-tail fallback.
+    func testSeed81DelayedAcknowledgementCannotRetroactivelyOwnDeliveredFallback() {
+        var tracker = StableTranscriptTracker()
+        var session = SealedLiveInsertionSession()
+
+        XCTAssertEqual(session.stop(ownershipVerified: false), .fallbackFinal)
+
+        let text = "stable-81"
+        _ = tracker.ingest(text, at: 810)
+        _ = tracker.ingest(text, at: 970)
+        let request = tryUnwrap(tracker.beginStableMutation())
+        XCTAssertTrue(tracker.acknowledge(request.receipt))
+        XCTAssertFalse(session.recordAcknowledgedTailWrite())
+
+        XCTAssertEqual(session.stop(ownershipVerified: true), .noOp)
+        XCTAssertEqual(session.state, .fallbackFinalDelivered)
+    }
+
     func testSecureInputNeverRoutesToFallbackEvenWithoutATail() {
         var active = SealedLiveInsertionSession()
         active.secureInputActivated()
@@ -345,8 +366,10 @@ final class LiveInsertionPolicyTests: XCTestCase {
                     _ = tracker.ingest(text, at: seed * 10)
                     _ = tracker.ingest(text, at: seed * 10 + 160)
                     if let request = tracker.beginStableMutation(), tracker.acknowledge(request.receipt) {
-                        session.recordAcknowledgedTailWrite()
-                        ownedTailSeen = true
+                        // The tracker acknowledgement can arrive after a
+                        // terminal stop in an interleaved test schedule. Only
+                        // a session that accepted the hand-off owns a tail.
+                        ownedTailSeen = session.recordAcknowledgedTailWrite() || ownedTailSeen
                     }
                 case 2: // throttle
                     session.throttle()
