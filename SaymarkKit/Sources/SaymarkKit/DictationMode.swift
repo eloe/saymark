@@ -16,6 +16,36 @@ protocol UtteranceSession {
     func finishText() -> String
 }
 
+/// Keeps correction outside the ASR engines. It owns one immutable snapshot for
+/// an utterance, so settings writes cannot change a visible draft or its final.
+/// The wrapped session always receives and returns raw model text; correction is
+/// applied once at the output boundary and never feeds back into ASR.
+final class CorrectingUtteranceSession: UtteranceSession {
+    private let base: UtteranceSession
+    private let snapshot: VocabularySnapshot
+
+    init(base: UtteranceSession, snapshot: VocabularySnapshot) {
+        self.base = base; self.snapshot = snapshot
+    }
+
+    func step(_ samples: [Float], shouldProcess: Bool) -> (confirmed: String, partial: String) {
+        let raw = base.step(samples, shouldProcess: shouldProcess)
+        return (snapshot.correct(raw.confirmed).renderedText, snapshot.correct(raw.partial).renderedText)
+    }
+
+    var currentText: (confirmed: String, partial: String) {
+        let raw = base.currentText
+        return (snapshot.correct(raw.confirmed).renderedText, snapshot.correct(raw.partial).renderedText)
+    }
+
+    func finishText() -> String {
+        // `base` returns its raw authoritative final. In the empty-Parakeet
+        // fallback this is the raw Nemotron draft, therefore this is exactly one
+        // correction pass and cannot cascade a previously rendered live draft.
+        snapshot.correct(base.finishText()).renderedText
+    }
+}
+
 /// Two-tier (hybrid) lane: `step` already returns the confirmed/provisional split.
 extension TwoTierSession: UtteranceSession {
     func step(_ samples: [Float], shouldProcess: Bool) -> (confirmed: String, partial: String) {

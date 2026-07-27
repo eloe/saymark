@@ -13,15 +13,18 @@ import Foundation
 /// (the caller's state machine guarantees it).
 public final class DictationSession: @unchecked Sendable {
     private let engine: STTEngine
+    private let correctionSnapshotProvider: @Sendable () -> VocabularySnapshot
     private var mic = MicCapture()
     private let updates = DictationUpdateHub()
     public private(set) var activeSessionID: String?
 
     public init(
         nemotronRepo: String = TwoTierEngine.defaultNemotronRepo,
-        parakeetRepo: String = TwoTierEngine.defaultParakeetRepo
+        parakeetRepo: String = TwoTierEngine.defaultParakeetRepo,
+        correctionSnapshotProvider: @escaping @Sendable () -> VocabularySnapshot = { .empty }
     ) {
         engine = STTEngine(nemotronRepo: nemotronRepo, parakeetRepo: parakeetRepo)
+        self.correctionSnapshotProvider = correctionSnapshotProvider
     }
 
     /// Observe live `(confirmed, provisional)` updates. Retain the returned
@@ -62,7 +65,9 @@ public final class DictationSession: @unchecked Sendable {
 
     /// Begin a fresh utterance and start capturing, with the chosen model mode.
     public func start(mode: DictationMode = .hybrid) throws {
-        let sessionID = engine.begin(language: nil, mode: mode)
+        // Freeze the explicit local rules before audio capture begins. Later
+        // edits/imports apply to the next utterance only.
+        let sessionID = engine.begin(language: nil, mode: mode, correctionSnapshot: correctionSnapshotProvider())
         activeSessionID = sessionID
         mic.onChunk = { [weak self] chunk in
             guard let self else { return }
@@ -113,7 +118,7 @@ public final class DictationSession: @unchecked Sendable {
         chunkSamples: Int = 2_560,
         mode: DictationMode = .hybrid
     ) -> OfflineResult {
-        _ = engine.begin(language: nil, mode: mode)
+        _ = engine.begin(language: nil, mode: mode, correctionSnapshot: correctionSnapshotProvider())
         let wall0 = ProcessInfo.processInfo.systemUptime
         var streamCompute = 0.0
         var maxStep = 0.0
