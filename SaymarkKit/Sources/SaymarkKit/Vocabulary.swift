@@ -71,36 +71,21 @@ public enum VocabularyNormalization {
     fileprivate static func tokens(in text: String) -> [Token] {
         let scalars = Array(text.unicodeScalars)
         guard !scalars.isEmpty else { return [] }
+        let boundaries = Unicode15_1.wordBoundaries(in: text)
         var tokens: [Token] = []
-        var index = 0
-        while index < scalars.count {
-            // Compatibility characters (for example ㍿) can normalize to a
-            // word even though their own Word_Break property is Other.  Treat
-            // that source scalar as one atomic token: its expansion must never
-            // permit a match against only part of the source character.
-            guard startsWord(scalars[index]) else { index += 1; continue }
-            let start = index
-            index += 1
-            while index < scalars.count {
-                let value = scalars[index].value
-                if isWord(value) { index += 1; continue }
-                if wordBreakProperty(value) == .extend || wordBreakProperty(value) == .format || wordBreakProperty(value) == .zwj {
-                    index += 1; continue
-                }
-                // Apostrophes join a word only when they have a word scalar on
-                // both sides. This makes `mark's` one token, but `mark` never
-                // matches inside it.
-                if (value == 0x27 || value == 0x2019), index + 1 < scalars.count,
-                   isWord(scalars[index + 1].value) {
-                    index += 2; continue
-                }
-                break
-            }
-            let raw = String(String.UnicodeScalarView(scalars[start..<index]))
+        var start = 0
+        for end in 1...scalars.count where boundaries[end] {
+            defer { start = end }
+            guard end > start else { continue }
+            let raw = String(String.UnicodeScalarView(scalars[start..<end]))
             let key = Unicode15_1.nfkcCaseFold(raw)
                 .unicodeScalars.map { isWhitespace($0.value) ? " " : String($0) }
                 .joined().split(whereSeparator: { $0 == " " }).joined(separator: " ")
-            if !key.isEmpty { tokens.append(Token(scalarRange: start..<index, key: key)) }
+            // UAX #29 segments punctuation and whitespace too. Keep only
+            // segments whose pinned NFKC/full-fold expansion contains a word
+            // scalar, while preserving the complete original source span.
+            guard key.unicodeScalars.contains(where: { isWord($0.value) }) else { continue }
+            if !key.isEmpty { tokens.append(Token(scalarRange: start..<end, key: key)) }
         }
         return tokens
     }
@@ -115,15 +100,6 @@ public enum VocabularyNormalization {
         case .aLetter, .hebrewLetter, .numeric, .katakana, .extendNumLet: return true
         default: return false
         }
-    }
-
-    private static func startsWord(_ scalar: Unicode.Scalar) -> Bool {
-        if isWord(scalar.value) { return true }
-        return Unicode15_1.nfkcCaseFold(String(scalar)).unicodeScalars.contains { isWord($0.value) }
-    }
-
-    private static func wordBreakProperty(_ scalar: UInt32) -> WordBreakProperty {
-        Unicode15_1.wordBreakProperty(scalar)
     }
 
     /// Pinned whitespace policy for match keys. This is intentionally not
@@ -344,13 +320,20 @@ public final class TranscriptCorrectionPipeline: @unchecked Sendable {
         let revision: UInt64; let raw: String; let completion: @Sendable (CorrectedTranscript) -> Void
     }
     private let snapshot: VocabularySnapshot
+    private let evaluator: @Sendable (String) throws -> CorrectedTranscript
     private let lock = NSLock()
     private let worker = DispatchQueue(label: "saymark.correction", qos: .userInitiated)
     private var latest: Pending?
     private var draining = false
     private var nextRevision: UInt64 = 0
 
-    public init(snapshot: VocabularySnapshot) { self.snapshot = snapshot }
+    public convenience init(snapshot: VocabularySnapshot) {
+        self.init(snapshot: snapshot, evaluator: { snapshot.correct($0) })
+    }
+
+    init(snapshot: VocabularySnapshot, evaluator: @escaping @Sendable (String) throws -> CorrectedTranscript) {
+        self.snapshot = snapshot; self.evaluator = evaluator
+    }
 
     /// Cheap caller-side capture: only a monotonically increasing revision and
     /// latest raw hypothesis are retained; no tokenization occurs on the STT
@@ -367,7 +350,16 @@ public final class TranscriptCorrectionPipeline: @unchecked Sendable {
 
     /// Finals are deliberately evaluated directly rather than queued behind a
     /// live draft. This keeps final delivery authoritative and bounded.
-    public func correctFinal(_ raw: String) -> CorrectedTranscript { snapshot.correct(raw) }
+    public func correctFinal(_ raw: String) -> CorrectedTranscript {
+        // Invalidate any queued draft before final evaluation. A running draft
+        // may finish, but its completion observes the generation mismatch.
+        lock.withLock { nextRevision &+= 1; latest = nil }
+        do { return try evaluator(raw) }
+        catch {
+            return CorrectedTranscript(rawText: raw, renderedText: raw, snapshotRevision: snapshot.revision,
+                                       appliedRuleCount: 0, correctionStatus: .failedRawFallback)
+        }
+    }
 
     private func drain() {
         while true {
@@ -376,8 +368,14 @@ public final class TranscriptCorrectionPipeline: @unchecked Sendable {
                 if value == nil { draining = false }
                 return value
             }) else { return }
-            let result = snapshot.correct(pending.raw)
-            let stillCurrent = lock.withLock { latest == nil }
+            let result: CorrectedTranscript
+            do { result = try evaluator(pending.raw) }
+            catch {
+                result = CorrectedTranscript(rawText: pending.raw, renderedText: pending.raw,
+                                             snapshotRevision: snapshot.revision, appliedRuleCount: 0,
+                                             correctionStatus: .failedRawFallback)
+            }
+            let stillCurrent = lock.withLock { latest == nil && pending.revision == nextRevision }
             if stillCurrent { pending.completion(result) }
         }
     }
@@ -463,7 +461,13 @@ public final class VocabularyStore: @unchecked Sendable {
     }
 
     private func load() throws {
-        guard FileManager.default.fileExists(atPath: primaryURL.path) else { return }
+        guard FileManager.default.fileExists(atPath: primaryURL.path) else {
+            if let backup = try? Self.readDocument(at: backupURL) {
+                document = backup
+                recoveryMessage = "Vocabulary was restored from its last complete backup."
+            }
+            return
+        }
         do { document = try Self.readDocument(at: primaryURL) }
         catch {
             // A complete prior version is more useful than a blank vocabulary.
@@ -529,7 +533,11 @@ public final class VocabularyStore: @unchecked Sendable {
             throw VocabularyValidationError.invalidSchema
         }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
-        let data = try handle.readToEnd() ?? Data()
+        var data = Data(); data.reserveCapacity(min(Int(statBuffer.st_size), 64 * 1024))
+        while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            guard data.count <= 5 * 1024 * 1024 - chunk.count else { throw VocabularyValidationError.invalidSchema }
+            data.append(chunk)
+        }
         guard data.count <= 5 * 1024 * 1024, jsonDepth(data) <= 64, hasNoDuplicateObjectKeys(data) else { throw VocabularyValidationError.invalidSchema }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let document = try VocabularyMigration.migrate(decoder.decode(VocabularyDocument.self, from: data))
@@ -557,12 +565,12 @@ public final class VocabularyStore: @unchecked Sendable {
         func skipSpace() { while index < data.count && [9, 10, 13, 32].contains(data[index]) { index += 1 } }
         func string() -> String? {
             guard index < data.count, data[index] == 34 else { return nil }; index += 1
-            var bytes: [UInt8] = []
+            var encoded: [UInt8] = [34]
             while index < data.count {
                 let byte = data[index]; index += 1
-                if byte == 34 { return String(bytes: bytes, encoding: .utf8) }
-                if byte == 92 { guard index < data.count else { return nil }; bytes.append(byte); bytes.append(data[index]); index += 1 }
-                else { bytes.append(byte) }
+                encoded.append(byte)
+                if byte == 34 { return try? JSONDecoder().decode(String.self, from: Data(encoded)) }
+                if byte == 92 { guard index < data.count else { return nil }; encoded.append(data[index]); index += 1 }
             }; return nil
         }
         while index < data.count {
@@ -620,7 +628,7 @@ private func reconcile(local: VocabularyDocument, imported: VocabularyDocument, 
     let disabledCount = base.filter { !$0.enabled }.count
     let hasURL = diffs.contains { diff in
         guard let value = diff.new?.written else { return false }
-        return value.range(of: #"[A-Za-z][A-Za-z0-9+.-]*://"#, options: .regularExpression) != nil
+        return value.range(of: #"\b[A-Za-z][A-Za-z0-9+.-]*:"#, options: .regularExpression) != nil
     }
     let retainedChanges = diffs.filter { $0.new != nil }.count
     return ImportResult(document: result, preview: VocabularyImportPreview(newCount: newCount, unchangedCount: base.count - retainedChanges, updatedCount: updatedCount, disabledCount: disabledCount, containsURL: hasURL, sourceToken: sourceToken, diffs: diffs))

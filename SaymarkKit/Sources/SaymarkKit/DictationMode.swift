@@ -23,32 +23,41 @@ protocol UtteranceSession {
 final class CorrectingUtteranceSession: UtteranceSession {
     private let base: UtteranceSession
     private let snapshot: VocabularySnapshot
-    private(set) var latestUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript) = (
-        CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: 0, appliedRuleCount: 0),
-        CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: 0, appliedRuleCount: 0)
-    )
+    private let pipeline: TranscriptCorrectionPipeline
+    private let updateLock = NSLock()
+    private var storedUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript)
+    var latestUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript) { updateLock.withLock { storedUpdate } }
 
     init(base: UtteranceSession, snapshot: VocabularySnapshot) {
-        self.base = base; self.snapshot = snapshot
+        self.base = base; self.snapshot = snapshot; pipeline = TranscriptCorrectionPipeline(snapshot: snapshot)
+        let empty = CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: snapshot.revision, appliedRuleCount: 0)
+        storedUpdate = (empty, empty)
     }
 
     func step(_ samples: [Float], shouldProcess: Bool) -> (confirmed: String, partial: String) {
         let raw = base.step(samples, shouldProcess: shouldProcess)
-        latestUpdate = (snapshot.correct(raw.confirmed), snapshot.correct(raw.partial))
-        return (latestUpdate.confirmed.renderedText, latestUpdate.partial.renderedText)
+        // Correct the complete current hypothesis on the dedicated latest-wins
+        // worker. No normalization/matching runs synchronously on the STT queue.
+        let whole = raw.confirmed + raw.partial
+        pipeline.submitDraft(whole) { [weak self] corrected in
+            guard let self else { return }
+            let empty = CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: corrected.snapshotRevision, appliedRuleCount: 0)
+            self.updateLock.withLock { self.storedUpdate = (empty, corrected) }
+        }
+        return raw
     }
 
     var currentText: (confirmed: String, partial: String) {
-        let raw = base.currentText
-        return (snapshot.correct(raw.confirmed).renderedText, snapshot.correct(raw.partial).renderedText)
+        base.currentText
     }
 
     func finishText() -> String {
         // `base` returns its raw authoritative final. In the empty-Parakeet
         // fallback this is the raw Nemotron draft, therefore this is exactly one
         // correction pass and cannot cascade a previously rendered live draft.
-        let final = snapshot.correct(base.finishText())
-        latestUpdate = (final, CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: snapshot.revision, appliedRuleCount: 0))
+        let final = pipeline.correctFinal(base.finishText())
+        let empty = CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: snapshot.revision, appliedRuleCount: 0)
+        updateLock.withLock { storedUpdate = (final, empty) }
         return final.renderedText
     }
 }

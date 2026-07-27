@@ -25,7 +25,7 @@ final class DictationController {
 
     private(set) var state: State = .loadingModels
 
-    private let session = DictationSession(correctionSnapshotProvider: { VocabularySettingsModel.shared.snapshot })
+    private let session: DictationSession
     private let hud = HUDController()
     @ObservationIgnored private var updateSubscription: DictationUpdateSubscription?
     @ObservationIgnored private var correctedUpdateSubscription: DictationUpdateSubscription?
@@ -38,6 +38,13 @@ final class DictationController {
     #if DEBUG
     @ObservationIgnored private var dailyDriverUITestConfiguration: DailyDriverUITestConfiguration?
     #endif
+
+    init() {
+        // Resolve the main-actor singleton here, then let the session read its
+        // thread-safe, nonisolated store snapshot from capture/metering queues.
+        let vocabulary = VocabularySettingsModel.shared
+        session = DictationSession(correctionSnapshotProvider: { vocabulary.snapshot })
+    }
 
     var shortcutLabel: String {
         KeyboardShortcuts.getShortcut(for: .dictate)?.description ?? "⌃⌥Space"
@@ -238,7 +245,9 @@ final class DictationController {
     private nonisolated func echoCorrected(_ confirmed: CorrectedTranscript, _ partial: CorrectedTranscript) {
         Task { @MainActor in
             self.hud.update(confirmed: confirmed.renderedText, partial: partial.renderedText,
-                            rawConfirmed: confirmed.rawText, rawPartial: partial.rawText)
+                            rawConfirmed: confirmed.rawText, rawPartial: partial.rawText,
+                            correctionStatus: partial.correctionStatus.rawValue,
+                            correctionRevision: partial.snapshotRevision)
         }
     }
 
@@ -264,9 +273,11 @@ final class DictationController {
                         detail: String(localized: "Try again and speak a little longer")
                     )
                 } else if InsertMode.current == .inField {
-                    self.insertFinal(final, rawText: corrected.rawText, sessionID: diagnosticSessionID)
+                    self.insertFinal(final, rawText: corrected.rawText, correctionStatus: corrected.correctionStatus.rawValue,
+                                     correctionRevision: corrected.snapshotRevision, sessionID: diagnosticSessionID)
                 } else {
-                    self.hud.finish(final, rawText: corrected.rawText)
+                    self.hud.finish(final, rawText: corrected.rawText, correctionStatus: corrected.correctionStatus.rawValue,
+                                    correctionRevision: corrected.snapshotRevision)
                 }
                 SaymarkDiagnostics.log(.info, "dictation.ui_completed", sessionID: diagnosticSessionID, fields: [
                     "word_count": final.split(separator: " ").count,
@@ -277,8 +288,6 @@ final class DictationController {
                     "stop_to_complete_ms": (ProcessInfo.processInfo.systemUptime - stopStarted) * 1_000,
                 ])
                 PostHogSDK.shared.capture("dictation_completed", properties: [
-                    "word_count": final.split(separator: " ").count,
-                    "character_count": final.count,
                     "is_empty": final.isEmpty,
                     "model_mode": modelModeAtStop,
                     "insert_mode": insertModeAtStop,
@@ -295,6 +304,8 @@ final class DictationController {
     private func insertFinal(
         _ text: String,
         rawText: String? = nil,
+        correctionStatus: String? = nil,
+        correctionRevision: UInt64? = nil,
         sessionID: String?,
         uiTestCompletion: ((String) -> Void)? = nil
     ) {
@@ -311,7 +322,7 @@ final class DictationController {
                 )
                 uiTestCompletion?("copied")
             default:
-                hud.finish(text, rawText: rawText)
+                hud.finish(text, rawText: rawText, correctionStatus: correctionStatus, correctionRevision: correctionRevision)
                 uiTestCompletion?("inserted")
             }
             return
@@ -341,7 +352,7 @@ final class DictationController {
                 "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
                 "character_count": text.count,
             ])
-            hud.finish(text, rawText: rawText)
+            hud.finish(text, rawText: rawText, correctionStatus: correctionStatus, correctionRevision: correctionRevision)
         case .failed:
             SaymarkDiagnostics.log(.error, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "failed",

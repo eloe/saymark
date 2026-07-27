@@ -10,7 +10,7 @@ import SwiftUI
 final class VocabularySettingsModel {
     static let shared = VocabularySettingsModel()
 
-    private let store: VocabularyStore?
+    nonisolated private let store: VocabularyStore?
     private(set) var entries: [VocabularyEntry] = []
     private(set) var errorMessage: String?
     var search = ""
@@ -40,11 +40,13 @@ final class VocabularySettingsModel {
         reload()
     }
 
-    var snapshot: VocabularySnapshot { store?.snapshot() ?? .empty }
+    nonisolated var snapshot: VocabularySnapshot { store?.snapshot() ?? .empty }
     var filteredEntries: [VocabularyEntry] {
         guard !search.isEmpty else { return entries }
-        let query = search.localizedCaseInsensitiveContains
-        return entries.filter { query($0.written) || $0.heard.contains(where: query) }
+        return entries.filter { entry in
+            entry.written.localizedCaseInsensitiveContains(search)
+                || entry.heard.contains { $0.localizedCaseInsensitiveContains(search) }
+        }
     }
 
     func reload() { entries = store?.currentDocument().entries.sorted { $0.written.localizedStandardCompare($1.written) == .orderedAscending } ?? [] }
@@ -143,6 +145,7 @@ struct VocabularySettingsSection: View {
         .sheet(isPresented: $model.showEditor) { VocabularyRuleEditor(model: model, existing: model.editing) }
         .sheet(isPresented: $model.showImportPreview) { VocabularyImportPreviewView(model: model) }
         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
+        .accessibilityIdentifier("settings.vocabulary")
     }
 }
 
@@ -171,7 +174,9 @@ private struct VocabularyImportPreviewView: View {
                             if let old = diff.old, let new = diff.new {
                                 if old.written != new.written { Text("Write: \(old.written) → \(new.written)").foregroundStyle(.secondary) }
                                 if old.heard != new.heard { Text("When I say: \(old.heard.joined(separator: ", ")) → \(new.heard.joined(separator: ", "))").foregroundStyle(.secondary) }
+                                if old.kind != new.kind { Text("Kind: \(old.kind.rawValue) → \(new.kind.rawValue)").foregroundStyle(.secondary) }
                                 if old.enabled != new.enabled { Text("Enabled setting will change").foregroundStyle(.secondary) }
+                                if old.updatedAt != new.updatedAt { Text("Modified timestamp will change").foregroundStyle(.secondary) }
                             }
                         }
                     }

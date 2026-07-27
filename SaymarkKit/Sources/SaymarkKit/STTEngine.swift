@@ -214,8 +214,6 @@ final class STTEngine: @unchecked Sendable {
                     "asr_stream_compute_ms": asrCompute * 1_000,
                     "finish_compute_ms": finishSeconds * 1_000,
                     "compute_rtf": audioSeconds > 0 ? computeSeconds / audioSeconds : 0,
-                    "result_characters": text.count,
-                    "result_words": text.split(separator: " ").count,
                     "result_empty": text.isEmpty,
                     "mlx_active_bytes": Memory.activeMemory,
                     "mlx_cache_bytes": Memory.cacheMemory,

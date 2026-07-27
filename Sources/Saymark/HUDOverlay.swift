@@ -15,6 +15,8 @@ final class HUDModel {
     var confirmed = ""
     var partial = ""
     var rawTranscript = "" // memory only; cleared at the next HUD lifecycle boundary
+    var correctionStatus = "unchanged"
+    var correctionRevision: UInt64 = 0
     var showRawTranscript = false
     /// Saymark currently supports English only; this is product truth, not
     /// model language detection.
@@ -149,6 +151,8 @@ private struct HUDView: View {
             header
             if model.showingFinal, !model.rawTranscript.isEmpty, model.rawTranscript != model.confirmed {
                 DisclosureGroup("Raw transcript", isExpanded: Bindable(model).showRawTranscript) {
+                    Text("Correction: \(model.correctionStatus). Vocabulary revision \(model.correctionRevision).")
+                        .foregroundStyle(.secondary)
                     Text(model.rawTranscript).textSelection(.enabled)
                     Button("Copy raw transcript") {
                         NSPasteboard.general.clearContents()
@@ -406,11 +410,14 @@ final class HUDController {
     }
 
     /// Live two-tier update.
-    func update(confirmed: String, partial: String, rawConfirmed: String? = nil, rawPartial: String? = nil) {
+    func update(confirmed: String, partial: String, rawConfirmed: String? = nil, rawPartial: String? = nil,
+                correctionStatus: String? = nil, correctionRevision: UInt64? = nil) {
         model.showingFinal = false
         model.confirmed = confirmed
         model.partial = partial
         if let rawConfirmed, let rawPartial { model.rawTranscript = rawConfirmed + rawPartial }
+        if let correctionStatus { model.correctionStatus = correctionStatus }
+        if let correctionRevision { model.correctionRevision = correctionRevision }
         if model.phase != .error {
             model.phase = (confirmed.isEmpty && partial.isEmpty) ? .listening : .transcribing
         }
@@ -459,7 +466,8 @@ final class HUDController {
     }
 
     /// Show the final text, then fade — lingering longer in presentation mode.
-    func finish(_ finalText: String, rawText: String? = nil) {
+    func finish(_ finalText: String, rawText: String? = nil, correctionStatus: String? = nil,
+                correctionRevision: UInt64? = nil) {
         guard panel != nil else { return }
         model.recording = false
         model.showStop = false
@@ -467,6 +475,8 @@ final class HUDController {
             model.confirmed = finalText
             model.partial = ""
             model.rawTranscript = rawText ?? finalText
+            if let correctionStatus { model.correctionStatus = correctionStatus }
+            if let correctionRevision { model.correctionRevision = correctionRevision }
             model.showRawTranscript = false
             model.showingFinal = true
             model.phase = .transcribing
