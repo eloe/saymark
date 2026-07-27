@@ -1386,6 +1386,13 @@ public actor SQLiteHistoryStore: HistoryStore {
         testBeforeDeletionCheckpoint?()
         if let testPostCommitCleanupFailure { throw testPostCommitCleanupFailure }
         if testCheckpointFailure { throw HistoryStoreError.cleanupIncomplete }
+        // A DELETE against an external-content FTS5 table records tombstones in
+        // its segments.  Merge those segments before checking the protected
+        // artifacts: secure-delete overwrites the retired FTS cells, while the
+        // truncating checkpoint alone only removes WAL frames.  This stays
+        // within SQLite's existing database files; v1 deliberately does not
+        // use VACUUM because it can create an unprotected text copy.
+        try execute("INSERT INTO records_fts(records_fts) VALUES('optimize')")
         let statement = try prepare("PRAGMA wal_checkpoint(TRUNCATE)")
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw mapSQLiteError(sqlite3_errcode(database)) }
