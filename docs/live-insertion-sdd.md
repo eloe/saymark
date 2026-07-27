@@ -135,6 +135,36 @@ Before Tier A is unblocked, commit: B-01 spike result, B-02 adversarial read-bac
 4. **Product integration — blocked:** only after Tier A is certified; opt-in first.
 5. **Tier B certification/promotion — blocked:** only after Tier A, real-app results, D-07 if hold mode is requested, user testing, and final review.
 
+### Slice 1 implementation invariants (2026-07-26)
+
+The approved Slice 1 policy core is intentionally more restrictive than the
+future coordinator design. It has no external write capability, and a positive
+lease classification is an **evidence-only candidate**, not mutation authority.
+The following invariants are implemented and regression-tested before any
+evidence spike or adapter work:
+
+- A recogniser-stable prefix is only a candidate. It becomes committed after a
+  matching, current-generation acknowledgement; stale acknowledgements are
+  ignored.
+- Frozen-final is sticky. Further hypotheses, stop requests, or a claimed good
+  ownership result cannot revive it; only explicit new-session reset can.
+- Tail throttling snapshots the acknowledged field prefix and tail. All later
+  hypotheses are HUD-only and cannot schedule another stable mutation.
+- Stop routing reads sealed session-owned state, not a caller-provided tail
+  boolean. Any acknowledged tail, including one followed by secure-input
+  activation, can settle only with ownership proof or remains frozen; it cannot
+  take atomic fallback.
+- Exact hypothesis fragments preserve original whitespace, punctuation, Unicode
+  scalars, and UTF-16 length. Policy code does not normalise transcript text.
+- Time observations clamp monotonically; generation/serial counters retire on
+  exhaustion rather than wrap; pending recogniser work is capacity-one,
+  latest-wins.
+
+The mechanical boundary now rejects direct platform imports plus AppKit/Cocoa,
+legacy event APIs, accessibility symbols, Objective-C/dynamic-link escape
+hatches, process launch APIs, and manifest dependencies. Negative fixtures are
+executed by the gate so a weakened pattern fails CI.
+
 ## Approved UI/design contract
 
 The recommended native macOS package was approved on 2026-07-26. This approval
