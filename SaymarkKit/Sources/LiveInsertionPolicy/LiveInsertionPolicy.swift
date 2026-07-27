@@ -72,6 +72,12 @@ public struct MutationGenerationGate: Sendable {
 
     public init() {}
 
+    /// Test-only construction for exhaustion schedules. This is intentionally
+    /// internal: production callers cannot select counter values.
+    init(nextSerialForTesting nextSerial: UInt64) {
+        self.nextSerial = nextSerial
+    }
+
     public mutating func beginMutation() -> MutationToken? {
         guard !retired, inFlight == nil, nextSerial < UInt64.max else { return nil }
         nextSerial += 1
@@ -96,17 +102,22 @@ public struct MutationGenerationGate: Sendable {
     }
 }
 
-public struct StableMutationRequest: Equatable, Sendable {
+public struct StableMutationRequest: Sendable, Equatable {
     /// The exact field prefix a future coordinator must acknowledge after a
     /// current-generation operation. It is not an authority to mutate.
     public let candidatePrefix: String
     fileprivate let token: MutationToken
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.token == rhs.token && exactUTF16Equal(lhs.candidatePrefix, rhs.candidatePrefix)
+    }
 }
 
-/// Keeps exact hypothesis fragments. A fragment is a non-whitespace run with
-/// its leading separator; trailing separators remain attached to the preceding
-/// fragment. That representation preserves the original string byte-for-byte
-/// at the Swift String / UTF-16 boundary while still making word limits clear.
+/// Keeps exact hypothesis fragments. Whitespace and non-whitespace runs are
+/// separate fragments, so separator migration can extend an acknowledged prefix
+/// without turning it into a canonicalized replacement. The representation
+/// preserves the original text at the Swift String / UTF-16 boundary while
+/// keeping word limits clear.
 public struct StableTranscriptTracker: Sendable {
     private struct Fragment: Equatable, Sendable {
         let text: String
@@ -126,6 +137,10 @@ public struct StableTranscriptTracker: Sendable {
     private var candidates: [Fragment] = []
     private var gate = MutationGenerationGate()
     private var fieldResidentTail = ""
+    /// Exactly one acknowledgement receipt is valid, and only until the next
+    /// recogniser observation. This prevents a delayed coordinator result from
+    /// claiming a tail for a superseded candidate/generation.
+    private var pendingFieldTailAcknowledgement: StableMutationRequest?
     private var state: State = .live
     private var lastMonotonicMilliseconds = 0
 
@@ -138,6 +153,7 @@ public struct StableTranscriptTracker: Sendable {
     /// content or make age arithmetic overflow.
     public mutating func ingest(_ hypothesis: String, at milliseconds: Int) -> StableTranscriptUpdate {
         let now = monotonic(milliseconds)
+        pendingFieldTailAcknowledgement = nil
         switch state {
         case let .throttled(fieldCommitted, fieldTail):
             return update(
@@ -159,13 +175,31 @@ public struct StableTranscriptTracker: Sendable {
             break
         }
 
-        let incoming = Self.fragments(from: hypothesis)
-        guard Self.hasPrefix(incoming, committed) else {
+        let committedText = committed.joined()
+        guard let uncommittedText = Self.exactUTF16Suffix(of: hypothesis, after: committedText) else {
             freeze()
             return frozenUpdate()
         }
 
-        let uncommitted = Array(incoming.dropFirst(committed.count))
+        // Do not expand an arbitrarily long recogniser hypothesis into policy
+        // fragments just to learn that it is over the 64 UTF-16 tail cap.
+        // The original hypothesis remains HUD-only, while retained policy
+        // state stays bounded by the cap.
+        if uncommittedText.utf16.count > policy.maximumTailUTF16Length {
+            let fieldCommitted = committedText
+            let fieldTail = fieldResidentTail
+            state = .throttled(committed: fieldCommitted, tail: fieldTail)
+            gate.invalidate()
+            return update(
+                committed: fieldCommitted,
+                stable: fieldCommitted,
+                tail: fieldTail,
+                hud: hypothesis,
+                phase: .tailThrottled
+            )
+        }
+
+        let uncommitted = Self.fragments(from: uncommittedText)
         if !Self.hasPrefix(uncommitted, stableCandidates) {
             // A stable-but-unacknowledged proposal changed. It was never field
             // state, so it may be withdrawn, but any pending acknowledgement is
@@ -202,7 +236,6 @@ public struct StableTranscriptTracker: Sendable {
             )
         }
 
-        let committedText = committed.joined()
         return update(
             committed: committedText,
             stable: committedText + stableCandidates.joined(),
@@ -227,19 +260,29 @@ public struct StableTranscriptTracker: Sendable {
     @discardableResult
     public mutating func acknowledge(_ request: StableMutationRequest) -> Bool {
         guard case .live = state,
-              request.candidatePrefix == committed.joined() + stableCandidates.joined(),
+              exactUTF16Equal(request.candidatePrefix, committed.joined() + stableCandidates.joined()),
               gate.complete(request.token) else { return false }
         committed += stableCandidates
         stableCandidates = []
+        pendingFieldTailAcknowledgement = request
         return true
     }
 
     /// Records a tail only after a separate coordinator's explicit successful
     /// acknowledgement. It exists so throttling can preserve *field* state,
     /// not merely the latest recogniser hypothesis.
-    public mutating func acknowledgeFieldResidentTail(_ exactTail: String) {
-        guard case .live = state else { return }
+    @discardableResult
+    public mutating func acknowledgeFieldResidentTail(
+        _ exactTail: String,
+        for request: StableMutationRequest
+    ) -> Bool {
+        guard case .live = state,
+              let pending = pendingFieldTailAcknowledgement,
+              pending == request,
+              exactUTF16Equal(request.candidatePrefix, committed.joined()) else { return false }
         fieldResidentTail = exactTail
+        pendingFieldTailAcknowledgement = nil
+        return true
     }
 
     /// Ownership loss is terminal. Calling `ingest` again cannot revive the
@@ -254,6 +297,7 @@ public struct StableTranscriptTracker: Sendable {
         candidates = []
         gate = MutationGenerationGate()
         fieldResidentTail = ""
+        pendingFieldTailAcknowledgement = nil
         state = .live
         lastMonotonicMilliseconds = 0
     }
@@ -262,6 +306,7 @@ public struct StableTranscriptTracker: Sendable {
         let currentCommitted = committed.joined()
         state = .frozen(committed: currentCommitted, tail: fieldResidentTail)
         gate.invalidate()
+        pendingFieldTailAcknowledgement = nil
     }
 
     private func frozenUpdate() -> StableTranscriptUpdate {
@@ -285,6 +330,14 @@ public struct StableTranscriptTracker: Sendable {
         return clamped
     }
 
+    /// State retained by the policy core. It excludes the caller-owned current
+    /// hypothesis and HUD-only content. A future coordinator must keep its own
+    /// larger transcript outside this bounded live-tail policy.
+    public var retainedUTF16Length: Int {
+        committed.joined().utf16.count + stableCandidates.joined().utf16.count +
+            candidates.reduce(0) { $0 + $1.text.utf16.count } + fieldResidentTail.utf16.count
+    }
+
     private static func fragments(from hypothesis: String) -> [String] {
         guard !hypothesis.isEmpty else { return [] }
         var runs: [(isWhitespace: Bool, text: String)] = []
@@ -297,43 +350,49 @@ public struct StableTranscriptTracker: Sendable {
             }
         }
 
-        var pendingWhitespace = ""
-        var result: [String] = []
-        for run in runs {
-            if run.isWhitespace {
-                pendingWhitespace += run.text
-            } else {
-                result.append(pendingWhitespace + run.text)
-                pendingWhitespace = ""
-            }
-        }
-        if !pendingWhitespace.isEmpty {
-            if result.isEmpty { result.append(pendingWhitespace) }
-            else { result[result.count - 1] += pendingWhitespace }
-        }
-        return result
+        // Whitespace is intentionally its own fragment. A recogniser adding a
+        // separator after an acknowledged word then retains the exact old
+        // prefix instead of falsely presenting ("word ") as a replacement for
+        // ("word").
+        return runs.map(\.text)
     }
 
     private static func hasPrefix(_ incoming: [String], _ prefix: [String]) -> Bool {
         guard incoming.count >= prefix.count else { return false }
-        return zip(incoming, prefix).allSatisfy(==)
+        return zip(incoming, prefix).allSatisfy { exactUTF16Equal($0, $1) }
     }
 
     private static func merge(previous: [Fragment], incoming: [String], at milliseconds: Int) -> [Fragment] {
         incoming.enumerated().map { index, text in
-            guard index < previous.count, previous[index].text == text else {
+            guard index < previous.count, exactUTF16Equal(previous[index].text, text) else {
                 return Fragment(text: text, firstSeenMilliseconds: milliseconds, confirmations: 1)
             }
             let previous = previous[index]
             return Fragment(text: text, firstSeenMilliseconds: previous.firstSeenMilliseconds, confirmations: previous.confirmations + 1)
         }
     }
+
+    private static func exactUTF16Suffix(of whole: String, after prefix: String) -> String? {
+        guard whole.utf16.count >= prefix.utf16.count,
+              whole.utf16.prefix(prefix.utf16.count).elementsEqual(prefix.utf16) else { return nil }
+        let suffixStart = whole.utf16.index(whole.utf16.startIndex, offsetBy: prefix.utf16.count)
+        guard let stringIndex = String.Index(suffixStart, within: whole) else { return nil }
+        return String(whole[stringIndex...])
+    }
+}
+
+@inline(__always)
+private func exactUTF16Equal(_ lhs: String, _ rhs: String) -> Bool {
+    lhs.utf16.elementsEqual(rhs.utf16)
 }
 
 public enum LiveInsertionStopRoute: Equatable, Sendable {
     case settleOwnedTail
     case frozenFinal
     case fallbackFinal
+    /// The caller may not deliver again after a terminal route has been issued.
+    case copyOnly
+    case noOp
 }
 
 public enum SealedLiveInsertionSessionState: Equatable, Sendable {
@@ -342,6 +401,9 @@ public enum SealedLiveInsertionSessionState: Equatable, Sendable {
     case tailThrottledNoTail
     case tailThrottledOwnedTail
     case frozenFinal
+    case frozenFinalDelivered
+    case secureFinal
+    case secureFinalDelivered
     case fallbackFinalDelivered
     case settled
 }
@@ -354,7 +416,9 @@ public struct SealedLiveInsertionSession: Sendable {
 
     public init() {}
 
-    public mutating func recordAcknowledgedTailWrite() {
+    /// Internal coordinator hand-off only. Keeping this non-public prevents a
+    /// compatibility caller from forging "a tail was written" at stop time.
+    mutating func recordAcknowledgedTailWrite() {
         guard state == .activeNoTail else { return }
         state = .activeOwnedTail
     }
@@ -369,19 +433,18 @@ public struct SealedLiveInsertionSession: Sendable {
 
     public mutating func invalidateOwnership() {
         switch state {
-        case .fallbackFinalDelivered, .settled: break
+        case .fallbackFinalDelivered, .frozenFinalDelivered, .secureFinal, .secureFinalDelivered, .settled: break
         default: state = .frozenFinal
         }
     }
 
-    /// Secure transition is ownership loss. In particular, an owned tail can
-    /// never route to atomic fallback after this event.
+    /// Secure transition is terminal, including before a tail exists. It never
+    /// routes through atomic fallback: Slice 1's only permitted recovery is
+    /// copy/HUD and it grants no mutation capability.
     public mutating func secureInputActivated() {
         switch state {
-        case .activeOwnedTail, .tailThrottledOwnedTail:
-            state = .frozenFinal
-        case .activeNoTail:
-            state = .tailThrottledNoTail
+        case .activeOwnedTail, .tailThrottledOwnedTail, .activeNoTail, .tailThrottledNoTail:
+            state = .secureFinal
         default:
             break
         }
@@ -391,7 +454,7 @@ public struct SealedLiveInsertionSession: Sendable {
         switch state {
         case .activeOwnedTail, .tailThrottledOwnedTail:
             guard ownershipVerified else {
-                state = .frozenFinal
+                state = .frozenFinalDelivered
                 return .frozenFinal
             }
             state = .settled
@@ -400,26 +463,18 @@ public struct SealedLiveInsertionSession: Sendable {
             state = .fallbackFinalDelivered
             return .fallbackFinal
         case .frozenFinal:
+            state = .frozenFinalDelivered
             return .frozenFinal
-        case .fallbackFinalDelivered:
-            return .fallbackFinal
-        case .settled:
-            return .settleOwnedTail
+        case .secureFinal:
+            state = .secureFinalDelivered
+            return .copyOnly
+        case .fallbackFinalDelivered, .frozenFinalDelivered, .secureFinalDelivered, .settled:
+            return .noOp
         }
     }
 
     public mutating func resetForNewSession() {
         state = .activeNoTail
-    }
-}
-
-/// Compatibility shim for pre-session callers. New code must use
-/// `SealedLiveInsertionSession`, whose state cannot be forged at stop time.
-public enum LiveInsertionStopRouter {
-    public static func route(hasWrittenTail: Bool, ownershipVerified: Bool) -> LiveInsertionStopRoute {
-        var session = SealedLiveInsertionSession()
-        if hasWrittenTail { session.recordAcknowledgedTailWrite() }
-        return session.stop(ownershipVerified: ownershipVerified)
     }
 }
 

@@ -98,6 +98,26 @@ Word-aligned latency requires versioned benchmark audio with reference word
 timestamps. Production diagnostics may record only content-free durations,
 counts, and outcome categories.
 
+### Slice 1 policy-core acceptance
+
+The pure policy core has deterministic resource limits independent of hardware
+model timing. Release validation records an arm64 Release result for the exact
+commit and toolchain, and fails the slice when any of the following is false:
+
+| Check | Acceptance requirement |
+| --- | --- |
+| Per-update work | A normal eligible hypothesis (committed prefix plus <=64 UTF-16 tail) completes in <=1 ms p95 and <=5 ms maximum across 10,000 warmed updates. An oversized tail throttles before fragment expansion. |
+| Retained policy state | <=128 UTF-16 code units for a no-tail live candidate; after tail overflow, no HUD-only recogniser content is retained. The external transcript/HUD owner is measured separately. |
+| Queue/backlog | Latest-wins capacity is exactly one; 100,000 replaces retain only the newest item and create no queue growth. |
+| Cancellation/invalidation | 10,000 deterministic and 500 task-scheduled interleavings of hypothesis, acknowledgement, throttle, secure-input, ownership loss, and Stop produce no post-terminal route or revived tracker. |
+| Counter retirement | Generation/serial exhaustion retires mutation issuance; it never wraps into a valid token. |
+| Memory | 20 repetitions of the 10,000-update schedule have <=1 MB settled RSS growth attributable to the policy harness after autorelease cleanup; record baseline, peak, and settled values. |
+
+The time and memory figures are measured by an opt-in local performance harness,
+not generic CI. CI executes the deterministic overflow, boundary, and
+concurrency/invalidation schedules as correctness tests. These Slice 1 limits
+do not relax the user-visible live-insertion gates above.
+
 ### Feed-cadence experiment
 
 The production feed is 160 ms. It was selected from a 160, 240, 320, and 480 ms

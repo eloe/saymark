@@ -53,10 +53,11 @@ idle → capture-target → live(lease) → settle-owned-tail → idle
                          │     │                   ├ verified ownership → settle-owned-tail → idle
                          │     │                   └ ownership loss → frozen-final → copy-only / explicit approved recovery → idle
                          ├ unsupported before a tail write ─→ fallback-final → existing atomic final once → idle
+                         ├ secure input/role ───────→ secure-final → copy-only / HUD recovery → idle
                          └ ownership loss ───────→ frozen-final → copy-only / explicit approved recovery → idle
 ~~~
 
-tail-throttled is a live-lease substate: the existing capped tail remains untouched, later provisional content is HUD-only, and no further live field write is attempted. On stop, it routes to settle-owned-tail only when ownership is re-proven; otherwise it routes to frozen-final. It never routes directly to fallback-final because a tail was already written. fallback-final is reachable only before a live tail is written. A secure-input transition with no tail written routes here; the existing atomic path itself refuses secure paste and leaves the final result for copy/HUD recovery. Where automatic insertion is available, fallback-final uses the current settled field string: final transcript plus one ASCII trailing space. frozen-final is reachable after any tail write whose ownership cannot be re-proven. It leaves residual field text untouched, performs no automatic final insertion, and offers only copy until the user explicitly chooses an approved recovery. It never delivers full final text blindly at the current cursor.
+tail-throttled is a live-lease substate: the existing capped tail remains untouched, later provisional content is HUD-only, and no further live field write is attempted. On stop, it routes to settle-owned-tail only when ownership is re-proven; otherwise it routes to frozen-final. It never routes directly to fallback-final because a tail was already written. fallback-final is reachable only before a live tail is written **and only while neither secure role nor secure input is active**. A secure-input transition, including with no tail or a throttled no-tail state, seals a distinct secure terminal: it does not route through atomic final, performs no automatic insertion, and exposes copy/HUD recovery only. Where automatic insertion is available, fallback-final uses the current settled field string: final transcript plus one ASCII trailing space. frozen-final is reachable after any tail write whose ownership cannot be re-proven. It leaves residual field text untouched, performs no automatic final insertion, and offers only copy until the user explicitly chooses an approved recovery. It never delivers full final text blindly at the current cursor. Every terminal route is consumed exactly once; repeated Stop is a no-op and cannot repeat fallback, settlement, frozen recovery, or secure recovery.
 
 ### Stability policy
 
@@ -109,7 +110,9 @@ Fakes must model AX ranges, read-only ranged-tail read-back, notifications, focu
 | LI-U41 | Unit | Target termination, closed document/window, and invalid AXUIElement fail closed. |
 | LI-U42 | Unit | Efficient, HUD-only, Tier C, and Tier D issue zero AX mutations and zero synthetic events. |
 | LI-U43 | Unit | Ownership verification reads kAXStringForRangeParameterizedAttribute without mutating selection; unavailable ranged read rejects Tier A. |
-| LI-U44 | Build/unit gate | LiveInsertionPolicy imports neither ApplicationServices nor CoreGraphics and references no AX write, CGEvent, or CGEvent post API. |
+| LI-U44 | Build/unit gate | LiveInsertionPolicy has an empty import/dependency allowlist and rejects Foundation/CoreFoundation/XPC/IPC, AX, event, dynamic-link, Objective-C, process, and network escape hatches through negative fixtures. |
+| LI-U45…U49 | Unit/property | Exact-once terminal routing; secure no-tail/no-tail-throttled copy-only terminal; mutation-token-bound tail acknowledgement; exact UTF-16 identity; separator/trailing-whitespace preservation. |
+| LI-U50…U52 | Unit/async/property | Oversized hypothesis bounded retention; task-scheduled invalidation cannot revive the tracker; counter exhaustion retires instead of wrapping. |
 | LI-I01…I08 | Integration | Reference Tier A, correction/punctuation/long utterance, focus/cursor/user-edit loss. Blocked until B gates. |
 | LI-I09…I11 | Real-app integration | Real Safari, Chrome, and a production Electron app via LiveInsertionRealTargetHarness: ten repetitions/version, exact final, ordered proof. Blocked until B gates. |
 | LI-I12 | Real-app integration | Real Terminal/PTY and code editor: zero live operations; existing atomic final exactly once over ten repetitions. |
@@ -121,7 +124,8 @@ Fakes must model AX ranges, read-only ranged-tail read-back, notifications, focu
 | LI-I25 | Integration | Concealed/transient pasteboard snapshot is not republished by delayed restore. |
 | LI-P01…P05 | Performance | Authoritative latency/resource gates, no queue growth, 20 warmed runs/target. |
 | LI-P06 | Performance | N/T policy, max four-word revision depth, p95 revoked provisional words/s <= 2. |
-| LI-R01…R03 | Reliability | 10,000 AX/hypothesis schedules: no crash/deadlock/leak/post-cancel write. |
+| LI-P07 | Unit performance | 10,000 normal pure-policy updates: p95 <=1 ms and maximum <=5 ms; the opt-in harness records RSS/settled growth. |
+| LI-R01…R03 | Reliability | 10,000 deterministic and 500 task-scheduled AX/hypothesis/invalidation schedules: no crash/deadlock/leak/post-cancel write or terminal revival. |
 | LI-S01…S06 | Security | Reordered AX, check/write race, secure/clipboard race, diagnostics scan, static privacy review. |
 | LI-S07 | Security | Deliberately hung target with 100 ms messaging timeout fails closed with no mutation; asserts all AX I/O runs off-main. |
 
@@ -129,7 +133,7 @@ Before Tier A is unblocked, commit: B-01 spike result, B-02 adversarial read-bac
 
 ## Implementation slices
 
-1. **Policy core, no writes — permitted only behind a mechanical boundary:** create a separate LiveInsertionPolicy target for tokenizer/stability, lease/classifier/generation, throttle state, and typed telemetry schema. Its sources may not import ApplicationServices or CoreGraphics and may not reference AXUIElementSetAttributeValue, CGEvent, or any CGEvent post API. Before policy code lands, add a CI boundary test/gate that scans this target and fails on those imports or symbols; LI-U44 verifies that gate. This target owns no AX adapter and has no production mutation path.
+1. **Policy core, no writes — permitted only behind a mechanical boundary:** create a separate LiveInsertionPolicy target for tokenizer/stability, lease/classifier/generation, throttle state, and typed telemetry schema. Its import allowlist is empty and its manifest declaration is zero-dependency: it may not import or reach Foundation/CoreFoundation/XPC/IPC, ApplicationServices, AppKit/Cocoa, CoreGraphics, dynamic-link/Objective-C, process, or network APIs. Before policy code lands, add a CI boundary test/gate with negative fixtures; LI-U44 verifies that gate. This target owns no AX adapter and has no production mutation path.
 2. **Evidence spikes — not implementation:** produce B-01/B-02/B-04/B-05 artifacts. Failure retains Tier C/D; it does not weaken the safety contract.
 3. **Tier A coordinator — blocked:** only after all B evidence, security review, and D-01…D-06 approval.
 4. **Product integration — blocked:** only after Tier A is certified; opt-in first.
@@ -153,17 +157,30 @@ evidence spike or adapter work:
 - Stop routing reads sealed session-owned state, not a caller-provided tail
   boolean. Any acknowledged tail, including one followed by secure-input
   activation, can settle only with ownership proof or remains frozen; it cannot
-  take atomic fallback.
+  take atomic fallback. The old compatibility stop shim was removed, so no
+  caller can forge tail history at stop time; terminal delivery is exact-once
+  and repeated Stop is a no-op.
+- Secure-input activation seals a copy-only terminal in every active or
+  throttled state, including no-tail states. It never selects fallback-final.
+- A field-resident tail acknowledgement is bound to the opaque mutation token,
+  exact candidate bytes, and current acknowledgement generation. A new
+  hypothesis retires that receipt; delayed/stale tail acknowledgements fail.
 - Exact hypothesis fragments preserve original whitespace, punctuation, Unicode
-  scalars, and UTF-16 length. Policy code does not normalise transcript text.
+  scalars, and UTF-16 length. Comparisons use exact UTF-16 code-unit identity,
+  never canonical Swift `String` equality. Whitespace is separately represented
+  so a later separator/trailing whitespace extends a committed prefix rather
+  than falsely replacing it.
 - Time observations clamp monotonically; generation/serial counters retire on
   exhaustion rather than wrap; pending recogniser work is capacity-one,
-  latest-wins.
+  latest-wins. Inputs exceeding the 64-code-unit tail cap throttle before
+  fragment expansion, so HUD-only overflow is not retained by the policy core.
 
-The mechanical boundary now rejects direct platform imports plus AppKit/Cocoa,
-legacy event APIs, accessibility symbols, Objective-C/dynamic-link escape
-hatches, process launch APIs, and manifest dependencies. Negative fixtures are
-executed by the gate so a weakened pattern fails CI.
+The mechanical boundary uses an empty import allowlist: a pure-Swift policy
+target needs no explicit imports, so Foundation, CoreFoundation, XPC/IPC, UI,
+AX, dynamic-link, Objective-C, process-launch, and network escape hatches all
+fail closed. Its manifest declaration remains zero-dependency. Negative
+fixtures for AX/events/AppKit/dynamic lookup/Foundation/XPC execute in the gate,
+so a weakened pattern fails CI.
 
 ## Approved UI/design contract
 

@@ -16,22 +16,24 @@ fail() {
   fail "LiveInsertionPolicy has no Swift sources"
 [[ -f "$package_file" ]] || fail "missing Package.swift"
 
-# Slice 1 is a zero-dependency pure Swift target.  Scan both direct imports and
-# common dynamic, legacy, Objective-C, and accessibility escape hatches; a
-# future adapter must live outside this target after the evidence gates close.
-forbidden='^[[:space:]]*import[[:space:]]+(ApplicationServices|AppKit|Cocoa|CoreGraphics|Carbon|IOKit|ObjectiveC|Darwin)$|\b(AX[A-Za-z0-9_]*|CGEvent[A-Za-z0-9_]*|NSEvent|NSPasteboard|NSAppleScript|NSWorkspace|dlopen|dlsym|NSClassFromString|objc_lookUpClass|unsafeBitCast|@_silgen_name|Process|NSTask)\b'
+# Slice 1 is a zero-dependency pure Swift target. The import allowlist is
+# deliberately empty: `Swift` is implicit, so any explicit module import fails
+# closed. This excludes Foundation/CoreFoundation/XPC/IPC as well as UI and AX
+# frameworks. A future adapter must live outside this target after evidence.
+forbidden_import='^[[:space:]]*import[[:space:]]+'
+forbidden_symbol='\b(AX[A-Za-z0-9_]*|CGEvent[A-Za-z0-9_]*|NSEvent|NSPasteboard|NSAppleScript|NSWorkspace|CFMessagePort|DistributedNotificationCenter|NSXPC|xpc_[A-Za-z0-9_]*|dlopen|dlsym|dladdr|NSClassFromString|objc_lookUpClass|unsafeBitCast|@_silgen_name|@_cdecl|@_expose|@_dynamicReplacement|Process|NSTask|URLSession|Socket)\b'
 
 check_source() {
   local root="$1"
   local matches
-  matches="$(rg -n --glob '*.swift' -e "$forbidden" "$root" || true)"
+  matches="$(rg -n --glob '*.swift' -e "$forbidden_import" -e "$forbidden_symbol" "$root" || true)"
   [[ -z "$matches" ]] || {
     printf '%s\n' "$matches" >&2
     return 1
   }
 }
 
-check_source "$policy_root" || fail "policy target references an automation, dynamic-link, or process dependency"
+check_source "$policy_root" || fail "policy target violates the pure-Swift import/dependency boundary"
 
 # Assert the manifest has precisely the no-dependency target declaration. This
 # prevents a dependency from being smuggled in while source imports stay clean.
