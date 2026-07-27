@@ -72,6 +72,29 @@ internal enum Unicode15_1 {
         }
         return .other
     }
+
+    /// Validation policy for text that may later be inserted into another app.
+    /// This is deliberately independent of Foundation's evolving scalar APIs.
+    static func isUnsafeVocabularyScalar(_ scalar: UInt32) -> Bool {
+        if scalar <= 0x1F || (0x7F...0x9F).contains(scalar) { return true }
+        if (scalar & 0xFFFF) >= 0xFFFE || (0xFDD0...0xFDEF).contains(scalar) { return true }
+        return contains(scalar, ranges: Unicode15_1Generated.defaultIgnorableRanges) ||
+            !contains(scalar, ranges: Unicode15_1Generated.assignedRanges)
+    }
+}
+
+private extension Unicode15_1 {
+    static func contains(_ scalar: UInt32, ranges: [UInt32]) -> Bool {
+        var low = 0, high = ranges.count / 2
+        while low < high {
+            let middle = (low + high) / 2
+            let start = ranges[middle * 2], end = ranges[middle * 2 + 1]
+            if scalar < start { high = middle }
+            else if scalar > end { low = middle + 1 }
+            else { return true }
+        }
+        return false
+    }
 }
 
 internal enum WordBreakProperty: UInt32 {

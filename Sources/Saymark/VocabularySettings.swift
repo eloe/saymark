@@ -10,7 +10,7 @@ import SwiftUI
 final class VocabularySettingsModel {
     static let shared = VocabularySettingsModel()
 
-    private let store: VocabularyStore
+    private let store: VocabularyStore?
     private(set) var entries: [VocabularyEntry] = []
     private(set) var errorMessage: String?
     var search = ""
@@ -24,27 +24,34 @@ final class VocabularySettingsModel {
 
     private init() {
         let directory = VocabularyStore.applicationSupportURL(bundleIdentifier: Bundle.main.bundleIdentifier ?? "com.eloe.saymark")
-        do { store = try VocabularyStore(directoryURL: directory) }
+        do {
+            let opened = try VocabularyStore(directoryURL: directory)
+            store = opened
+            errorMessage = opened.recoveryMessage
+        }
         catch {
-            // A read failure keeps dictation raw-first and the existing document
-            // untouched; this empty store does not overwrite it.
-            store = try! VocabularyStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("saymark-vocabulary-recovery"))
-            errorMessage = "Vocabulary could not be opened. Dictation will use raw text until it is recovered."
+            // Never divert sensitive vocabulary to /tmp.  The store itself can
+            // recover a valid backup; a directory creation failure is surfaced
+            // as an unavailable local settings surface rather than copied to a
+            // less private fallback location.
+            store = nil
+            errorMessage = "Vocabulary could not be opened. Dictation will use raw text until local storage is available."
         }
         reload()
     }
 
-    var snapshot: VocabularySnapshot { store.snapshot() }
+    var snapshot: VocabularySnapshot { store?.snapshot() ?? .empty }
     var filteredEntries: [VocabularyEntry] {
         guard !search.isEmpty else { return entries }
         let query = search.localizedCaseInsensitiveContains
         return entries.filter { query($0.written) || $0.heard.contains(where: query) }
     }
 
-    func reload() { entries = store.currentDocument().entries.sorted { $0.written.localizedStandardCompare($1.written) == .orderedAscending } }
+    func reload() { entries = store?.currentDocument().entries.sorted { $0.written.localizedStandardCompare($1.written) == .orderedAscending } ?? [] }
     func beginAdd() { editing = nil; showEditor = true }
     func beginEdit(_ entry: VocabularyEntry) { editing = entry; showEditor = true }
     func save(_ entry: VocabularyEntry) {
+        guard let store else { errorMessage = "Vocabulary storage is unavailable."; return }
         do { try store.upsert(entry); reload(); showEditor = false; errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
@@ -52,11 +59,13 @@ final class VocabularySettingsModel {
         var updated = entry; updated.enabled = enabled; updated.updatedAt = Date(); save(updated)
     }
     func delete(_ entry: VocabularyEntry) {
+        guard let store else { errorMessage = "Vocabulary storage is unavailable."; return }
         do { try store.delete(id: entry.id); reload(); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
 
     func chooseImport() {
+        guard let store else { errorMessage = "Vocabulary storage is unavailable."; return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.json]
@@ -69,21 +78,24 @@ final class VocabularySettingsModel {
     }
 
     func refreshImportPreview() {
-        guard let importURL else { return }
+        guard let importURL, let store else { return }
         do { importPreview = try store.importDocument(from: importURL, strategy: importStrategy); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
 
     func applyImport() {
-        guard let importURL else { return }
+        guard let importURL, let store else { return }
         do {
-            try store.applyImport(from: importURL, strategy: importStrategy, acknowledgedURLs: acknowledgedURLs)
+            try store.applyImport(from: importURL, strategy: importStrategy, acknowledgedURLs: acknowledgedURLs, previewToken: importPreview?.sourceToken)
             reload(); showImportPreview = false; self.importURL = nil; importPreview = nil
         } catch { errorMessage = error.localizedDescription }
     }
 
     func export() {
+        guard let store else { errorMessage = "Vocabulary storage is unavailable."; return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "saymark-vocabulary.json"
+        panel.message = "Vocabulary files may contain names and internal terms. Store the export somewhere private."
+        panel.prompt = "Export vocabulary"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do { try store.export(to: url); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
@@ -116,6 +128,8 @@ struct VocabularySettingsSection: View {
                         Button("Edit") { model.beginEdit(entry) }
                         Button("Delete", role: .destructive) { model.delete(entry) }
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Vocabulary entry \(entry.written). When I say: \(entry.heard.joined(separator: ", ")).")
                 }
             }
             Button("Add vocabulary") { model.beginAdd() }
@@ -128,6 +142,7 @@ struct VocabularySettingsSection: View {
         footer: { Text("Rules change written text only. They do not train the speech model and stay on this Mac.") }
         .sheet(isPresented: $model.showEditor) { VocabularyRuleEditor(model: model, existing: model.editing) }
         .sheet(isPresented: $model.showImportPreview) { VocabularyImportPreviewView(model: model) }
+        .dynamicTypeSize(...DynamicTypeSize.accessibility3)
     }
 }
 
@@ -146,13 +161,24 @@ private struct VocabularyImportPreviewView: View {
                 Text("\(preview.newCount) new, \(preview.updatedCount) updated, \(preview.unchangedCount) unchanged, \(preview.disabledCount) disabled")
                 List(preview.diffs, id: \.id) { diff in
                     VStack(alignment: .leading) {
-                        Text(diff.new.written)
-                        if let old = diff.old { Text("Replaces \(old.written)").foregroundStyle(.secondary) }
-                        Text("When I say: \(diff.new.heard.joined(separator: ", "))").foregroundStyle(.secondary)
+                        Text(diff.new?.written ?? diff.old?.written ?? "Vocabulary rule")
+                        switch diff.change {
+                        case .added:
+                            Text("New rule — When I say: \(diff.new?.heard.joined(separator: ", ") ?? "")").foregroundStyle(.secondary)
+                        case .deleted:
+                            Text("Will be deleted — When I say: \(diff.old?.heard.joined(separator: ", ") ?? "")").foregroundStyle(.red)
+                        case .updated:
+                            if let old = diff.old, let new = diff.new {
+                                if old.written != new.written { Text("Write: \(old.written) → \(new.written)").foregroundStyle(.secondary) }
+                                if old.heard != new.heard { Text("When I say: \(old.heard.joined(separator: ", ")) → \(new.heard.joined(separator: ", "))").foregroundStyle(.secondary) }
+                                if old.enabled != new.enabled { Text("Enabled setting will change").foregroundStyle(.secondary) }
+                            }
+                        }
                     }
                 }.frame(minHeight: 140)
                 if preview.containsURL {
                     Toggle("I understand this import changes a written value to a URL.", isOn: Binding(get: { model.acknowledgedURLs }, set: { model.acknowledgedURLs = $0 }))
+                        .accessibilityHint("Required before importing URL-valued replacements")
                 }
             }
             if model.importStrategy == .replaceAll {
@@ -166,6 +192,7 @@ private struct VocabularyImportPreviewView: View {
                     .disabled((model.importPreview?.containsURL == true && !model.acknowledgedURLs) || (model.importStrategy == .replaceAll && !confirmReplace))
             }
         }.padding().frame(width: 540, height: 460)
+        .dynamicTypeSize(...DynamicTypeSize.accessibility3)
     }
 }
 

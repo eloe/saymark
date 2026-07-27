@@ -439,6 +439,13 @@ while English is the only supported language. All controls are native, fully
 keyboard-operable, and VoiceOver-labelled. This direction supersedes the pending
 approval status below; implementation must follow it exactly.
 
+**Approval record (2026-07-26):** the product owner approved the recommended
+Vocabulary package: one native macOS Settings section, an inline deterministic
+sample preview while editing, field-level import review (including deletions),
+explicit per-import URL acknowledgement, and an export warning.  This approval
+authorizes implementation of the UI direction above; it does not authorize
+network learning, cloud sync, or telemetry of vocabulary values.
+
 | Decision needing approval | Minimum mockup |
 | --- | --- |
 | Vocabulary settings information architecture, list density, terminology, and one-section choice. | **Approved:** one Vocabulary section with native empty, populated/search, and add/edit states. |

@@ -22,6 +22,11 @@ final class VocabularyTests: XCTestCase {
         XCTAssertEqual(try snapshot([ligature]).correct("ﬁ").renderedText, "FI")
         let stock = VocabularyEntry(written: "stock", heard: ["株"])
         XCTAssertEqual(try snapshot([stock]).correct("㈱").renderedText, "㈱")
+        let company = VocabularyEntry(written: "company", heard: ["株式会社"])
+        XCTAssertEqual(try snapshot([company]).correct("㍿").renderedText, "company")
+        XCTAssertEqual(try snapshot([stock]).correct("㍿").renderedText, "㍿")
+        let cafe = VocabularyEntry(written: "Café", heard: ["café"])
+        XCTAssertEqual(try snapshot([cafe]).correct("cafe\u{301}").renderedText, "Café")
     }
 
     func test_U05_U08_boundariesLongestAndNoCascade() throws {
@@ -57,6 +62,9 @@ final class VocabularyTests: XCTestCase {
 
     func test_U25_unsafeUnicodeIsRejected() {
         XCTAssertThrowsError(try VocabularyValidator.validate(VocabularyEntry(written: "safe", heard: ["bad\u{202E}text"])))
+        XCTAssertThrowsError(try VocabularyValidator.validate(VocabularyEntry(written: "safe", heard: ["bad\u{FE0F}text"])))
+        XCTAssertTrue(Unicode15_1.isUnsafeVocabularyScalar(0xFDD0))
+        XCTAssertTrue(Unicode15_1.isUnsafeVocabularyScalar(0x0378))
     }
 
     func test_U17_U18_storeImportIsPreviewedAndTransactional() throws {
@@ -73,8 +81,68 @@ final class VocabularyTests: XCTestCase {
         let preview = try store.importDocument(from: importURL, strategy: .mergeByID)
         XCTAssertEqual(preview.updatedCount, 1)
         XCTAssertEqual(store.currentDocument().entries.first?.written, "Original")
-        try store.applyImport(from: importURL, strategy: .mergeByID, acknowledgedURLs: false)
+        try store.applyImport(from: importURL, strategy: .mergeByID, acknowledgedURLs: false, previewToken: preview.sourceToken)
         XCTAssertEqual(store.currentDocument().entries.first?.written, "Updated")
+    }
+
+    func test_S09_duplicateKeysAndChangedImportAreRejected() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try VocabularyStore(directoryURL: directory)
+        let duplicate = directory.appendingPathComponent("duplicate.json")
+        try #"{"schemaVersion":1,"schemaVersion":1,"unicodeVersion":"15.1.0","revision":0,"entries":[]}"#.data(using: .utf8)!.write(to: duplicate)
+        XCTAssertThrowsError(try store.importDocument(from: duplicate, strategy: .mergeByID))
+
+        let entry = VocabularyEntry(written: "One", heard: ["one"])
+        let changing = directory.appendingPathComponent("changing.json")
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(VocabularyDocument(entries: [entry])).write(to: changing)
+        let preview = try store.importDocument(from: changing, strategy: .mergeByID)
+        var replacement = entry; replacement.written = "Two"
+        try encoder.encode(VocabularyDocument(entries: [replacement])).write(to: changing)
+        XCTAssertThrowsError(try store.applyImport(from: changing, strategy: .mergeByID, acknowledgedURLs: false, previewToken: preview.sourceToken))
+    }
+
+    func test_S10_backupRecoveryAndV1Migration() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try VocabularyStore(directoryURL: directory)
+        try store.upsert(VocabularyEntry(written: "First", heard: ["first"]))
+        try store.upsert(VocabularyEntry(written: "Second", heard: ["second"]))
+        let primary = directory.appendingPathComponent(VocabularyStore.defaultFilename)
+        try Data("corrupt".utf8).write(to: primary)
+        let recovered = try VocabularyStore(directoryURL: directory)
+        XCTAssertEqual(recovered.currentDocument().entries.map(\.written), ["First"])
+        XCTAssertNotNil(recovered.recoveryMessage)
+
+        let v1 = directory.appendingPathComponent("v1.json")
+        let encoded = #"{"schemaVersion":1,"unicodeVersion":"15.1.0","revision":0,"entries":[]}"#
+        try Data(encoded.utf8).write(to: v1)
+        XCTAssertEqual(try recovered.importDocument(from: v1, strategy: .mergeByID).sourceToken.count, 64)
+    }
+
+    func test_P04_maximumRulesHaveBoundedDraftCorrection() throws {
+        let entries = (0..<VocabularyValidator.maxEntries).map { number in
+            VocabularyEntry(written: "written\(number)", heard: ["phrase \(number)"])
+        }
+        let rules = try snapshot(entries)
+        let text = (0..<100).map { "phrase \($0)" }.joined(separator: " ")
+        let started = ProcessInfo.processInfo.systemUptime
+        _ = rules.correct(text)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.025)
+    }
+
+    func test_S07_correctionDiagnosticsAreLocalConsentOnlyAndAggregate() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("correction.jsonl")
+        let diagnostics = CorrectionDiagnostics(fileURL: file, consent: CorrectionDiagnosticsConsent(allowsLocalAggregation: true))
+        for _ in 0..<100 { diagnostics.record(CorrectedTranscript(rawText: "secret", renderedText: "secret", snapshotRevision: 1, appliedRuleCount: 1)) }
+        let line = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertEqual(line, "{\"schema\":1,\"correction_bucket\":\"10+\"}\n")
+        XCTAssertFalse(line.contains("secret"))
+        let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual((mode?.intValue ?? 0) & 0o777, 0o600)
     }
 
     func test_S08_storeAndExportAre0600() throws {
