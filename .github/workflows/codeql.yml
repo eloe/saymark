@@ -6,6 +6,7 @@ on:
       - "saymark-v*"
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     - cron: "31 14 * * 2"
   workflow_dispatch:
@@ -23,6 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
+      draft_deferred: ${{ steps.scope.outputs.draft_deferred }}
       query_suite: ${{ steps.scope.outputs.query_suite }}
       run_codeql: ${{ steps.scope.outputs.run_codeql }}
     steps:
@@ -38,10 +40,25 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
+          if [[ "$EVENT_NAME" == "pull_request" && "$PR_DRAFT" == "true" ]]; then
+            {
+              echo "draft_deferred=true"
+              echo "run_codeql=false"
+              echo "query_suite=default"
+            } >> "$GITHUB_OUTPUT"
+            echo "Skipping traced Swift build while the pull request is a draft."
+            exit 0
+          fi
+
+          echo "draft_deferred=false" >> "$GITHUB_OUTPUT"
+
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            echo "run_codeql=true" >> "$GITHUB_OUTPUT"
-            echo "query_suite=security-extended" >> "$GITHUB_OUTPUT"
+            {
+              echo "run_codeql=true"
+              echo "query_suite=security-extended"
+            } >> "$GITHUB_OUTPUT"
             echo "Full extended scan required for $EVENT_NAME."
             exit 0
           fi
@@ -54,23 +71,10 @@ jobs:
 
           run_codeql=false
           while IFS= read -r -d '' path; do
-            case "$path" in
-              *.swift|\
-              *.entitlements|\
-              *.pbxproj|\
-              *.plist|\
-              *.resolved|\
-              *.xcconfig|\
-              *.xcscheme|\
-              .github/codeql*.yaml|\
-              .github/codeql*.yml|\
-              .github/codeql/*|\
-              .mise.toml|\
-              Makefile)
-                echo "CodeQL-relevant change: $path"
-                run_codeql=true
-                ;;
-            esac
+            if Scripts/codeql-path-is-relevant.sh "$path"; then
+              echo "CodeQL-relevant change: $path"
+              run_codeql=true
+            fi
           done < "$RUNNER_TEMP/codeql-changed-paths"
 
           echo "run_codeql=$run_codeql" >> "$GITHUB_OUTPUT"
@@ -114,6 +118,27 @@ jobs:
       - name: Install the Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
+      # Xcode 26 ships `metal` as a shim that discovers a separately mounted
+      # toolchain. CodeQL's DYLD tracer prevents that discovery even after the
+      # component is installed. Prepare the direct shim before initialization
+      # so discovery itself is not slowed by the tracer. The generated shim
+      # still removes the tracer only from Metal; Swift remains traced.
+      - name: Make the mounted Metal compiler available to the traced build
+        run: |
+          real_metal="$(
+            find /var/run/com.apple.security.cryptexd/mnt \
+              -path '*/Metal.xctoolchain/usr/bin/metal' \
+              -type f -print -quit 2>/dev/null
+          )"
+          [[ -n "$real_metal" && -x "$real_metal" ]] ||
+            { echo "Mounted Metal compiler not found" >&2; exit 1; }
+          metal_shim="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/bin/metal"
+          sudo mv "$metal_shim" "${metal_shim}.saymark-original"
+          printf '#!/bin/bash\nunset DYLD_INSERT_LIBRARIES\nexec %q "$@"\n' "$real_metal" |
+            sudo tee "$metal_shim" >/dev/null
+          sudo chmod 0755 "$metal_shim"
+          "$metal_shim" --version
+
       # Initialize only after Tuist runs. CodeQL's DYLD tracer prevents Tuist
       # from locating its bundled ProjectDescription resource on hosted macOS.
       # The default query suite is implicit in advanced setup. The `queries`
@@ -133,27 +158,6 @@ jobs:
           languages: swift
           build-mode: manual
           queries: security-extended
-
-      # Xcode 26 ships `metal` as a shim that discovers a separately mounted
-      # toolchain. CodeQL's DYLD tracer prevents that discovery even after the
-      # component is installed. Swift must remain traced; Metal need not be
-      # traced for a Swift database, so route only this compiler directly to the
-      # root-owned mounted toolchain without inheriting the tracer.
-      - name: Make the mounted Metal compiler available to the traced build
-        run: |
-          real_metal="$(
-            find /var/run/com.apple.security.cryptexd/mnt \
-              -path '*/Metal.xctoolchain/usr/bin/metal' \
-              -type f -print -quit 2>/dev/null
-          )"
-          [[ -n "$real_metal" && -x "$real_metal" ]] ||
-            { echo "Mounted Metal compiler not found" >&2; exit 1; }
-          metal_shim="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/bin/metal"
-          sudo mv "$metal_shim" "${metal_shim}.saymark-original"
-          printf '#!/bin/bash\nunset DYLD_INSERT_LIBRARIES\nexec %q "$@"\n' "$real_metal" |
-            sudo tee "$metal_shim" >/dev/null
-          sudo chmod 0755 "$metal_shim"
-          "$metal_shim" --version
 
       - name: Build traced Swift
         run: |
@@ -188,10 +192,17 @@ jobs:
         env:
           ANALYZE_RESULT: ${{ needs.analyze.result }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
+          DRAFT_DEFERRED: ${{ needs.classify.outputs.draft_deferred }}
           RUN_CODEQL: ${{ needs.classify.outputs.run_codeql }}
         run: |
           [[ "$CLASSIFY_RESULT" == "success" ]] ||
             { echo "CodeQL scope classification failed." >&2; exit 1; }
+
+          if [[ "$DRAFT_DEFERRED" == "true" ]]; then
+            echo "CodeQL analysis is deferred while this pull request is a draft." >&2
+            echo "Mark the pull request ready for review to run the required scan." >&2
+            exit 1
+          fi
 
           if [[ "$RUN_CODEQL" == "true" ]]; then
             [[ "$ANALYZE_RESULT" == "success" ]] ||
