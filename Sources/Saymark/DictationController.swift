@@ -55,7 +55,9 @@ final class DictationController {
                 : "Idle — press \(shortcutLabel) to start"
         case .recording: return "Listening…"
         case .transcribing: return "Transcribing…"
-        case let .transcribed(t): return t.isEmpty ? "…(no speech detected)" : t
+        // The HUD owns the short-lived final display. Never mirror dictated text
+        // into a persistent menu/status accessibility value.
+        case .transcribed: return "Ready"
         case let .error(m): return "Error: \(m)"
         }
     }
@@ -299,6 +301,14 @@ final class DictationController {
                     "insert_mode": insertModeAtStop,
                 ])
         state = .transcribed(final)
+        // Release the controller's final-text-associated state after the HUD's
+        // normal completion window. This prevents a completed dictation from
+        // surviving indefinitely in the menu-bar controller.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            guard let self, case .transcribed = self.state else { return }
+            self.state = .idle
+        }
     }
 
     /// Paste the final transcript into the focused field (In-field mode). Posting

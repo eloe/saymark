@@ -14,11 +14,44 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     private(set) var query = ""
     private(set) var errorMessage: String?
     private(set) var pendingReinsert: HistoryRecord?
+    private(set) var pendingDeletion: HistoryRecord?
+    private(set) var resultSummary = "0 results"
     private var store: SQLiteHistoryStore?
     private var window: NSWindow?
     private var previousApplication: NSRunningApplication?
+    private var refreshGeneration: UInt64 = 0
 
     private override init() {}
+
+    /// Opens and verifies the local store away from the release-to-delivery
+    /// path.  A later dictation never waits for directory/schema work merely
+    /// to become recoverable.
+    func prepareForDelivery() async {
+        guard RecentDictationsRetention.current != .off else { return }
+        do {
+            if store == nil { store = try makeStore(RecentDictationsRetention.current) }
+            try await store?.warmUp()
+        } catch {
+            // History is optional. Keep the failure local and fail open when
+            // the next dictation is delivered.
+            errorMessage = "Recent Dictations is temporarily unavailable."
+        }
+    }
+
+    /// Expiry cleanup is deliberately excluded from the release-to-delivery
+    /// path. It runs once storage is warm and may be retried from future idle
+    /// opportunities after a busy checkpoint.
+    func runIdleMaintenance() async {
+        guard RecentDictationsRetention.current != .off else { return }
+        do {
+            await prepareForDelivery()
+            try await store?.purgeExpired()
+        } catch {
+            // A busy checkpoint leaves the prior truth intact; never publish a
+            // success state for a purge that SQLite could not finish.
+            errorMessage = "Recent Dictations cleanup will retry when Saymark is idle."
+        }
+    }
 
     /// The store changes policy before the preferences mirror changes.  That
     /// ordering prevents the UI from claiming a destructive privacy transition
@@ -32,6 +65,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                     if store == nil { store = try makeStore(.days30) }
                     if let store { try await store.setRetentionPolicy(.off) }
                     store = nil
+                    refreshGeneration &+= 1
                     records = []
                 UserDefaults.standard.set(retention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
                 records = []
@@ -63,10 +97,17 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
 
     func clearSessionAtTermination() {
         guard RecentDictationsRetention.current == .session else { return }
-        Task {
-            guard let store else { return }
+        guard let store else { return }
+        // `applicationWillTerminate` does not keep ordinary Tasks alive. Give
+        // the already-warm writer a bounded, synchronous termination window;
+        // a crash still relies on the launch-time session purge and is never
+        // represented as no-disk persistence.
+        let completed = DispatchSemaphore(value: 0)
+        Task.detached {
+            defer { completed.signal() }
             try? await store.clear()
         }
+        _ = completed.wait(timeout: .now() + .milliseconds(900))
     }
 
     func present() {
@@ -84,7 +125,9 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             do {
                 if store == nil { store = try makeStore(RecentDictationsRetention.current) }
                 try await store?.clear()
+                refreshGeneration &+= 1
                 records = []
+                resultSummary = "0 results"
                 SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .committed)
             } catch {
                 SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .unavailable)
@@ -95,12 +138,21 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
 
     func refresh(query: String? = nil) async {
         if let query { self.query = query }
+        refreshGeneration &+= 1
+        let requestedGeneration = refreshGeneration
+        let requestedQuery = self.query
         do {
             if store == nil, RecentDictationsRetention.current != .off {
                 store = try makeStore(RecentDictationsRetention.current)
             }
-            records = try await store?.records(query: self.query, limit: 20) ?? []
+            let snapshot = try await store?.records(query: requestedQuery, limit: 20) ?? []
+            // Search and closing the private window can race slow I/O. A stale
+            // response must never repopulate a cleared/closed presentation.
+            guard requestedGeneration == refreshGeneration, self.query == requestedQuery else { return }
+            records = snapshot
+            resultSummary = "\(snapshot.count) \(snapshot.count == 1 ? "result" : "results")"
         } catch {
+            guard requestedGeneration == refreshGeneration else { return }
             errorMessage = "Recent Dictations is unavailable on this Mac."
         }
     }
@@ -119,8 +171,14 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
               !isHUDOnly
         else { return nil }
         do {
-            if store == nil { store = try makeStore(RecentDictationsRetention.current) }
-            guard let store else { return nil }
+            guard let store else {
+                // This must normally already be warm. Never turn late startup
+                // into a release-to-delivery dependency; warm for the next
+                // eligible final instead.
+                Task { await prepareForDelivery() }
+                errorMessage = "Recent Dictations was skipped to keep dictation instant."
+                return nil
+            }
             let deadline = DispatchTime.now().uptimeNanoseconds + 100_000_000
             return await recordBeforeDelivery(
                 store: store,
@@ -156,10 +214,22 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         }
     }
 
+    func requestDelete(_ record: HistoryRecord) { pendingDeletion = record }
+    func cancelDelete() { pendingDeletion = nil }
+    func confirmDelete() {
+        guard let record = pendingDeletion else { return }
+        pendingDeletion = nil
+        delete(record)
+    }
+
     /// Reinsert deliberately targets the app that was frontmost before the
     /// history window was opened, never Saymark's own search field.
     func requestReinsert(_ record: HistoryRecord) {
         pendingReinsert = record
+    }
+
+    var reinsertTargetName: String {
+        previousApplication?.localizedName ?? "the previously active app"
     }
 
     func cancelReinsert() { pendingReinsert = nil }
@@ -173,7 +243,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
               !target.isTerminated,
               target.processIdentifier > 0,
               target.processIdentifier != ProcessInfo.processInfo.processIdentifier
-        else { errorMessage = "That app is no longer available. Copy the text instead."; return }
+        else { copy(record); errorMessage = "That app is no longer available. The text was copied instead."; return }
         guard Accessibility.isTrusted else {
             copy(record)
             errorMessage = "Accessibility is needed to reinsert. The text was copied."
@@ -199,7 +269,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                 return
             }
             switch TextInjector.paste(record.text) {
-            case .pasted: break
+            case .pasted: errorMessage = "Reinserted into \(target.localizedName ?? "the selected app")."
             case .copiedSecureInput: self.errorMessage = "Field is protected. The text was copied."
             case .failed: self.errorMessage = "Couldn’t paste text. The text was copied."
             }
@@ -232,10 +302,13 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         // Do not keep search terms, selected text, records, or the destination
         // PID alive after the private history window is dismissed.
+        refreshGeneration &+= 1
         records = []
+        resultSummary = "0 results"
         query = ""
         previousApplication = nil
         pendingReinsert = nil
+        pendingDeletion = nil
         errorMessage = nil
         window = nil
     }
@@ -245,38 +318,51 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         finalization: HistoryFinalization,
         deadline: UInt64
     ) async -> HistoryRecord? {
-        await withTaskGroup(of: RecordAttempt.self, returning: HistoryRecord?.self) { group in
-            group.addTask {
-                do { return .record(try await store.recordFinal(finalization, deadlineUptimeNanoseconds: deadline)) }
-                catch { return .failure(error as? HistoryStoreError) }
+        // Do not use a task group here: structured concurrency waits for every
+        // child at scope exit, which would turn a late SQLite actor turn into a
+        // delivery-path stall. The store's deadline is the commit authority;
+        // this race merely returns control to final delivery on time.
+        await withCheckedContinuation { continuation in
+            let gate = RecordDeadlineGate()
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let result: RecordAttempt
+                do {
+                    result = .record(try await store.recordFinal(finalization, deadlineUptimeNanoseconds: deadline))
+                } catch {
+                    result = .failure(error as? HistoryStoreError)
+                }
+                guard gate.resolve(continuation, with: result) else { return }
+                await self?.applyRecordAttempt(result)
             }
-            group.addTask {
+            Task.detached(priority: .userInitiated) { [weak self] in
                 let remaining = deadline > DispatchTime.now().uptimeNanoseconds
                     ? deadline - DispatchTime.now().uptimeNanoseconds : 0
                 try? await Task.sleep(nanoseconds: remaining)
-                return .deadline
+                let result: RecordAttempt = .deadline
+                guard gate.resolve(continuation, with: result) else { return }
+                await self?.applyRecordAttempt(result)
             }
-            guard let first = await group.next() else { return nil }
-            group.cancelAll()
-            switch first {
-            case .record(let record): return record
-            case .deadline:
+        }
+    }
+
+    private func applyRecordAttempt(_ result: RecordAttempt) {
+        switch result {
+        case .record:
+            break
+        case .deadline:
+            SaymarkDiagnostics.logHistoryOperation(.record, outcome: .deadlineExceeded)
+            errorMessage = "Recent Dictations was skipped to keep dictation instant."
+        case .failure(let error):
+            switch error {
+            case .recordTooLarge:
+                SaymarkDiagnostics.logHistoryOperation(.record, outcome: .skipped)
+                errorMessage = "This dictation is too large to save in Recent Dictations."
+            case HistoryStoreError.deadlineExceeded:
                 SaymarkDiagnostics.logHistoryOperation(.record, outcome: .deadlineExceeded)
                 errorMessage = "Recent Dictations was skipped to keep dictation instant."
-                return nil
-            case .failure(let error):
-                switch error {
-                case .recordTooLarge:
-                    SaymarkDiagnostics.logHistoryOperation(.record, outcome: .skipped)
-                    errorMessage = "This dictation is too large to save in Recent Dictations."
-                case HistoryStoreError.deadlineExceeded:
-                    SaymarkDiagnostics.logHistoryOperation(.record, outcome: .deadlineExceeded)
-                    errorMessage = "Recent Dictations was skipped to keep dictation instant."
-                default:
-                    SaymarkDiagnostics.logHistoryOperation(.record, outcome: .unavailable)
-                    errorMessage = "Recent Dictations is temporarily unavailable."
-                }
-                return nil
+            default:
+                SaymarkDiagnostics.logHistoryOperation(.record, outcome: .unavailable)
+                errorMessage = "Recent Dictations is temporarily unavailable."
             }
         }
     }
@@ -286,6 +372,31 @@ private enum RecordAttempt: Sendable {
     case record(HistoryRecord?)
     case deadline
     case failure(HistoryStoreError?)
+}
+
+/// A one-shot lock keeps the 100 ms caller result independent of a queued
+/// writer task. It does not cancel SQLite; `recordFinal` owns rollback and the
+/// no-late-commit deadline check before resuming the late worker.
+private final class RecordDeadlineGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resolved = false
+
+    func resolve(
+        _ continuation: CheckedContinuation<HistoryRecord?, Never>,
+        with result: RecordAttempt
+    ) -> Bool {
+        let didWin = lock.withLock {
+            guard !resolved else { return false }
+            resolved = true
+            return true
+        }
+        guard didWin else { return false }
+        switch result {
+        case .record(let record): continuation.resume(returning: record)
+        case .deadline, .failure: continuation.resume(returning: nil)
+        }
+        return true
+    }
 }
 
 private extension RecentDictationsRetention {

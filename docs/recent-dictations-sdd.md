@@ -455,6 +455,14 @@ The user approved the following binding mockup package on 2026-07-26. The
 values below replace the earlier approval gate; implementation must not vary
 them without new UI approval.
 
+**Implementation decision record (2026-07-26):** the approved package is now
+the source of truth for this branch. The native window uses preview-only list
+rows, an exact-text detail pane, visible result count, target-named Reinsert
+with Copy fallback, and a Delete confirmation. The delivery path reports an
+oversize/deadline recovery skip without turning history on or promising a row;
+the HUD continues to own primary delivery feedback. These details are product
+decisions, not merely mockup annotations.
+
 | Decision | Approved behavior | Product consequence |
 | --- | --- | --- |
 | Enablement and retention selector | Off until explicit choice; 30 days recommended | Binding privacy default. |

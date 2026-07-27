@@ -178,9 +178,9 @@ private final class DiagnosticStorage: @unchecked Sendable {
             "event": event,
             "pid": ProcessInfo.processInfo.processIdentifier,
         ]
-        if let sessionID { object["session_id"] = sessionID }
+        if let sessionID, Self.isOpaqueSessionID(sessionID) { object["session_id"] = sessionID }
         for (key, value) in fields
-        where Self.allowedFieldNames.contains(key) && Self.isJSONScalar(value) {
+        where Self.allowedFieldNames.contains(key) && Self.isSafeFieldValue(value, for: key) {
             object[key] = value
         }
         guard JSONSerialization.isValidJSONObject(object),
@@ -256,8 +256,50 @@ private final class DiagnosticStorage: @unchecked Sendable {
         manager.createFile(atPath: configuration.fileURL.path, contents: nil)
     }
 
-    private static func isJSONScalar(_ value: Any) -> Bool {
-        value is String || value is NSNumber || value is Bool || value is Int ||
-            value is Int64 || value is Double || value is Float
+    /// String-valued diagnostics are a separate privacy boundary. A field-name
+    /// allowlist alone still lets a caller put transcript-like data in `reason`,
+    /// `state`, or `destination`; these values are closed enums or bounded,
+    /// non-content identifiers. Numbers and booleans remain safe metrics.
+    private static func isSafeFieldValue(_ value: Any, for key: String) -> Bool {
+        guard let string = value as? String else {
+            return value is NSNumber || value is Bool || value is Int ||
+                value is Int64 || value is Double || value is Float
+        }
+        let closedValues: [String: Set<String>] = [
+            "reason": ["already_preparing", "dictation_disabled", "dictation_in_flight", "models_not_ready", "accessibility_not_trusted", "secure_input", "paste_failed"],
+            "state": ["idle", "recording", "transcribing", "transcribed", "error"],
+            "outcome": ["inserted", "copied_accessibility", "insertion_failed", "pending", "success", "failure"],
+            "destination": ["onboarding", "menu"],
+            "mode": ["accurate", "fast", "hybrid"],
+            "model_mode": ["accurate", "fast", "hybrid"],
+            "trigger_mode": ["hold", "toggle"],
+            "insert_mode": ["in_field", "hud_only"],
+            "lane": ["nemotron", "parakeet"],
+            "final_source": ["nemotron", "parakeet", "hybrid"],
+            "log_level": ["off", "error", "warn", "info", "debug", "trace"],
+            "configured_level": ["off", "error", "warn", "info", "debug", "trace"],
+            "language": ["auto", "en"],
+        ]
+        if let values = closedValues[key] { return values.contains(string) }
+        switch key {
+        case "bundle_id":
+            return string == "com.eloe.saymark"
+        case "error_type":
+            // Stable category names only; localized errors and paths are never
+            // diagnostic values.
+            return ["Error", "NSError", "CancellationError", "HistoryStoreError"].contains(string)
+        case "repository":
+            return string.hasPrefix("mlx-community/") && string.count <= 120 && string.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "/" || $0 == "." }
+        case "version", "build":
+            return string.count <= 32 && string.allSatisfy { $0.isNumber || $0 == "." || $0 == "-" }
+        case "os_version":
+            return string.hasPrefix("Version ") && string.count <= 80 && string.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7F }
+        default:
+            return false
+        }
+    }
+
+    private static func isOpaqueSessionID(_ value: String) -> Bool {
+        UUID(uuidString: value) != nil
     }
 }

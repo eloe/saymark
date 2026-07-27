@@ -78,6 +78,7 @@ public enum HistoryStoreError: Error, Sendable, Equatable {
 /// UI-independent persistence boundary.  The app owns start/final eligibility
 /// snapshots and delivery; this protocol only stores an already-final text.
 public protocol HistoryStore: Sendable {
+    func warmUp() async throws
     func recordFinal(_ finalization: HistoryFinalization) async throws -> HistoryRecord?
     func updateDeliveryState(id: String, to state: HistoryDeliveryState) async throws -> Bool
     func records(query: String?, limit: Int) async throws -> [HistoryRecord]
@@ -131,6 +132,14 @@ public actor SQLiteHistoryStore: HistoryStore {
     deinit {
         if let database { sqlite3_close_v2(database) }
         if lockFileDescriptor >= 0 { close(lockFileDescriptor) }
+    }
+
+    /// Opens, validates, and configures the writer while the app is idle. This
+    /// intentionally performs no record mutation, so the final-delivery path
+    /// does not pay schema or filesystem setup cost.
+    public func warmUp() throws {
+        guard policy.isEnabled else { return }
+        try openIfNeeded()
     }
 
     public func recordFinal(_ finalization: HistoryFinalization) throws -> HistoryRecord? {
@@ -328,21 +337,34 @@ public actor SQLiteHistoryStore: HistoryStore {
         // file are verified before and after.  NOFOLLOW is used when the
         // platform SQLite exposes it; this is intentionally fail-closed on
         // platforms where protected local storage cannot be established.
-        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW
+        // Apple ships SQLite builds that declare SQLITE_OPEN_NOFOLLOW but reject
+        // it at runtime.  The store therefore establishes its own descriptor
+        // based no-follow boundary before asking SQLite to open the verified
+        // regular file, and verifies the result again immediately afterwards.
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(databaseURL.path, &handle, flags, nil) == SQLITE_OK, let handle else {
             if let handle { sqlite3_close_v2(handle) }
             throw HistoryStoreError.ioFailed
         }
         database = handle
         do {
+            // sqlite3_open_v2 creates a new database with the process umask;
+            // narrow it before any schema or transcript can be written.
+            _ = chmod(databaseURL.path, 0o600)
+            try validateOpenedDatabaseFile()
             try execute("PRAGMA journal_mode = WAL")
             try execute("PRAGMA synchronous = FULL")
             try execute("PRAGMA secure_delete = ON")
             try execute("PRAGMA journal_size_limit = 0")
             try execute("PRAGMA temp_store = MEMORY")
+            // This applies before any pre-delivery work and keeps a contended
+            // SQLite lock from consuming the release budget. Deadline progress
+            // handling adds a second, externally observable interruption path.
+            sqlite3_busy_timeout(handle, 20)
             try verifySecureDelete()
             try validateDatabaseIdentity()
             try createSchema()
+            try validateExactSchema()
             try protectSQLiteArtifacts()
             try verifyProtectedSQLiteArtifacts()
             inMemoryHighWaterMark = try storedHighWaterMark()
@@ -356,18 +378,44 @@ public actor SQLiteHistoryStore: HistoryStore {
     private func createProtectedDirectory() throws {
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
-        if !FileManager.default.fileExists(atPath: directoryURL.path) {
-            // Do not inherit broad permissions from Application Support.  The
-            // final directory is private and re-checked before every open.
-            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let parentURL = directoryURL.deletingLastPathComponent()
+        // Application Support/bundle-id is application-owned but may not yet
+        // exist on a fresh install. Create only that parent, then create and
+        // open the final history directory relative to a no-follow descriptor.
+        try FileManager.default.createDirectory(at: parentURL, withIntermediateDirectories: true)
+        let parentDescriptor = open(parentURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard parentDescriptor >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        defer { close(parentDescriptor) }
+        let name = directoryURL.lastPathComponent
+        if mkdirat(parentDescriptor, name, 0o700) != 0 && errno != EEXIST {
+            throw HistoryStoreError.ioFailed
         }
-        try verifyDirectory(directoryURL)
+        let descriptor = openat(parentDescriptor, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        defer { close(descriptor) }
+        try verifyPrivateDirectoryDescriptor(descriptor)
         var directory = directoryURL
         try directory.setResourceValues(values)
-        let marker = directoryURL.appendingPathComponent(".metadata_never_index")
-        if !FileManager.default.fileExists(atPath: marker.path) {
-            FileManager.default.createFile(atPath: marker.path, contents: Data())
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: marker.path)
+        let markerDescriptor = openat(descriptor, ".metadata_never_index", O_CREAT | O_WRONLY | O_NOFOLLOW, 0o600)
+        guard markerDescriptor >= 0 else { throw HistoryStoreError.ioFailed }
+        close(markerDescriptor)
+        try verifyDirectory(directoryURL)
+    }
+
+    private func verifyPrivateDirectoryDescriptor(_ descriptor: Int32) throws {
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              (status.st_mode & S_IFMT) == S_IFDIR,
+              status.st_uid == getuid(),
+              (status.st_mode & 0o077) == 0
+        else { throw HistoryStoreError.permissionDenied }
+        var filesystem = statfs()
+        guard fstatfs(descriptor, &filesystem) == 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        let filesystemName = withUnsafePointer(to: &filesystem.f_fstypename) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MFSNAMELEN)) { String(cString: $0) }
+        }
+        guard !["smbfs", "nfs", "webdav"].contains(filesystemName.lowercased()) else {
+            throw HistoryStoreError.unsupportedFilesystem
         }
     }
 
@@ -409,6 +457,30 @@ public actor SQLiteHistoryStore: HistoryStore {
         try execute("PRAGMA user_version = 1")
         try execute("INSERT OR IGNORE INTO store_metadata(key, value) VALUES ('last_observed_now_ms', '0')")
         try execute("INSERT OR IGNORE INTO store_metadata(key, value) VALUES ('retention_policy', 'off')")
+    }
+
+    /// A valid application id/version is not enough: a malformed or replaced
+    /// database can otherwise smuggle in an unexpected trigger/table that sees
+    /// transcript text. Version 1 accepts only its fixed schema objects.
+    private func validateExactSchema() throws {
+        let statement = try prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+        defer { sqlite3_finalize(statement) }
+        var found = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let type = sqlite3_column_text(statement, 0), let name = sqlite3_column_text(statement, 1) else {
+                throw HistoryStoreError.corrupt
+            }
+            found.insert("\(String(cString: type)):\(String(cString: name))")
+        }
+        guard sqlite3_errcode(database) == SQLITE_DONE else { throw HistoryStoreError.corrupt }
+        let expected: Set<String> = [
+            "table:store_metadata", "table:records", "table:records_fts",
+            "table:records_fts_data", "table:records_fts_idx",
+            "table:records_fts_docsize", "table:records_fts_config",
+            "index:records_created_at", "index:records_expiry",
+            "trigger:records_ai", "trigger:records_ad",
+        ]
+        guard found == expected else { throw HistoryStoreError.corrupt }
     }
 
     private func persistPolicyAndPurge(_ policy: HistoryRetentionPolicy) throws {
@@ -601,6 +673,18 @@ public actor SQLiteHistoryStore: HistoryStore {
         guard values.isRegularFile == true, values.isSymbolicLink != true else { throw HistoryStoreError.unsupportedFilesystem }
         let mode = (try FileManager.default.attributesOfItem(atPath: databaseURL.path)[.posixPermissions] as? NSNumber)?.intValue
         guard mode.map({ ($0 & 0o077) == 0 }) == true else { throw HistoryStoreError.permissionDenied }
+    }
+
+    private func validateOpenedDatabaseFile() throws {
+        let descriptor = open(databaseURL.path, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        defer { close(descriptor) }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              (status.st_mode & S_IFMT) == S_IFREG,
+              status.st_uid == getuid(),
+              (status.st_mode & 0o077) == 0
+        else { throw HistoryStoreError.permissionDenied }
     }
 
     private func acquireAdvisoryLock() throws {

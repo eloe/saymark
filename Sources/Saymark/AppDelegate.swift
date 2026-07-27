@@ -37,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Session retention is deliberately process-scoped.  Clear any data a
         // previous crashed/terminated process left before it can be displayed.
         RecentDictationsController.shared.clearPriorSessionAtLaunch()
+        Task {
+            await RecentDictationsController.shared.prepareForDelivery()
+            await RecentDictationsController.shared.runIdleMaintenance()
+        }
         SaymarkDiagnostics.log(.info, "app.launched", fields: [
             "bundle_id": Bundle.main.bundleIdentifier ?? "unknown",
             "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",

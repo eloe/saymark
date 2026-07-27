@@ -32,17 +32,23 @@ final class HistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(record.text, "exact final text")
         XCTAssertEqual(record.deliveryState, .pending)
-        XCTAssertEqual(try await store.updateDeliveryState(id: record.id, to: .inserted), true)
-        XCTAssertEqual(try await store.updateDeliveryState(id: record.id, to: .insertionFailed), false)
-        XCTAssertEqual(try await store.records().first?.deliveryState, .inserted)
+        let insertedState = try await store.updateDeliveryState(id: record.id, to: .inserted)
+        let rejectedState = try await store.updateDeliveryState(id: record.id, to: .insertionFailed)
+        let records = try await store.records()
+        XCTAssertTrue(insertedState)
+        XCTAssertFalse(rejectedState)
+        XCTAssertEqual(records.first?.deliveryState, .inserted)
     }
 
     func testSecureInputAndHUDOnlyAreNeverStored() async throws {
         let store = try makeStore()
 
-        XCTAssertNil(try await store.recordFinal(.init(text: "credential", secureInputActive: true)))
-        XCTAssertNil(try await store.recordFinal(.init(text: "hud", isHUDOnly: true)))
-        XCTAssertTrue(try await store.records().isEmpty)
+        let credential = try await store.recordFinal(.init(text: "credential", secureInputActive: true))
+        let hud = try await store.recordFinal(.init(text: "hud", isHUDOnly: true))
+        let records = try await store.records()
+        XCTAssertNil(credential)
+        XCTAssertNil(hud)
+        XCTAssertTrue(records.isEmpty)
     }
 
     func testSearchUsesLiteralPrefixTokensWithAndAndResultCap() async throws {
@@ -57,36 +63,48 @@ final class HistoryStoreTests: XCTestCase {
             _ = try await store.recordFinal(.init(text: "common \(index)"))
         }
 
-        XCTAssertEqual(try await store.records(query: "cafe cre").count, 2)
-        XCTAssertEqual(try await store.records(query: "AND OR").count, 1)
-        XCTAssertEqual(try await store.records(query: "common", limit: 99).count, 25)
+        let cafeResults = try await store.records(query: "cafe cre")
+        let operators = try await store.records(query: "AND OR")
+        let common = try await store.records(query: "common", limit: 99)
+        XCTAssertEqual(cafeResults.count, 2)
+        XCTAssertEqual(operators.count, 1)
+        XCTAssertEqual(common.count, 25)
     }
 
     func testShorterRetentionPurgesAndIncreasingDoesNotExtendExistingRows() async throws {
         let store = try makeStore(policy: .untilDeleted)
-        let record = try XCTUnwrap(try await store.recordFinal(.init(text: "bounded")))
+        let inserted = try await store.recordFinal(.init(text: "bounded"))
+        let record = try XCTUnwrap(inserted)
 
         try await store.setRetentionPolicy(.days7)
-        let sevenDayExpiry = try XCTUnwrap(try await store.records().first?.expiresAtMilliseconds)
+        let initialRecords = try await store.records()
+        let sevenDayExpiry = try XCTUnwrap(initialRecords.first?.expiresAtMilliseconds)
         try await store.setRetentionPolicy(.days90)
-        XCTAssertEqual(try await store.records().first?.expiresAtMilliseconds, sevenDayExpiry)
+        let increasedRecords = try await store.records()
+        XCTAssertEqual(increasedRecords.first?.expiresAtMilliseconds, sevenDayExpiry)
 
         now += HistoryRetentionPolicy.days7.durationMilliseconds! + 1
         try await store.purgeExpired()
-        XCTAssertTrue(try await store.records().isEmpty)
+        let expiredRecords = try await store.records()
+        XCTAssertTrue(expiredRecords.isEmpty)
         XCTAssertNotNil(record.id)
     }
 
     func testDeleteAndClearRemoveSearchableRows() async throws {
         let store = try makeStore()
-        let first = try XCTUnwrap(try await store.recordFinal(.init(text: "remove alpha")))
+        let inserted = try await store.recordFinal(.init(text: "remove alpha"))
+        let first = try XCTUnwrap(inserted)
         _ = try await store.recordFinal(.init(text: "remove beta"))
 
-        XCTAssertTrue(try await store.delete(id: first.id))
-        XCTAssertTrue(try await store.records(query: "alpha").isEmpty)
+        let deleted = try await store.delete(id: first.id)
+        let alpha = try await store.records(query: "alpha")
+        XCTAssertTrue(deleted)
+        XCTAssertTrue(alpha.isEmpty)
         try await store.clear()
-        XCTAssertTrue(try await store.records().isEmpty)
-        XCTAssertTrue(try await store.records(query: "beta").isEmpty)
+        let all = try await store.records()
+        let beta = try await store.records(query: "beta")
+        XCTAssertTrue(all.isEmpty)
+        XCTAssertTrue(beta.isEmpty)
     }
 
     func testRecordCapAndLimitClamp() async throws {
@@ -95,9 +113,12 @@ final class HistoryStoreTests: XCTestCase {
             XCTAssertEqual(error as? HistoryStoreError, .recordTooLarge)
         }
         for index in 0..<26 { _ = try await store.recordFinal(.init(text: "row \(index)")) }
-        XCTAssertEqual(try await store.records(limit: 0).count, 1)
-        XCTAssertEqual(try await store.records(limit: -10).count, 1)
-        XCTAssertEqual(try await store.records(limit: 1_000).count, 25)
+        let zeroLimit = try await store.records(limit: 0)
+        let negativeLimit = try await store.records(limit: -10)
+        let largeLimit = try await store.records(limit: 1_000)
+        XCTAssertEqual(zeroLimit.count, 1)
+        XCTAssertEqual(negativeLimit.count, 1)
+        XCTAssertEqual(largeLimit.count, 25)
     }
 
     func testExpiredPreDeliveryDeadlineCreatesNoStoreOrLateRecord() async throws {

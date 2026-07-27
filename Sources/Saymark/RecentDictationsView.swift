@@ -15,12 +15,29 @@ struct RecentDictationsView: View {
             HistorySearchField(text: $search)
                 .frame(height: 28)
                 .padding(12)
-                .onChange(of: search) { _, value in Task { await controller.refresh(query: value) } }
+                .onChange(of: search) { _, value in
+                    Task {
+                        // Avoid issuing a database search per keystroke. The
+                        // controller's generation check discards a request that
+                        // loses this race or follows a window close.
+                        try? await Task.sleep(nanoseconds: 180_000_000)
+                        guard !Task.isCancelled else { return }
+                        await controller.refresh(query: value)
+                    }
+                }
+
+            Text(controller.resultSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+                .accessibilityIdentifier("recent-dictations.result-count")
 
             HSplitView {
                 List(controller.records, selection: $selectedID) { record in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(record.text)
+                        Text(record.text.historyExcerpt)
                             .lineLimit(2)
                         Text(record.deliveryState.displayName)
                             .font(.caption)
@@ -42,7 +59,7 @@ struct RecentDictationsView: View {
                             Button("Copy") { controller.copy(selected) }
                             Button("Reinsert") { controller.requestReinsert(selected) }
                             Spacer()
-                            Button("Delete", role: .destructive) { controller.delete(selected) }
+                            Button("Delete", role: .destructive) { controller.requestDelete(selected) }
                         }
                     } else {
                         ContentUnavailableView("No Recent Dictations", systemImage: "clock")
@@ -57,7 +74,7 @@ struct RecentDictationsView: View {
         }
         .onAppear { Task { await controller.refresh() } }
         .confirmationDialog(
-            "Reinsert this exact dictation?",
+            "Reinsert into \(controller.reinsertTargetName)?",
             isPresented: Binding(
                 get: { controller.pendingReinsert != nil },
                 set: { if !$0 { controller.cancelReinsert() } }
@@ -67,9 +84,32 @@ struct RecentDictationsView: View {
             Button("Reinsert") { controller.confirmReinsert() }
             Button("Cancel", role: .cancel) { controller.cancelReinsert() }
         } message: {
-            Text("Saymark will switch back to the app that was active before this window opened. If it is unavailable or protected, the exact text will be copied instead.")
+            Text("Saymark will switch back to \(controller.reinsertTargetName). If it is unavailable or protected, the exact text will be copied instead.")
+        }
+        .confirmationDialog(
+            "Delete this dictation?",
+            isPresented: Binding(
+                get: { controller.pendingDeletion != nil },
+                set: { if !$0 { controller.cancelDelete() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { controller.confirmDelete() }
+            Button("Cancel", role: .cancel) { controller.cancelDelete() }
+        } message: {
+            Text("This removes the saved text from Saymark’s current local history store.")
         }
         .onDisappear { search = "" }
+    }
+}
+
+private extension String {
+    /// Lists are deliberately preview-only. Full transcript text is exposed
+    /// solely in the selected detail pane or by an explicit Copy/Reinsert.
+    var historyExcerpt: String {
+        let limit = 180
+        guard count > limit else { return self }
+        return String(prefix(limit)) + "…"
     }
 }
 
