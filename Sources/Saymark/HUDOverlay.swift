@@ -14,6 +14,8 @@ final class HUDModel {
     var phase: Phase = .listening
     var confirmed = ""
     var partial = ""
+    var rawTranscript = "" // memory only; cleared at the next HUD lifecycle boundary
+    var showRawTranscript = false
     /// Saymark currently supports English only; this is product truth, not
     /// model language detection.
     var lang = "EN"
@@ -145,6 +147,16 @@ private struct HUDView: View {
         let big = model.presentation
         return VStack(alignment: .leading, spacing: big ? 12 : 9) {
             header
+            if model.showingFinal, !model.rawTranscript.isEmpty, model.rawTranscript != model.confirmed {
+                DisclosureGroup("Raw transcript", isExpanded: Bindable(model).showRawTranscript) {
+                    Text(model.rawTranscript).textSelection(.enabled)
+                    Button("Copy raw transcript") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(model.rawTranscript, forType: .string)
+                    }
+                }
+                .accessibilityLabel("Raw transcript disclosure")
+            }
             if model.showingFinal {
                 ScrollView(.vertical) {
                     transcript
@@ -373,7 +385,7 @@ final class HUDController {
         model.lang = lang
         model.shortcutLabel = shortcutLabel
         model.phase = .listening
-        model.confirmed = ""; model.partial = ""
+        model.confirmed = ""; model.partial = ""; model.rawTranscript = ""; model.showRawTranscript = false
         model.recording = true
         model.showingFinal = false
         model.showStop = interactive
@@ -394,10 +406,11 @@ final class HUDController {
     }
 
     /// Live two-tier update.
-    func update(confirmed: String, partial: String) {
+    func update(confirmed: String, partial: String, rawConfirmed: String? = nil, rawPartial: String? = nil) {
         model.showingFinal = false
         model.confirmed = confirmed
         model.partial = partial
+        if let rawConfirmed, let rawPartial { model.rawTranscript = rawConfirmed + rawPartial }
         if model.phase != .error {
             model.phase = (confirmed.isEmpty && partial.isEmpty) ? .listening : .transcribing
         }
@@ -410,6 +423,7 @@ final class HUDController {
         model.phase = .transcribing
         model.confirmed = ""
         model.partial = ""
+        model.rawTranscript = ""; model.showRawTranscript = false
         model.recording = false
         model.showingFinal = false
         model.showStop = false
@@ -445,13 +459,15 @@ final class HUDController {
     }
 
     /// Show the final text, then fade — lingering longer in presentation mode.
-    func finish(_ finalText: String) {
+    func finish(_ finalText: String, rawText: String? = nil) {
         guard panel != nil else { return }
         model.recording = false
         model.showStop = false
         if !finalText.isEmpty {
             model.confirmed = finalText
             model.partial = ""
+            model.rawTranscript = rawText ?? finalText
+            model.showRawTranscript = false
             model.showingFinal = true
             model.phase = .transcribing
             if model.requiresExpandedFinal, let panel {

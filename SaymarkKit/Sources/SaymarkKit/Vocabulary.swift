@@ -97,6 +97,11 @@ public enum VocabularyNormalization {
     }
 
     private static func isWord(_ scalar: UInt32) -> Bool {
+        // Ideographs have `Other` in WordBreakProperty but are independent word
+        // units under UAX #29. Keep their original scalar span so compatibility
+        // expansions such as ㈱ never admit a partial match.
+        if (0x3400...0x4DBF).contains(scalar) || (0x4E00...0x9FFF).contains(scalar) ||
+            (0xF900...0xFAFF).contains(scalar) || (0x20000...0x2FA1F).contains(scalar) { return true }
         switch Unicode15_1.wordBreakProperty(scalar) {
         case .aLetter, .hebrewLetter, .numeric, .katakana, .extendNumLet: return true
         default: return false
@@ -220,10 +225,18 @@ public struct VocabularySnapshot: Sendable, Equatable {
 }
 
 public struct CorrectedTranscript: Sendable, Equatable {
+    public enum CorrectionStatus: String, Sendable, Equatable { case unchanged, corrected, failedRawFallback }
     public let rawText: String
     public let renderedText: String
     public let snapshotRevision: UInt64
     public let appliedRuleCount: Int
+    public let correctionStatus: CorrectionStatus
+
+    public init(rawText: String, renderedText: String, snapshotRevision: UInt64, appliedRuleCount: Int, correctionStatus: CorrectionStatus? = nil) {
+        self.rawText = rawText; self.renderedText = renderedText; self.snapshotRevision = snapshotRevision
+        self.appliedRuleCount = appliedRuleCount
+        self.correctionStatus = correctionStatus ?? (appliedRuleCount == 0 ? .unchanged : .corrected)
+    }
 }
 
 /// Durable, local vocabulary document. The store never logs rule or transcript

@@ -16,6 +16,7 @@ public final class DictationSession: @unchecked Sendable {
     private let correctionSnapshotProvider: @Sendable () -> VocabularySnapshot
     private var mic = MicCapture()
     private let updates = DictationUpdateHub()
+    private let correctedUpdates = CorrectedDictationUpdateHub()
     public private(set) var activeSessionID: String?
 
     public init(
@@ -34,6 +35,16 @@ public final class DictationSession: @unchecked Sendable {
         _ handler: @escaping (_ confirmed: String, _ partial: String) -> Void
     ) -> DictationUpdateSubscription {
         updates.subscribe(handler)
+    }
+
+    /// Observe in-memory raw and rendered values for a current dictation. Do
+    /// not retain these values outside the active UI/recovery flow.
+    public func observeCorrectedUpdates(
+        _ handler: @escaping (_ confirmed: CorrectedTranscript, _ partial: CorrectedTranscript) -> Void
+    ) -> DictationUpdateSubscription { correctedUpdates.subscribe(handler) }
+
+    public var latestCorrectedTranscript: CorrectedTranscript {
+        engine.latestCorrection().confirmed
     }
 
     /// Ready to record in `mode` — its models are loaded and warmed.
@@ -73,6 +84,8 @@ public final class DictationSession: @unchecked Sendable {
             guard let self else { return }
             let (confirmed, partial) = self.engine.step(chunk)
             self.updates.publish(confirmed: confirmed, partial: partial)
+            let detailed = self.engine.latestCorrection()
+            self.correctedUpdates.publish(confirmed: detailed.confirmed, partial: detailed.partial)
         }
         do {
             try mic.start()
@@ -105,6 +118,8 @@ public final class DictationSession: @unchecked Sendable {
             "conversion_error_count": capture.conversionErrorCount,
         ])
         let final = engine.finish()
+        let detailed = engine.latestCorrection()
+        correctedUpdates.publish(confirmed: detailed.confirmed, partial: detailed.partial)
         mic = MicCapture()                               // fresh engine for the next gesture
         activeSessionID = nil
         return final

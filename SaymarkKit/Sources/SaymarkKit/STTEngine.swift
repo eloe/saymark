@@ -30,6 +30,7 @@ final class STTEngine: @unchecked Sendable {
     private var vadLoaded = false
     private var gate: SpeechGate?
     private var metrics: SessionMetrics?
+    private var lastCorrectionUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript)?
 
     init(nemotronRepo: String, parakeetRepo: String) {
         self.nemotronRepo = nemotronRepo
@@ -117,6 +118,7 @@ final class STTEngine: @unchecked Sendable {
             session = engine?.makeSession(for: mode, language: language).map {
                 CorrectingUtteranceSession(base: $0, snapshot: correctionSnapshot)
             }
+            lastCorrectionUpdate = nil
             gate = vad.flatMap { try? SpeechGate(vad: $0) }
             metrics = SessionMetrics(
                 id: id,
@@ -152,6 +154,9 @@ final class STTEngine: @unchecked Sendable {
 
             let asrStarted = ProcessInfo.processInfo.systemUptime
             let result = session.step(samples, shouldProcess: shouldFeed)
+            if let correcting = session as? CorrectingUtteranceSession {
+                lastCorrectionUpdate = correcting.latestUpdate
+            }
             let asrElapsed = ProcessInfo.processInfo.systemUptime - asrStarted
             if shouldFeed {
                 metrics?.fedSamples += samples.count
@@ -184,6 +189,9 @@ final class STTEngine: @unchecked Sendable {
         queue.sync {
             let finishStarted = ProcessInfo.processInfo.systemUptime
             let text = session?.finishText() ?? ""
+            if let correcting = session as? CorrectingUtteranceSession {
+                lastCorrectionUpdate = correcting.latestUpdate
+            }
             let finishSeconds = ProcessInfo.processInfo.systemUptime - finishStarted
             if let metrics {
                 let audioSeconds = Double(metrics.inputSamples) / 16_000.0
@@ -218,6 +226,15 @@ final class STTEngine: @unchecked Sendable {
             gate = nil
             metrics = nil
             return text
+        }
+    }
+
+    func latestCorrection() -> (confirmed: CorrectedTranscript, partial: CorrectedTranscript) {
+        queue.sync {
+            lastCorrectionUpdate ?? (
+                CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: 0, appliedRuleCount: 0),
+                CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: 0, appliedRuleCount: 0)
+            )
         }
     }
 

@@ -67,7 +67,8 @@ final class VocabularyTests: XCTestCase {
         try store.upsert(original)
         var changed = original; changed.written = "Updated"
         let importURL = directory.appendingPathComponent("import.json")
-        let data = try JSONEncoder().encode(VocabularyDocument(entries: [changed]))
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(VocabularyDocument(entries: [changed]))
         try data.write(to: importURL)
         let preview = try store.importDocument(from: importURL, strategy: .mergeByID)
         XCTAssertEqual(preview.updatedCount, 1)
@@ -86,7 +87,7 @@ final class VocabularyTests: XCTestCase {
         try store.export(to: export)
         let primaryMode = try FileManager.default.attributesOfItem(atPath: primary.path)[.posixPermissions] as? NSNumber
         let exportMode = try FileManager.default.attributesOfItem(atPath: export.path)[.posixPermissions] as? NSNumber
-        XCTAssertEqual(primaryMode?.intValue & 0o777, 0o600)
-        XCTAssertEqual(exportMode?.intValue & 0o777, 0o600)
+        XCTAssertEqual((primaryMode?.intValue ?? 0) & 0o777, 0o600)
+        XCTAssertEqual((exportMode?.intValue ?? 0) & 0o777, 0o600)
     }
 }

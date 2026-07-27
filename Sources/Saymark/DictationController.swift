@@ -28,6 +28,7 @@ final class DictationController {
     private let session = DictationSession(correctionSnapshotProvider: { VocabularySettingsModel.shared.snapshot })
     private let hud = HUDController()
     @ObservationIgnored private var updateSubscription: DictationUpdateSubscription?
+    @ObservationIgnored private var correctedUpdateSubscription: DictationUpdateSubscription?
 
     /// The shared, already-warmed pipeline — exposed so onboarding's try-it step
     /// reuses it instead of spinning up a second `DictationSession`.
@@ -85,6 +86,9 @@ final class DictationController {
         ])
         updateSubscription = session.observeUpdates { [weak self] confirmed, partial in
             self?.echo(confirmed, partial)
+        }
+        correctedUpdateSubscription = session.observeCorrectedUpdates { [weak self] confirmed, partial in
+            self?.echoCorrected(confirmed, partial)
         }
         installHotkeyHandlers()
         session.requestMicrophonePermission()            // surface the mic prompt early
@@ -231,6 +235,13 @@ final class DictationController {
         Task { @MainActor in self.hud.update(confirmed: confirmed, partial: partial) }
     }
 
+    private nonisolated func echoCorrected(_ confirmed: CorrectedTranscript, _ partial: CorrectedTranscript) {
+        Task { @MainActor in
+            self.hud.update(confirmed: confirmed.renderedText, partial: partial.renderedText,
+                            rawConfirmed: confirmed.rawText, rawPartial: partial.rawText)
+        }
+    }
+
     private func endRecording() {
         guard state == .recording else { return }
         state = .transcribing
@@ -244,6 +255,7 @@ final class DictationController {
         // paste the final on the main thread (pasteboard + ⌘V).
         Task.detached(priority: .userInitiated) { [session] in
             let final = session.stop()
+            let corrected = session.latestCorrectedTranscript
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 if final.isEmpty {
@@ -252,9 +264,9 @@ final class DictationController {
                         detail: String(localized: "Try again and speak a little longer")
                     )
                 } else if InsertMode.current == .inField {
-                    self.insertFinal(final, sessionID: diagnosticSessionID)
+                    self.insertFinal(final, rawText: corrected.rawText, sessionID: diagnosticSessionID)
                 } else {
-                    self.hud.finish(final)
+                    self.hud.finish(final, rawText: corrected.rawText)
                 }
                 SaymarkDiagnostics.log(.info, "dictation.ui_completed", sessionID: diagnosticSessionID, fields: [
                     "word_count": final.split(separator: " ").count,
@@ -282,6 +294,7 @@ final class DictationController {
     /// say so in the HUD instead of dropping silently.
     private func insertFinal(
         _ text: String,
+        rawText: String? = nil,
         sessionID: String?,
         uiTestCompletion: ((String) -> Void)? = nil
     ) {
@@ -298,7 +311,7 @@ final class DictationController {
                 )
                 uiTestCompletion?("copied")
             default:
-                hud.finish(text)
+                hud.finish(text, rawText: rawText)
                 uiTestCompletion?("inserted")
             }
             return
@@ -328,7 +341,7 @@ final class DictationController {
                 "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
                 "character_count": text.count,
             ])
-            hud.finish(text)
+            hud.finish(text, rawText: rawText)
         case .failed:
             SaymarkDiagnostics.log(.error, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "failed",

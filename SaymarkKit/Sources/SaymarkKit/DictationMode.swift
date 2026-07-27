@@ -23,6 +23,10 @@ protocol UtteranceSession {
 final class CorrectingUtteranceSession: UtteranceSession {
     private let base: UtteranceSession
     private let snapshot: VocabularySnapshot
+    private(set) var latestUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript) = (
+        CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: 0, appliedRuleCount: 0),
+        CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: 0, appliedRuleCount: 0)
+    )
 
     init(base: UtteranceSession, snapshot: VocabularySnapshot) {
         self.base = base; self.snapshot = snapshot
@@ -30,7 +34,8 @@ final class CorrectingUtteranceSession: UtteranceSession {
 
     func step(_ samples: [Float], shouldProcess: Bool) -> (confirmed: String, partial: String) {
         let raw = base.step(samples, shouldProcess: shouldProcess)
-        return (snapshot.correct(raw.confirmed).renderedText, snapshot.correct(raw.partial).renderedText)
+        latestUpdate = (snapshot.correct(raw.confirmed), snapshot.correct(raw.partial))
+        return (latestUpdate.confirmed.renderedText, latestUpdate.partial.renderedText)
     }
 
     var currentText: (confirmed: String, partial: String) {
@@ -42,7 +47,9 @@ final class CorrectingUtteranceSession: UtteranceSession {
         // `base` returns its raw authoritative final. In the empty-Parakeet
         // fallback this is the raw Nemotron draft, therefore this is exactly one
         // correction pass and cannot cascade a previously rendered live draft.
-        snapshot.correct(base.finishText()).renderedText
+        let final = snapshot.correct(base.finishText())
+        latestUpdate = (final, CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: snapshot.revision, appliedRuleCount: 0))
+        return final.renderedText
     }
 }
 
