@@ -1,9 +1,10 @@
 # Recent Dictations and insertion recovery — SDD and TDD
 
-**Status:** design and test contract; implementation is intentionally blocked on
-the UI decisions in [Approval required](#approval-required).  This document
-implements the Slice 3 direction in [the product roadmap](product-roadmap.md)
-without changing Saymark's local-first or no-audio-by-default contract.
+**Status:** approved design and test contract. The UI decisions in
+[Approved UI contract](#approved-ui-contract) are binding for implementation.
+This document implements the Slice 3 direction in
+[the product roadmap](product-roadmap.md) without changing Saymark's
+local-first or no-audio-by-default contract.
 
 ## 1. Outcome and non-goals
 
@@ -447,28 +448,30 @@ Proposed surfaces (not approved and not implemented):
    after secure deletion and a truncating checkpoint complete; it explains that
    prior backups/snapshots cannot be erased.
 
-### Approval required
+### Approved UI contract
 
-Implementation must pause for a user-approved mockup covering these decisions:
+The user approved the following binding mockup package. The values below replace
+the earlier approval gate; implementation must not vary them without new UI
+approval.
 
-| Decision | Proposed default | Why approval is needed |
+| Decision | Approved behavior | Product consequence |
 | --- | --- | --- |
-| Enablement and retention selector | Off until an explicit choice; recommended 30 days | This changes how long sensitive user text persists. |
-| Retention choices | This session, 7, 30, 90 days, Until I delete | The product must balance recovery with privacy. |
-| History access and layout | Menu item opens a standard window with list/detail | Determines discoverability, information density, and accidental disclosure risk. |
-| Result presentation | 20 initially, 25 maximum; full text selected in detail pane | Determines whether text is exposed in the menu or only on explicit open. |
-| Failure affordance | HUD link to history only when an eligible row committed | Affects recovery and must not imply secure-input credentials were retained. |
-| Deadline-miss feedback | Same clipboard fallback as History Off; no misleading history route | Storage is optional and must not make a failed write look recoverable. |
-| Delivery-status-unknown copy | Explain that delivery cannot be confirmed after interruption, without saying it failed | A pending row is not proof of insertion failure. |
-| Secure-input retention | Never retain when secure input is sampled at finalization (recommended) | This avoids a password/secure-terminal credential archive. |
-| HUD-only retention | Disallowed by default pending explicit approval | Presentation/demo mode has a different expectation of persistence. |
-| Reinsert confirmation | Required; names the transient previously-frontmost app and falls back to Copy if gone/unknown | Prevents pasting into Saymark's own history window or another app. |
-| Oversize dictation feedback | Decide whether to say a >100 KB final was not saved | Recovery otherwise disappears for the longest content. |
-| Retention-shortening copy | States “Changing to 7 days deletes items older than 7 days now” | This privacy operation is immediate and irreversible. |
-| Switching to This session | States that existing saved dictations are deleted immediately | This policy transition is destructive, not merely prospective. |
-| Delete/Clear/Off confirmation and backup wording | Explicit confirmation, no secure-wipe claim | This is privacy-critical language. |
-| Session-only crash behavior | Best-effort removal at next launch, not a durability claim | Users need a truthful expectation. |
-| Window sharing | `sharingType = .none` (recommended) | Balances transcript privacy against support/demo workflows. |
+| Enablement and retention selector | Off until explicit choice; 30 days recommended | Binding privacy default. |
+| Retention choices | This session, 7, 30, 90 days, Until I delete | Binding choices. |
+| History access and layout | Standard private list/detail window | Binding information architecture. |
+| Result presentation | 20 initially, 25 maximum; exact selected text only in detail | Binding disclosure limit. |
+| Failure affordance | HUD route only when an eligible row committed | No secure-input credential route. |
+| Deadline-miss feedback | Ordinary clipboard-copy wording, same as History Off | No misleading recovery claim. |
+| Delivery-status-unknown copy | Visible status, never described as insertion failure | Pending is not evidence of failure. |
+| Secure-input retention | Never retain | Binding credential safeguard. |
+| HUD-only retention | Never retain | Binding presentation safeguard. |
+| Reinsert confirmation | Names prior app; PID verification; Copy fallback if unavailable | Binding target safety. |
+| Oversize dictation feedback | Say that the >100 KB final was not saved | Binding recovery disclosure. |
+| Retention-shortening copy | Immediate deletion confirmation | Binding destructive-action copy. |
+| Switching to This session | Confirm existing saved dictations are deleted immediately | Binding destructive-action copy. |
+| Delete/Clear/Off confirmation and backup wording | Explicit, no secure-wipe/backup claim | Binding privacy wording. |
+| Session-only crash behavior | Best-effort cleanup at next launch | Binding expectation. |
+| Window sharing | `sharingType = .none` | Binding private-window policy. |
 
 **Minimum mockup package:** (a) Privacy settings before and after choosing an
 enabled retention policy, including confirmation; (b) populated and empty
@@ -478,8 +481,8 @@ confirmation naming a prior app and its quit/unknown fallback; (e) Delete,
 Clear History, and turning-Off confirmations; and (f) a 90-to-7-day shortening
 confirmation and switch-to-This-session confirmation; and (g) deadline-miss
 and delivery-status-unknown HUD copy. Provide light and dark macOS appearances
-plus VoiceOver labels or an accessibility annotation sheet. Do not proceed to
-production UI until these are approved.
+plus VoiceOver labels or an accessibility annotation sheet. These approved
+states are the implementation reference.
 
 ## 6. Test-driven implementation plan
 
