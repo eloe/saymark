@@ -150,8 +150,9 @@ Deliverables:
   built-in parsing/normalization of those forms is deferred;
 - a documented adapter boundary for model-native prompting or biasing where a
   speech model supports it;
-- per-entry tests and an opt-in diagnostic that reports only aggregate match
-  counts, never vocabulary values.
+- per-entry tests and a separately consented, local-only diagnostic that reports
+  only privacy-bucketed aggregate match counts, never vocabulary values or remote
+  telemetry.
 
 Acceptance gates:
 

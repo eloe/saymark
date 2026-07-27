@@ -104,8 +104,8 @@ audio -> ASR draft/final -> raw transcript -> deterministic correction -> render
 The source of authority remains unchanged:
 
 - **Live Preview:** Nemotron automatically revises its own ASR hypothesis while
-  audio arrives. The correction pipeline **MUST** render every supplied raw draft
-  using one snapshot of the ruleset. It assigns monotonic hypothesis sequence
+  audio arrives. The correction pipeline **MUST** correct and publish the newest
+  non-superseded raw draft using one snapshot of the ruleset. It assigns monotonic hypothesis sequence
   numbers; if a newer draft arrives while a correction is pending, it supersedes
   the queued draft (latest-wins) rather than building a queue. A completed result
   may publish only if it is still the newest sequence, so visible output remains
@@ -207,7 +207,9 @@ implementation. The implementation must vendor fixed Unicode 15.1.0 NFKC,
 default-case-folding, and UAX #29 word-boundary data rather than call the host
 macOS ICU. `unicodeVersion` is part of every vocabulary document and corpus
 fixture; a store with an unsupported version opens read-only and is not silently
-reinterpreted. Golden tests run on every supported macOS release.
+reinterpreted. Golden tests are a manual reference-machine release gate on the
+supported macOS 15 (deployment target) and macOS 26 matrix; they are not claimed
+as current single-runner CI coverage.
 
 `matchKey(_:)` is the one canonical function used by validation and matching:
 NFKC, default case fold, whitespace-run collapse to one ASCII space, trim, then
@@ -220,9 +222,13 @@ emitted match-key scalar carries the closed range of original Unicode scalar
 offsets that contributed to it; when normalization composes or expands adjacent
 scalars, their ranges are unioned. For a matched run, the replacement span is
 the union from the first matched key scalar's source range through the last's,
-including intervening original scalars. This defines replacement for length-
-changing forms such as `ﬁ -> fi`, `ß -> ss`, `㍿ -> 株式会社`, and NFC/NFD-equivalent
-accented sequences without indexing the original string by match-key offsets.
+including intervening original scalars. A candidate match that begins or ends
+inside one original scalar's compatibility expansion is rejected: expansions are
+atomic. Thus alias `株` does not replace the middle token of `㈱ -> (株)`, and
+alias `株式` does not replace part of `㍿ -> 株式会社`. This defines replacement for
+length-changing forms such as `ﬁ -> fi`, `ß -> ss`, `㍿ -> 株式会社`, and NFC/NFD-
+equivalent accented sequences without indexing the original string by match-key
+offsets.
 
 Scan token positions left to right. At a position choose the longest complete
 token-sequence match; unique `matchKey` values eliminate equal-length ties.
@@ -297,7 +303,7 @@ Import is an explicit open-panel action with a validation/preview step:
 
 - read only a regular, non-symlink file using a descriptor opened before checks;
   reject a directory, FIFO/device, unreadable file, malformed JSON, unsupported
-  schema, duplicate IDs, invalid bounds, or a read that exceeds 5 MiB. Enforce
+  schema, unsupported `unicodeVersion`, duplicate IDs, invalid bounds, or a read that exceeds 5 MiB. Enforce
   the byte cap while reading and pre-scan JSON nesting depth before Foundation
   decoding; `JSONDecoder` does not provide a safe depth limit itself;
 - validate the imported document internally first. Then reconcile it with the
@@ -410,7 +416,7 @@ data.
 | Import | Explicit user action; bounded/validated untrusted JSON; no parsing side effects before validation. |
 | Export | Explicit user-selected destination; warn that it contains sensitive terms; no automatic sharing. |
 | Rules engine | Pure, bounded, single-pass algorithm; no regex supplied by users, recursion, network, or active-app/clipboard access. |
-| Diagnostics | Off by default and available only when the existing `AnalyticsConsent` opt-in is enabled. Emit only session-level aggregates after at least 100 completed dictations, bucketed as `0`, `1-9`, or `10+`; never per-utterance applied counts (a content oracle), rule IDs, or string values. Do not reuse generic existing allowlist names such as `reason`, `source`, or `revision` for correction data. |
+| Local correction diagnostics | Off by default behind a new `CorrectionDiagnosticsConsent` control, separate from `AnalyticsConsent`/PostHog. It is local JSONL only and explicitly excluded from every PostHog capture. Aggregate exactly one rolling batch of 100 completed dictations with no session ID, emit only a bucket of `0`, `1-9`, or `10+`, then discard/reset the batch; never emit per-utterance counts (a content oracle), rule IDs, or string values. Do not reuse generic existing allowlist names such as `reason`, `source`, or `revision` for correction data. |
 | Future model bias | Separate threat/privacy review because vocabulary would cross a model API boundary even if local. |
 
 Security tests must fuzz Unicode and malformed imports, prove transactional
@@ -459,8 +465,8 @@ only when its tests and user-approved UI are ready.
 1. Introduce the correction boundary to final and live update paths behind an
    empty-by-default store.
 2. Capture one snapshot at dictation start; prove mid-session changes defer.
-3. Add opt-in, bucketed diagnostics plus value-level forbidden-content inspection
-   tests.
+3. Add separately consented local-only, rolling-100-dictation diagnostics plus
+   value-level forbidden-content inspection tests.
 4. Build the Live Preview streaming harness before adding benchmark result types;
    it must capture hypothesis sequence, VAD provenance, latest-wins supersession,
    and timestamped vocabulary/long-dictation fixtures.
@@ -486,9 +492,11 @@ only when its tests and user-approved UI are ready.
 Test IDs are normative requirements and implementation test names use the
 corresponding prefix (for example, `test_U23_spanReplacement...`). Pure unit,
 diagnostic privacy, storage-security, and architecture-boundary tests are
-CI-blocking. Real-model corpus, performance, streaming-harness, and XCUITest
-evidence are opt-in reference-machine release gates until CI infrastructure is
-explicitly added; their required reports attach to the PR/release evidence.
+CI-blocking. The U-23 cross-macOS Unicode golden matrix is a manual macOS 15/26
+reference-machine release gate. Real-model corpus, performance, streaming-
+harness, and XCUITest evidence are opt-in reference-machine release gates until
+CI infrastructure is explicitly added; their required reports attach to the
+PR/release evidence.
 
 ### Unit tests
 
@@ -512,11 +520,11 @@ explicitly added; their required reports attach to the PR/release evidence.
 | U-16 | Randomized rule order and randomized nonmatching Unicode input | Result is invariant and completes within bounded time. |
 | U-17 | Malformed/oversized/deep JSON imports | Rejected before store mutation and without resource blowup. |
 | U-18 | Import merge ID collision / Replace all / cancel | Explicit chosen outcome only; cancel leaves bytes unchanged. |
-| U-19 | Known migration and unknown future schema | Known schema atomically migrates; future schema is read-only/no overwrite. |
+| U-19 | Known migration, incompatible Unicode, and unknown future schema | Known schema atomically migrates; unsupported `unicodeVersion` and future schema are read-only/no overwrite. |
 | U-20 | Interrupted write/corrupt primary | Last-known-good recovery is offered; dictation receives empty snapshot/raw fallback. |
 | U-21 | Metrics token edits | Divergence and revokes/sec calculations match annotated sequences. |
 | U-22 | No semantic-command interpretation | “replace foo with bar” remains raw/corrected only by an explicit matching rule. |
-| U-23 | Provenance span alignment | `ﬁ`, `ß`, `㍿`, and NFC/NFD accent forms replace the correct original scalar span. |
+| U-23 | Provenance span alignment and expansion atomicity | `ﬁ`, `ß`, `㍿`, and NFC/NFD accent forms replace the correct original scalar span; `㈱` with alias `株` does not partially replace the expansion. |
 | U-24 | Case-fold collision | `Foo` after `foo` is rejected at create, edit, and enable. |
 | U-25 | Unsafe Unicode | Written/alias control, bidi override/isolate, default-ignorable, and unassigned scalars are rejected. |
 | U-26 | Reconciliation collision | Alias collision with local store is rejected under Merge and evaluated only in imported result under Replace all. |
@@ -564,11 +572,11 @@ explicitly added; their required reports attach to the PR/release evidence.
 | P-04 | Maximum rules at live draft cadence | Per-draft correction p95 <= 10 ms, max <= 25 ms inside hypothesis-to-mutation budget. |
 | S-01 | Diagnostic event capture at every level | No raw/corrected text, vocabulary value, rule ID, filename, clipboard, app text, or audio appears; test is CI-blocking. |
 | S-02 | Allowlist mutation attempt | Unknown diagnostic field is discarded; new aggregate fields require explicit tests. |
-| S-03 | Import adversarial corpus | Size/depth/count limits, invalid/unsafe Unicode, duplicate keys, symlink/path cases, and failed atomic writes are safe. |
+| S-03 | Import adversarial corpus | Size/depth/count limits, unsupported `unicodeVersion`, invalid/unsafe Unicode, duplicate keys, symlink/path cases, and failed atomic writes are safe. |
 | S-04 | Export destination and content inspection | Only documented vocabulary document is written after explicit action. |
 | S-05 | Network monitor during all vocabulary flows | Zero network requests. |
 | S-06 | Permission boundary | Vocabulary management never requests microphone, Accessibility, screen, clipboard, or network permission. |
-| S-07 | Value-level diagnostics scan | Seed scan from active aliases/written values proves no correction content appears under any existing or new allowlisted field. |
+| S-07 | Value-level diagnostics scan and aggregation unit | Seed scan from active aliases/written values proves no correction content appears under any existing/new allowlisted field; exactly one local, no-session-ID bucket is emitted per 100-dictation batch and never reaches PostHog. |
 | S-08 | Local-file permissions | Vocabulary primary, backup, temporary, and export files are mode 0600. |
 | S-09 | Import read hardening | Depth pre-scan, FIFO/device rejection, descriptor identity, and read-time byte cap defeat malformed/TOCTOU inputs. |
 | A-01 | Correction architecture boundary | Dependency/source assertion proves `TranscriptCorrectionPipeline` has no audio, Accessibility, clipboard, network, or diagnostics-string dependency. |
@@ -596,8 +604,12 @@ explicitly added; their required reports attach to the PR/release evidence.
    current source alone proves neither a supported-language list nor language
    identification quality.
 2. **Normalization implementation:** Unicode 15.1.0 is the required contract;
-   select and vendor the Swift implementation/table set before Slice A. Add
-   golden tests before treating its NFKC/case-folding behavior as compatible.
+   select and vendor the Swift implementation/table set before Slice A. There is
+   no established pure-Swift dependency known to provide pinned NFKC, full case
+   folding, and UAX #29 *word* segmentation together; Swift standard library
+   grapheme breaking is insufficient. Size/build-or-source that dependency and
+   its table update policy before committing implementation. Add golden tests
+   before treating its NFKC/case-folding behavior as compatible.
 3. **Raw-text retention UX:** Decide where raw ASR is exposed and for how long;
    do not quietly create transcript history while implementing the fallback.
 4. **Import interoperability:** Decide whether the v1 JSON schema is public and

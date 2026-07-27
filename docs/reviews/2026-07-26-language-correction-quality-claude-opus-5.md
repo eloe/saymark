@@ -1,6 +1,6 @@
 # Independent review record: language correction quality
 
-**Reviewer:** Claude Opus 5 High
+**Reviewer:** `claude-opus-5`
 
 **Review target:** `aa4fbce` (`docs: specify language correction quality`)
 
@@ -11,10 +11,8 @@ language/correction-quality review.
 shipped. The reviewer required all blocker and high findings to be resolved in
 the SDD before Slice A.
 
-**Original full report:** retained locally at
-`/Users/eloe/.claude/plans/you-are-an-independent-mighty-snowflake.md` during
-this design phase. This repository record captures the actionable findings and
-their disposition without copying environment-specific paths into product docs.
+**Original full report:** reviewed during this design phase. This repository
+record captures the actionable findings and their disposition.
 
 ## Required findings and disposition
 
@@ -48,3 +46,20 @@ I-11 through I-13, P-04, S-07 through S-09, and A-01.
 The amended design remains documentation only. Slice A may begin only after the
 user approves the UI mockups identified in the SDD and implementation starts
 with the corresponding failing tests.
+
+## Follow-up review and disposition
+
+The reviewer re-checked remediation commit `7209bea` and found all original
+blocker, high, medium, and low findings substantively closed. It requested two
+final documentation blockers and five textual corrections before implementation:
+
+- correction diagnostics now use their own local-only consent, are excluded from
+  PostHog, and have a no-session-ID rolling-100-dictation aggregation unit;
+- compatibility expansions are atomic, preventing a partial `㈱ -> (株)` or
+  `㍿ -> 株式会社` replacement;
+- the live-draft wording permits superseded work to be dropped; import validates
+  `unicodeVersion`; Unicode golden-test venue is an honest manual macOS 15/26
+  release matrix; and this record contains no local user path.
+
+After those changes, the follow-up verdict is clear for implementation only
+after the required UI approval.
