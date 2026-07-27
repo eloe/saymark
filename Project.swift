@@ -30,9 +30,9 @@ let project = Project(
     packages: [
         .local(path: "SaymarkKit"),
         .remote(url: "https://github.com/sindresorhus/KeyboardShortcuts",
-                requirement: .exact("2.4.0")),
+                requirement: .exact("3.0.1")),
         .remote(url: "https://github.com/PostHog/posthog-ios",
-                requirement: .exact("3.66.1")),   // future anonymous analytics; strictly opt-in
+                requirement: .exact("3.67.1")),   // future anonymous analytics; strictly opt-in
     ],
     targets: [
         .target(

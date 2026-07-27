@@ -1,13 +1,13 @@
 {
-  "originHash" : "878abf48f50f90928357ec413b12b1cdd2a30f2049bb6f44c5201ddedc74917c",
+  "originHash" : "fc1ab40bb038690e45a10c10a71cdd17d3ea53fc194730245eaa317f8b74b17a",
   "pins" : [
     {
       "identity" : "keyboardshortcuts",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sindresorhus/KeyboardShortcuts",
       "state" : {
-        "revision" : "1aef85578fdd4f9eaeeb8d53b7b4fc31bf08fe27",
-        "version" : "2.4.0"
+        "revision" : "49c3fc04ea827f816df67843bfcc57286b47ff06",
+        "version" : "3.0.1"
       }
     },
     {
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PostHog/posthog-ios",
       "state" : {
-        "revision" : "19288ee2f0575606b4669b2abadda2c9db97c529",
-        "version" : "3.66.1"
+        "revision" : "0191008e2b089a59574ab02a9ee5afbd65631aaf",
+        "version" : "3.67.1"
       }
     }
   ],
