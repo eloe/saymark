@@ -534,7 +534,9 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         return window
     }
 
-    #if DEBUG
+    // These remain internal: Release tests built with ENABLE_TESTABILITY can
+    // reach them through @testable import, while distributable builds do not
+    // expose them outside the Saymark module.
     func makeWindowForTesting() -> NSWindow { makeWindow() }
     func setPreviousApplicationForTesting(_ application: NSRunningApplication?) {
         previousApplication = application
@@ -589,8 +591,6 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             )
         }
     }
-    #endif
-
     func windowWillClose(_ notification: Notification) {
         // Do not keep search terms, selected text, records, or the destination
         // PID alive after the private history window is dismissed.
