@@ -360,7 +360,7 @@ public final class VocabularyStore: @unchecked Sendable {
     }
 }
 
-public enum VocabularyImportStrategy: Sendable { case mergeByID, replaceAll }
+public enum VocabularyImportStrategy: Sendable, Hashable { case mergeByID, replaceAll }
 public struct VocabularyImportPreview: Sendable, Equatable {
     public let newCount: Int; public let unchangedCount: Int; public let updatedCount: Int; public let disabledCount: Int
     public let containsURL: Bool; public let diffs: [VocabularyEntryDiff]

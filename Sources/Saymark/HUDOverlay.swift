@@ -14,7 +14,9 @@ final class HUDModel {
     var phase: Phase = .listening
     var confirmed = ""
     var partial = ""
-    var lang = "Auto"
+    /// Saymark currently supports English only; this is product truth, not
+    /// model language detection.
+    var lang = "EN"
     var shortcutLabel = "⌃⌥Space"
     var errorTitle = "No microphone access"
     var errorText = "Open Privacy in Settings →"

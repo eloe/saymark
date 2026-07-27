@@ -25,7 +25,7 @@ final class DictationController {
 
     private(set) var state: State = .loadingModels
 
-    private let session = DictationSession()
+    private let session = DictationSession(correctionSnapshotProvider: { VocabularySettingsModel.shared.snapshot })
     private let hud = HUDController()
     @ObservationIgnored private var updateSubscription: DictationUpdateSubscription?
 
@@ -186,7 +186,7 @@ final class DictationController {
         let toggle = TriggerMode.current == .toggle
         // Give visual feedback before AVAudioEngine setup. Capture startup takes
         // around 100 ms on this Mac; the HUD should never wait behind it.
-        hud.begin(presentation: insert == .hudOnly, lang: "Auto",
+        hud.begin(presentation: insert == .hudOnly, lang: "EN",
                   shortcutLabel: shortcutLabel,
                   interactive: toggle, onStop: { [weak self] in self?.endRecording() })
         SaymarkDiagnostics.log(.debug, "dictation.hud_presented", fields: [
@@ -373,7 +373,7 @@ final class DictationController {
         }
         configuration.onStatus("KD")
         state = .recording
-        hud.begin(presentation: true, lang: "Auto", shortcutLabel: shortcutLabel)
+        hud.begin(presentation: true, lang: "EN", shortcutLabel: shortcutLabel)
         configuration.onStatus(hud.panel != nil && hud.hasAttachedViewTree
             ? "L"
             : "LX")
