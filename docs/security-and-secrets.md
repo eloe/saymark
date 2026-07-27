@@ -156,4 +156,26 @@ The public repository should keep these enabled:
 - Private vulnerability reporting
 - CodeQL analysis
 
+Protected `main` should require these app-bound checks:
+
+- `Secrets and credential material`
+- `CodeQL policy gate`
+- `Quality policy gate`
+
+`Quality policy gate` is the stable aggregate for CI configuration, repository
+policy, Swift and app tests, deterministic UI integration tests, and pull-request
+dependency review. Require only the aggregate rather than its internal jobs so
+the branch rule stays correct when the matrix changes.
+
+The repository currently has one administrator. Requiring an independent
+approval would prevent that maintainer from merging any pull request, so review
+count remains zero until a second trusted maintainer is added. At that point,
+require one approval, dismiss stale approvals, require approval after the last
+push, and add reviewed CODEOWNERS coverage for workflows, signing, entitlements,
+and dependency manifests.
+
+GitHub Actions policy should allow GitHub-owned actions plus the explicitly used
+`jdx/mise-action` and `gitleaks/gitleaks-action`, and require every action to be
+pinned to a full commit SHA. Default workflow token permissions remain read-only.
+
 See [`SECURITY.md`](../SECURITY.md) for coordinated disclosure.
