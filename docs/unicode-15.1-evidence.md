@@ -65,6 +65,23 @@ iterations on the current Apple-silicon host; the resulting standalone executabl
 was **226 KB**. A release evidence run must record median/p95/max on the
 supported macOS 15 and macOS 26 hardware matrix.
 
+## Spike measurements (2026-07-26)
+
+| Check | Result | Method |
+| --- | --- | --- |
+| Deterministic generation | Pass; generated SHA-256 `f10fd0d1cc8919276171efa13248ac6825c81efb245c1dfb11350e662d5502b4` unchanged after regeneration | `node Scripts/generate-unicode-15.1.mjs` followed by a clean diff |
+| Core source / module size | 294,454 bytes / 35 KB | generated source and optimized standalone module |
+| Optimized core compile | 2.57 s real, 163 MiB peak RSS | `swiftc -O -parse-as-library` on the two pure-Swift core files |
+| Official NFKC | Pass, 95,370 assertions | all 19,074 `NormalizationTest.txt` rows and five required input forms |
+| Official case folding | Pass, 1,530 mappings | all C/F mappings, full mappings taking precedence |
+| Official UAX #29 word breaking | Pass, 1,826 sequences | every `WordBreakTest.txt` sequence |
+| Mixed-input runtime | 2.657 ms/iteration | 500 optimized NFKC + full-fold + word-boundary iterations over 7,680 scalars |
+
+The package test target currently cannot run on this machine because its existing
+XCTest imports are unavailable in the CommandLineTools-only toolchain. The
+equivalent standalone harness passed the official fixtures above; Xcode's XCTest
+environment remains the CI/release venue for `Unicode15_1Tests`.
+
 ## Reproducible update procedure
 
 1. Create `UnicodeData/<new-version>/` and download the seven files above from
