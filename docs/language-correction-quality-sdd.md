@@ -655,3 +655,32 @@ PR/release evidence.
 7. **Correction-versus-insertion interaction:** The live-insertion feature must
    consume only the rendered text it owns, retain its ownership safety contract,
    and never treat a correction as permission to overwrite user text.
+
+## 12. Approved implementation decisions and final-review controls
+
+The user approved the Vocabulary portion of the recommended native macOS UI
+package on 2026-07-26. The implementation binds that approval to these concrete
+decisions:
+
+- the application HUD observes only correction-complete updates; an automatic
+  raw ASR draft cannot race a corrected draft onto the screen;
+- Unicode normalization provenance is tracked at the smallest contiguous set of
+  source contributors. Composition (`A` + combining ring and decomposed Hangul)
+  and compatibility expansion (`ﬁ`, `㈱`, and `㍿`) therefore replace only a
+  complete source unit and never admit a partial expansion match;
+- import conflicts identify both the canonical “When I say” trigger and every
+  conflicting entry UUID;
+- import review shows entry identity plus exact added/deleted values, and exact
+  old-to-new values for kind, written output, heard aliases, enabled state,
+  creation time, and modification time;
+- a future schema is probed before current-model decoding, is opened read-only,
+  and remains available for byte-for-byte user-initiated export even when its
+  document layout has no fields from schema v2; and
+- the first edit after corrupt-primary or backup-only recovery installs a new
+  primary without rotating or deleting the known-good backup. Injected failures
+  at temporary-file durability, before primary installation, and immediately
+  after primary installation are normative recovery tests.
+
+The feature video is evidence for the approved native settings surface and
+named hosted behavior checks only. It is not evidence for full end-to-end model
+accuracy, VoiceOver manual acceptance, or live field insertion.

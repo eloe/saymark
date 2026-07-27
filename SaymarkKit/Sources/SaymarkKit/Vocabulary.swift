@@ -47,7 +47,7 @@ public enum VocabularyValidationError: Error, Equatable, LocalizedError, Sendabl
         switch self {
         case .invalidSchema: return "This vocabulary file uses an unsupported format."
         case let .unsupportedSchemaVersion(version):
-            return "This vocabulary file uses newer format version \(version). Update Saymark before editing or exporting it."
+            return "This vocabulary file uses newer format version \(version). Update Saymark before editing it. You can still export the original file."
         case let .unsupportedUnicodeVersion(version): return "Unicode \(version) is not supported by this Saymark version."
         case let .invalidEntry(_, reason): return reason
         case .duplicateID: return "Each vocabulary entry must have a unique identifier."
@@ -86,12 +86,12 @@ public enum VocabularyNormalization {
         var sourceStart = 0
         for sourceEnd in 1...sourceScalars.count where sourceBoundaries[sourceEnd] {
             defer { sourceStart = sourceEnd }
-            let sourceRange = sourceStart..<sourceEnd
-            let raw = String(String.UnicodeScalarView(sourceScalars[sourceRange]))
-            for scalar in Unicode15_1.nfkcCaseFold(raw).unicodeScalars {
-                normalizedScalars.append(isWhitespace(scalar.value) ? Unicode.Scalar(0x20)! : scalar)
-                sourceRanges.append(sourceRange)
-            }
+            let normalized = normalizeWithProvenance(
+                Array(sourceScalars[sourceStart..<sourceEnd]),
+                sourceOffset: sourceStart
+            )
+            normalizedScalars.append(contentsOf: normalized.scalars)
+            sourceRanges.append(contentsOf: normalized.sourceRanges)
         }
         guard !normalizedScalars.isEmpty else { return [] }
         let normalizedText = String(String.UnicodeScalarView(normalizedScalars))
@@ -116,6 +116,38 @@ public enum VocabularyNormalization {
             }
         }
         return tokens
+    }
+
+    /// Incremental prefix normalization assigns each normalized scalar the
+    /// smallest contiguous source range that contributed to it. When a new
+    /// source scalar rewrites a normalized suffix (composition) that suffix
+    /// inherits both the prior contributors and the new scalar. Expansions
+    /// naturally assign the same one-scalar source range to every output.
+    private static func normalizeWithProvenance(
+        _ source: [Unicode.Scalar],
+        sourceOffset: Int
+    ) -> (scalars: [Unicode.Scalar], sourceRanges: [Range<Int>]) {
+        var prefix: [Unicode.Scalar] = []
+        var previous: [Unicode.Scalar] = []
+        var provenance: [Range<Int>] = []
+        for (offset, scalar) in source.enumerated() {
+            prefix.append(scalar)
+            let current = Unicode15_1.nfkcCaseFold(String(String.UnicodeScalarView(prefix)))
+                .unicodeScalars.map { isWhitespace($0.value) ? Unicode.Scalar(0x20)! : $0 }
+            var common = 0
+            while common < previous.count, common < current.count, previous[common] == current[common] {
+                common += 1
+            }
+            var contributorLowerBound = sourceOffset + offset
+            for prior in provenance[common...] {
+                contributorLowerBound = min(contributorLowerBound, prior.lowerBound)
+            }
+            let contributors = contributorLowerBound..<(sourceOffset + offset + 1)
+            provenance = Array(provenance[..<common])
+                + Array(repeating: contributors, count: current.count - common)
+            previous = current
+        }
+        return (previous, provenance)
     }
 
     private static func isWord(_ scalar: UInt32) -> Bool {
@@ -426,17 +458,38 @@ public final class TranscriptCorrectionPipeline: @unchecked Sendable {
 /// values. Its snapshot is a value type, so an in-flight dictation cannot observe
 /// settings mutations.
 public final class VocabularyStore: @unchecked Sendable {
+    enum PersistenceCheckpoint: Sendable, Equatable { case temporaryDurable, beforePrimaryInstall, primaryInstalled }
+    private enum RecoveryState: Equatable { case normal, backupOnly, corruptPrimaryBackup }
+    private struct RawFile {
+        let data: Data
+        let token: String
+        let schemaVersion: Int
+    }
+    private struct SchemaProbe: Decodable { let schemaVersion: Int }
+
     public static let defaultFilename = "vocabulary.json"
     private let lock = NSLock()
     private let primaryURL: URL
     private let backupURL: URL
+    private let persistenceFaultInjector: @Sendable (PersistenceCheckpoint) throws -> Void
     private var document: VocabularyDocument
+    private var opaqueReadOnlyData: Data?
+    private var recoveryState: RecoveryState = .normal
     public private(set) var readOnlyReason: String?
     public private(set) var recoveryMessage: String?
 
-    public init(directoryURL: URL, filename: String = defaultFilename) throws {
+    public convenience init(directoryURL: URL, filename: String = defaultFilename) throws {
+        try self.init(directoryURL: directoryURL, filename: filename, persistenceFaultInjector: { _ in })
+    }
+
+    init(
+        directoryURL: URL,
+        filename: String = defaultFilename,
+        persistenceFaultInjector: @escaping @Sendable (PersistenceCheckpoint) throws -> Void
+    ) throws {
         primaryURL = directoryURL.appendingPathComponent(filename)
         backupURL = directoryURL.appendingPathComponent(filename + ".backup")
+        self.persistenceFaultInjector = persistenceFaultInjector
         document = VocabularyDocument()
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
@@ -474,6 +527,7 @@ public final class VocabularyStore: @unchecked Sendable {
 
     public func export(to url: URL) throws {
         let data = try lock.withLock {
+            if let opaqueReadOnlyData { return opaqueReadOnlyData }
             guard readOnlyReason == nil else { throw VocabularyValidationError.invalidSchema }
             return try encode(document)
         }
@@ -507,11 +561,25 @@ public final class VocabularyStore: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: primaryURL.path) else {
             if let backup = try? Self.readDocument(at: backupURL) {
                 document = backup
+                recoveryState = .backupOnly
                 recoveryMessage = "Vocabulary was restored from its last complete backup."
             }
             return
         }
-        do { document = try Self.readDocument(at: primaryURL) }
+        do {
+            let raw = try Self.readRawFile(at: primaryURL)
+            if raw.schemaVersion > VocabularyDocument.schemaVersion {
+                // Preserve genuine future bytes without attempting to decode
+                // them into today's model. They remain exportable verbatim but
+                // cannot be edited or used for correction by this build.
+                opaqueReadOnlyData = raw.data
+                document = VocabularyDocument()
+                readOnlyReason = VocabularyValidationError
+                    .unsupportedSchemaVersion(raw.schemaVersion).localizedDescription
+                return
+            }
+            document = try Self.decodeDocument(from: raw.data)
+        }
         catch let error as VocabularyValidationError {
             if case let .unsupportedSchemaVersion(version) = error {
                 // A future schema is valid user data, not corruption. Never
@@ -521,18 +589,19 @@ public final class VocabularyStore: @unchecked Sendable {
                 readOnlyReason = VocabularyValidationError.unsupportedSchemaVersion(version).localizedDescription
                 return
             }
-            recoverFromBackupOrBecomeReadOnly()
+            recoverFromBackupOrBecomeReadOnly(corruptPrimaryPresent: true)
         }
         catch {
-            recoverFromBackupOrBecomeReadOnly()
+            recoverFromBackupOrBecomeReadOnly(corruptPrimaryPresent: true)
         }
     }
 
-    private func recoverFromBackupOrBecomeReadOnly() {
+    private func recoverFromBackupOrBecomeReadOnly(corruptPrimaryPresent: Bool) {
         // A complete prior version is more useful than a blank vocabulary.
         // Never overwrite the damaged primary while recovery is in effect.
         if let backup = try? Self.readDocument(at: backupURL) {
             document = backup
+            recoveryState = corruptPrimaryPresent ? .corruptPrimaryBackup : .backupOnly
             recoveryMessage = "Vocabulary was restored from its last complete backup."
         } else {
             document = VocabularyDocument()
@@ -553,17 +622,25 @@ public final class VocabularyStore: @unchecked Sendable {
         let data = try encode(next)
         let directory = primaryURL.deletingLastPathComponent()
         let temporary = directory.appendingPathComponent(".vocabulary-\(UUID().uuidString).tmp")
+        defer {
+            if FileManager.default.fileExists(atPath: temporary.path) {
+                try? FileManager.default.removeItem(at: temporary)
+            }
+        }
         FileManager.default.createFile(atPath: temporary.path, contents: data, attributes: [.posixPermissions: 0o600])
         let handle = try FileHandle(forWritingTo: temporary); try handle.synchronize(); try handle.close()
-        if FileManager.default.fileExists(atPath: primaryURL.path) {
-            if FileManager.default.fileExists(atPath: backupURL.path) {
-                try FileManager.default.removeItem(at: backupURL)
-            }
-            try FileManager.default.moveItem(at: primaryURL, to: backupURL)
+        try persistenceFaultInjector(.temporaryDurable)
+
+        if recoveryState == .normal, FileManager.default.fileExists(atPath: primaryURL.path) {
+            // Atomic rename replaces an older backup without ever exposing a
+            // missing or partially-written backup name.
+            try Self.renameReplacing(primaryURL, backupURL)
         }
-        // When recovering from a backup-only crash point, leave that sole
-        // complete backup in place until the new primary is installed.
-        try FileManager.default.moveItem(at: temporary, to: primaryURL)
+        // For corrupt-primary and backup-only recovery, keep the known-good
+        // backup untouched and atomically replace/install only the primary.
+        try persistenceFaultInjector(.beforePrimaryInstall)
+        try Self.renameReplacing(temporary, primaryURL)
+        try persistenceFaultInjector(.primaryInstalled)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: primaryURL.path)
         // `rename` alone does not survive a power loss.  Flush both the named
         // file and directory metadata before reporting a successful save.
@@ -572,6 +649,7 @@ public final class VocabularyStore: @unchecked Sendable {
         guard directoryFD >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { close(directoryFD) }
         guard fsync(directoryFD) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        recoveryState = .normal
     }
 
     private func encode(_ document: VocabularyDocument) throws -> Data {
@@ -584,6 +662,12 @@ public final class VocabularyStore: @unchecked Sendable {
     }
 
     private static func readDocumentAndToken(at url: URL) throws -> (document: VocabularyDocument, token: String) {
+        let raw = try readRawFile(at: url)
+        let document = try decodeDocument(from: raw.data)
+        return (document, raw.token)
+    }
+
+    private static func readRawFile(at url: URL) throws -> RawFile {
         // Open once with O_NOFOLLOW, then validate/read that descriptor.  Path
         // resource checks followed by Data(contentsOf:) have a symlink swap
         // window; this bounds imports to the reviewed regular file instead.
@@ -603,10 +687,39 @@ public final class VocabularyStore: @unchecked Sendable {
             data.append(chunk)
         }
         guard data.count <= 5 * 1024 * 1024, jsonDepth(data) <= 64, hasNoDuplicateObjectKeys(data) else { throw VocabularyValidationError.invalidSchema }
+        let schemaVersion = try JSONDecoder().decode(SchemaProbe.self, from: data).schemaVersion
+        if schemaVersion > VocabularyDocument.schemaVersion {
+            return RawFile(
+                data: data,
+                token: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+                schemaVersion: schemaVersion
+            )
+        }
+        guard schemaVersion == 1 || schemaVersion == VocabularyDocument.schemaVersion else {
+            throw VocabularyValidationError.invalidSchema
+        }
+        return RawFile(
+            data: data,
+            token: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+            schemaVersion: schemaVersion
+        )
+    }
+
+    private static func decodeDocument(from data: Data) throws -> VocabularyDocument {
+        let schemaVersion = try JSONDecoder().decode(SchemaProbe.self, from: data).schemaVersion
+        if schemaVersion > VocabularyDocument.schemaVersion {
+            throw VocabularyValidationError.unsupportedSchemaVersion(schemaVersion)
+        }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let document = try VocabularyMigration.migrate(decoder.decode(VocabularyDocument.self, from: data))
         try VocabularyValidator.validate(document)
-        return (document, SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+        return document
+    }
+
+    private static func renameReplacing(_ source: URL, _ destination: URL) throws {
+        guard Darwin.rename(source.path, destination.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     private static func jsonDepth(_ data: Data) -> Int {
@@ -656,10 +769,15 @@ public final class VocabularyStore: @unchecked Sendable {
 }
 
 public enum VocabularyImportStrategy: Sendable, Hashable { case mergeByID, replaceAll }
+public struct VocabularyImportConflict: Sendable, Equatable {
+    public let canonicalTrigger: String
+    public let entryIDs: [UUID]
+}
 public struct VocabularyImportPreview: Sendable, Equatable {
     public let newCount: Int; public let unchangedCount: Int; public let updatedCount: Int
-    public let disabledCount: Int; public let conflictCount: Int
+    public let disabledCount: Int; public let conflicts: [VocabularyImportConflict]
     public let containsURL: Bool; public let sourceToken: String; public let diffs: [VocabularyEntryDiff]
+    public var conflictCount: Int { conflicts.count }
 }
 public struct VocabularyEntryDiff: Sendable, Equatable {
     public let id: UUID; public let old: VocabularyEntry?; public let new: VocabularyEntry?
@@ -692,14 +810,14 @@ private func reconcile(local: VocabularyDocument, imported: VocabularyDocument, 
     let updatedCount = diffs.filter { $0.change == .updated }.count
     let disabledCount = base.filter { !$0.enabled }.count
     let hasURL = diffs.contains { $0.containsURL }
-    let conflictCount = enabledTriggerConflictCount(in: base)
+    let conflicts = enabledTriggerConflicts(in: base)
     let retainedChanges = diffs.filter { $0.new != nil }.count
     return ImportResult(document: result, preview: VocabularyImportPreview(
         newCount: newCount,
         unchangedCount: base.count - retainedChanges,
         updatedCount: updatedCount,
         disabledCount: disabledCount,
-        conflictCount: conflictCount,
+        conflicts: conflicts,
         containsURL: hasURL,
         sourceToken: sourceToken,
         diffs: diffs
@@ -710,14 +828,19 @@ private func hasURLScheme(_ value: String) -> Bool {
     value.range(of: #"\b[A-Za-z][A-Za-z0-9+.-]*:"#, options: .regularExpression) != nil
 }
 
-private func enabledTriggerConflictCount(in entries: [VocabularyEntry]) -> Int {
-    var seen = Set<String>(), conflicts = 0
+private func enabledTriggerConflicts(in entries: [VocabularyEntry]) -> [VocabularyImportConflict] {
+    var entryIDsByTrigger: [String: [UUID]] = [:]
     for entry in entries where entry.enabled {
         for heard in entry.heard {
-            if !seen.insert(VocabularyNormalization.matchKey(heard)).inserted { conflicts += 1 }
+            entryIDsByTrigger[VocabularyNormalization.matchKey(heard), default: []].append(entry.id)
         }
     }
-    return conflicts
+    return entryIDsByTrigger.compactMap { trigger, entryIDs in
+        let unique = Array(Set(entryIDs)).sorted { $0.uuidString < $1.uuidString }
+        guard unique.count > 1 else { return nil }
+        return VocabularyImportConflict(canonicalTrigger: trigger, entryIDs: unique)
+    }
+    .sorted { $0.canonicalTrigger < $1.canonicalTrigger }
 }
 
 /// Separate, explicit consent for correction aggregates.  This is intentionally

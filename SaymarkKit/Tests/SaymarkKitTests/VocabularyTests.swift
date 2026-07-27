@@ -29,6 +29,10 @@ final class VocabularyTests: XCTestCase {
     func test_U03_U23_nfkcAndExpansionAreAtomic() throws {
         let ligature = VocabularyEntry(written: "FI", heard: ["fi"])
         XCTAssertEqual(try snapshot([ligature]).correct("ﬁ").renderedText, "FI")
+        let angstrom = VocabularyEntry(written: "Å", heard: ["å"])
+        XCTAssertEqual(try snapshot([angstrom]).correct("A\u{030A}").renderedText, "Å")
+        let hangul = VocabularyEntry(written: "가", heard: ["가"])
+        XCTAssertEqual(try snapshot([hangul]).correct("\u{1100}\u{1161}").renderedText, "가")
         let stock = VocabularyEntry(written: "stock", heard: ["株"])
         XCTAssertEqual(try snapshot([stock]).correct("㈱").renderedText, "㈱")
         let company = VocabularyEntry(written: "company", heard: ["株式会社"])
@@ -173,6 +177,11 @@ final class VocabularyTests: XCTestCase {
 
         let preview = try store.importDocument(from: file, strategy: .mergeByID)
         XCTAssertEqual(preview.conflictCount, 1)
+        XCTAssertEqual(preview.conflicts.first?.canonicalTrigger, "say mark")
+        XCTAssertEqual(
+            Set(try XCTUnwrap(preview.conflicts.first).entryIDs),
+            Set([store.currentDocument().entries[0].id, imported.id])
+        )
         XCTAssertEqual(preview.newCount, 1)
         XCTAssertThrowsError(
             try store.applyImport(
@@ -294,7 +303,7 @@ final class VocabularyTests: XCTestCase {
         try original.upsert(VocabularyEntry(written: "Primary", heard: ["primary"]))
 
         let primary = directory.appendingPathComponent(VocabularyStore.defaultFilename)
-        let future = #"{"schemaVersion":999,"unicodeVersion":"15.1.0","revision":99,"entries":[]}"#
+        let future = #"{"schemaVersion":999,"future":{"records":[{"opaque":true}]},"unknownBytes":"preserve-me"}"#
         let futureData = Data(future.utf8)
         try futureData.write(to: primary)
 
@@ -302,7 +311,51 @@ final class VocabularyTests: XCTestCase {
         XCTAssertNotNil(opened.readOnlyReason)
         XCTAssertTrue(opened.currentDocument().entries.isEmpty)
         XCTAssertThrowsError(try opened.upsert(VocabularyEntry(written: "No", heard: ["no"])))
-        XCTAssertThrowsError(try opened.export(to: directory.appendingPathComponent("future-export.json")))
+        let export = directory.appendingPathComponent("future-export.json")
+        try opened.export(to: export)
+        XCTAssertEqual(try Data(contentsOf: export), futureData)
         XCTAssertEqual(try Data(contentsOf: primary), futureData)
+    }
+
+    func test_S10_recoverySaveNeverRotatesKnownGoodBackupAcrossInjectedCrashes() throws {
+        for checkpoint in [
+            VocabularyStore.PersistenceCheckpoint.temporaryDurable,
+            .beforePrimaryInstall,
+            .primaryInstalled,
+        ] {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let seeded = try VocabularyStore(directoryURL: directory)
+            try seeded.upsert(VocabularyEntry(written: "First", heard: ["first"]))
+            try seeded.upsert(VocabularyEntry(written: "Second", heard: ["second"]))
+
+            let primary = directory.appendingPathComponent(VocabularyStore.defaultFilename)
+            let backup = directory.appendingPathComponent(VocabularyStore.defaultFilename + ".backup")
+            let knownGoodBackup = try Data(contentsOf: backup)
+            try Data("corrupt-primary".utf8).write(to: primary)
+
+            let recovered = try VocabularyStore(
+                directoryURL: directory,
+                persistenceFaultInjector: { reached in
+                    if reached == checkpoint { throw SyntheticFailure.failed }
+                }
+            )
+            XCTAssertEqual(recovered.currentDocument().entries.map(\.written), ["First"])
+            XCTAssertThrowsError(
+                try recovered.upsert(VocabularyEntry(written: "Third", heard: ["third"]))
+            )
+            XCTAssertEqual(
+                try Data(contentsOf: backup),
+                knownGoodBackup,
+                "Recovery save rotated the known-good backup at \(checkpoint)"
+            )
+
+            let reopened = try VocabularyStore(directoryURL: directory)
+            let expected = checkpoint == .primaryInstalled
+                ? ["First", "Third"]
+                : ["First"]
+            XCTAssertEqual(reopened.currentDocument().entries.map(\.written), expected)
+        }
     }
 }

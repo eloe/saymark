@@ -149,6 +149,59 @@ struct VocabularySettingsSection: View {
     }
 }
 
+enum VocabularyImportDiffPresentation {
+    static func lines(for diff: VocabularyEntryDiff) -> [String] {
+        lines(id: diff.id, old: diff.old, new: diff.new)
+    }
+
+    static func lines(id: UUID, old: VocabularyEntry?, new: VocabularyEntry?) -> [String] {
+        switch (old, new) {
+        case (nil, let new?):
+            return ["Change: Added", "ID: \(id.uuidString)"] + entryLines(new)
+        case (let old?, nil):
+            return ["Change: Deleted", "ID: \(id.uuidString)"] + entryLines(old)
+        case (let old?, let new?):
+            var result = ["Change: Updated", "ID: \(id.uuidString)"]
+            if old.kind != new.kind { result.append("Kind: \(old.kind.rawValue) → \(new.kind.rawValue)") }
+            if old.written != new.written { result.append("Write: \(old.written) → \(new.written)") }
+            if old.heard != new.heard {
+                result.append("When I say: \(old.heard.joined(separator: ", ")) → \(new.heard.joined(separator: ", "))")
+            }
+            if old.enabled != new.enabled {
+                result.append("Enabled: \(enabled(old.enabled)) → \(enabled(new.enabled))")
+            }
+            if old.createdAt != new.createdAt {
+                result.append("Created: \(timestamp(old.createdAt)) → \(timestamp(new.createdAt))")
+            }
+            if old.updatedAt != new.updatedAt {
+                result.append("Modified: \(timestamp(old.updatedAt)) → \(timestamp(new.updatedAt))")
+            }
+            return result
+        case (nil, nil):
+            return ["Change: Invalid", "ID: \(id.uuidString)"]
+        }
+    }
+
+    private static func entryLines(_ entry: VocabularyEntry) -> [String] {
+        [
+            "Kind: \(entry.kind.rawValue)",
+            "Write: \(entry.written)",
+            "When I say: \(entry.heard.joined(separator: ", "))",
+            "Enabled: \(enabled(entry.enabled))",
+            "Created: \(timestamp(entry.createdAt))",
+            "Modified: \(timestamp(entry.updatedAt))",
+        ]
+    }
+
+    private static func enabled(_ value: Bool) -> String { value ? "Enabled" : "Disabled" }
+
+    private static func timestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+}
+
 private struct VocabularyImportPreviewView: View {
     let model: VocabularySettingsModel
     @State private var confirmReplace = false
@@ -169,6 +222,13 @@ private struct VocabularyImportPreviewView: View {
                     )
                     .foregroundStyle(.red)
                     .accessibilityLabel("\(preview.conflictCount) vocabulary conflicts. Resolve duplicate When I say phrases before importing.")
+                    ForEach(preview.conflicts, id: \.canonicalTrigger) { conflict in
+                        Text(
+                            "“\(conflict.canonicalTrigger)” conflicts in entries "
+                                + conflict.entryIDs.map(\.uuidString).joined(separator: ", ")
+                        )
+                        .foregroundStyle(.red)
+                    }
                 }
                 List(preview.diffs, id: \.id) { diff in
                     VStack(alignment: .leading) {
@@ -177,19 +237,14 @@ private struct VocabularyImportPreviewView: View {
                             Label("Written value contains a URL", systemImage: "link")
                                 .foregroundStyle(.orange)
                         }
-                        switch diff.change {
-                        case .added:
-                            Text("New rule — When I say: \(diff.new?.heard.joined(separator: ", ") ?? "")").foregroundStyle(.secondary)
-                        case .deleted:
-                            Text("Will be deleted — When I say: \(diff.old?.heard.joined(separator: ", ") ?? "")").foregroundStyle(.red)
-                        case .updated:
-                            if let old = diff.old, let new = diff.new {
-                                if old.written != new.written { Text("Write: \(old.written) → \(new.written)").foregroundStyle(.secondary) }
-                                if old.heard != new.heard { Text("When I say: \(old.heard.joined(separator: ", ")) → \(new.heard.joined(separator: ", "))").foregroundStyle(.secondary) }
-                                if old.kind != new.kind { Text("Kind: \(old.kind.rawValue) → \(new.kind.rawValue)").foregroundStyle(.secondary) }
-                                if old.enabled != new.enabled { Text("Enabled setting will change").foregroundStyle(.secondary) }
-                                if old.createdAt != new.createdAt { Text("Created timestamp will change").foregroundStyle(.secondary) }
-                                if old.updatedAt != new.updatedAt { Text("Modified timestamp will change").foregroundStyle(.secondary) }
+                        ForEach(
+                            Array(VocabularyImportDiffPresentation.lines(for: diff).enumerated()),
+                            id: \.offset
+                        ) { _, line in
+                            if diff.change == .deleted {
+                                Text(line).foregroundStyle(.red)
+                            } else {
+                                Text(line).foregroundStyle(.secondary)
                             }
                         }
                     }

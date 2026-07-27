@@ -5,6 +5,22 @@ import SaymarkKit
 import Observation
 import PostHog
 
+/// The application HUD has exactly one live transcript source: ordered,
+/// correction-complete updates. Raw ASR updates remain available to onboarding
+/// and benchmarks through `DictationSession`, but cannot race the app HUD.
+@MainActor
+final class CorrectedHUDObserver {
+    typealias Handler = @Sendable (CorrectedTranscript, CorrectedTranscript) -> Void
+    typealias Observe = (@escaping Handler) -> (() -> Void)
+    private var cancel: (() -> Void)?
+
+    init(observe: Observe, receive: @escaping Handler) {
+        cancel = observe { confirmed, partial in receive(confirmed, partial) }
+    }
+
+    deinit { cancel?() }
+}
+
 /// Thin SwiftUI-facing wrapper around `SaymarkKit.DictationSession`: maps the
 /// shared pipeline to an `@Observable` menu-bar state, wires the Carbon hotkey
 /// to start/stop, and injects the final transcript into the focused field.
@@ -27,8 +43,7 @@ final class DictationController {
 
     private let session: DictationSession
     private let hud = HUDController()
-    @ObservationIgnored private var updateSubscription: DictationUpdateSubscription?
-    @ObservationIgnored private var correctedUpdateSubscription: DictationUpdateSubscription?
+    @ObservationIgnored private var hudTranscriptObserver: CorrectedHUDObserver?
 
     /// The shared, already-warmed pipeline — exposed so onboarding's try-it step
     /// reuses it instead of spinning up a second `DictationSession`.
@@ -91,12 +106,15 @@ final class DictationController {
             "insert_mode": InsertMode.current.rawValue,
             "accessibility_trusted": accessibilityTrusted,
         ])
-        updateSubscription = session.observeUpdates { [weak self] confirmed, partial in
-            self?.echo(confirmed, partial)
-        }
-        correctedUpdateSubscription = session.observeCorrectedUpdates { [weak self] confirmed, partial in
-            self?.echoCorrected(confirmed, partial)
-        }
+        hudTranscriptObserver = CorrectedHUDObserver(
+            observe: { [session] handler in
+                let subscription = session.observeCorrectedUpdates(handler)
+                return { subscription.cancel() }
+            },
+            receive: { [weak self] confirmed, partial in
+                self?.echoCorrected(confirmed, partial)
+            }
+        )
         installHotkeyHandlers()
         session.requestMicrophonePermission()            // surface the mic prompt early
         if InsertMode.current == .inField, !accessibilityTrusted {
@@ -231,15 +249,6 @@ final class DictationController {
             ])
             hud.error("Open Privacy in Settings →")
         }
-    }
-
-    /// Runs on the mic capture queue (via `onUpdate`). Two jobs (nothing is typed
-    /// into the field live — the field gets one paste on release):
-    ///  1. drive the HUD overlay (confirmed prefix + the fast Nemotron `⟨tail⟩`),
-    ///     hopping to the main actor since the panel is UI;
-    /// Transcript content is intentionally never written to diagnostics or stderr.
-    private nonisolated func echo(_ confirmed: String, _ partial: String) {
-        Task { @MainActor in self.hud.update(confirmed: confirmed, partial: partial) }
     }
 
     private nonisolated func echoCorrected(_ confirmed: CorrectedTranscript, _ partial: CorrectedTranscript) {
