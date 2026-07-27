@@ -10,7 +10,7 @@ import SwiftUI
 @Observable
 final class RecentDictationsController: NSObject, NSWindowDelegate {
     enum CommittedCleanupPath: CaseIterable {
-        case singleDelete, clear, retention, off
+        case singleDelete, clear, retention, off, session, expiry
     }
     static let shared = RecentDictationsController()
 
@@ -74,9 +74,16 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     /// opportunities after a busy checkpoint.
     func runIdleMaintenance() async {
         guard isStartupComplete, activeRetention != .off, isTrulyIdleForMaintenance else { return }
+        await prepareForDelivery()
+        await performExpiryCleanup()
+    }
+
+    private func performExpiryCleanup() async {
         do {
-            await prepareForDelivery()
             try await store?.purgeExpired()
+        } catch is HistoryCommittedCleanupFailure {
+            invalidatePresentationAfterCommittedCleanupFailure(.expiry)
+            errorMessage = "Expired dictations were removed, but Saymark could not finish cleaning its local database."
         } catch {
             // A busy checkpoint leaves the prior truth intact; never publish a
             // success state for a purge that SQLite could not finish.
@@ -159,10 +166,10 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             isHistoryAvailable = true
             await refresh()
             return true
-        } catch HistoryStoreError.cleanupIncomplete {
+        } catch is HistoryCommittedCleanupFailure {
             await reconcileToDurablePolicy(mirrorDefaults: false, publishAvailability: false)
             invalidatePresentationAfterCommittedCleanupFailure(
-                retention == .off ? .off : .retention
+                retention == .off ? .off : (retention == .session ? .session : .retention)
             )
             errorMessage = "History was removed, but Saymark could not finish cleaning its local database. Quit other Saymark windows and try again."
             return false
@@ -236,23 +243,24 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     }
 
     func clearHistory() {
-        Task {
-            do {
-                if store == nil { store = try makeStore(.off) }
-                try await store?.clear()
-                refreshGeneration &+= 1
-                records = []
-                resultSummary = "0 results"
-                SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .success)
-            } catch {
-                SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .unavailable)
-                if error as? HistoryStoreError == .cleanupIncomplete {
-                    invalidatePresentationAfterCommittedCleanupFailure(.clear)
-                    errorMessage = "History is removed from the active list, but Saymark could not finish cleaning every local database artifact. Try again when no other Saymark window is using history."
-                } else {
-                    errorMessage = "Couldn’t clear Recent Dictations."
-                }
-            }
+        Task { await performClearHistory() }
+    }
+
+    private func performClearHistory() async {
+        do {
+            if store == nil { store = try makeStore(.off) }
+            try await store?.clear()
+            refreshGeneration &+= 1
+            records = []
+            resultSummary = "0 results"
+            SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .success)
+        } catch is HistoryCommittedCleanupFailure {
+            SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .unavailable)
+            invalidatePresentationAfterCommittedCleanupFailure(.clear)
+            errorMessage = "History is removed from the active list, but Saymark could not finish cleaning every local database artifact. Try again when no other Saymark window is using history."
+        } catch {
+            SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .unavailable)
+            errorMessage = "Couldn’t clear Recent Dictations."
         }
     }
 
@@ -365,16 +373,18 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     }
 
     func delete(_ record: HistoryRecord) {
-        Task {
-            do {
-                _ = try await store?.delete(id: record.id)
-                await refresh()
-            } catch HistoryStoreError.cleanupIncomplete {
-                invalidatePresentationAfterCommittedCleanupFailure(.singleDelete)
-                errorMessage = "This dictation was removed, but Saymark could not finish cleaning its local database."
-            } catch {
-                errorMessage = "Couldn’t delete this dictation."
-            }
+        Task { await performDelete(record) }
+    }
+
+    private func performDelete(_ record: HistoryRecord) async {
+        do {
+            _ = try await store?.delete(id: record.id)
+            await refresh()
+        } catch is HistoryCommittedCleanupFailure {
+            invalidatePresentationAfterCommittedCleanupFailure(.singleDelete)
+            errorMessage = "This dictation was removed, but Saymark could not finish cleaning its local database."
+        } catch {
+            errorMessage = "Couldn’t delete this dictation."
         }
     }
 
@@ -529,6 +539,29 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
 
     func setHistoryAvailableForTesting(_ available: Bool) {
         isHistoryAvailable = available
+    }
+
+    func configureStoreForTesting(
+        _ store: SQLiteHistoryStore?,
+        retention: RecentDictationsRetention,
+        startupComplete: Bool = true
+    ) {
+        self.store = store
+        activeRetention = retention
+        isStartupComplete = startupComplete
+        isHistoryAvailable = retention != .off
+    }
+
+    func clearHistoryForTesting() async {
+        await performClearHistory()
+    }
+
+    func deleteForTesting(_ record: HistoryRecord) async {
+        await performDelete(record)
+    }
+
+    func purgeExpiredForTesting() async {
+        await performExpiryCleanup()
     }
 
     func resetReinsertSeamsForTesting() {

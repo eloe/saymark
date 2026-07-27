@@ -75,6 +75,17 @@ public enum HistoryStoreError: Error, Sendable, Equatable {
     case recordTooLarge
 }
 
+/// A destructive mutation committed before its cleanup phase failed. The
+/// cause is retained for diagnostics and tests, while the wrapper is the
+/// unambiguous signal that callers must discard any pre-commit presentation.
+public struct HistoryCommittedCleanupFailure: Error, Sendable, Equatable {
+    public let cause: HistoryStoreError
+
+    public init(cause: HistoryStoreError) {
+        self.cause = cause
+    }
+}
+
 /// UI-independent persistence boundary.  The app owns start/final eligibility
 /// snapshots and delivery; this protocol only stores an already-final text.
 public protocol HistoryStore: Sendable {
@@ -130,6 +141,7 @@ public actor SQLiteHistoryStore: HistoryStore {
     private let testSchemaCreationFailure: Bool
     private let testBeforeDeletionCheckpoint: (@Sendable () -> Void)?
     private let testProofDisposalBoundary: (@Sendable (String) -> Void)?
+    private let testPostCommitCleanupFailure: HistoryStoreError?
 
     /// Passing `.off` is intentionally side-effect free: no directory, database,
     /// WAL, or metadata file is created until an explicit enabled policy arrives.
@@ -142,7 +154,8 @@ public actor SQLiteHistoryStore: HistoryStore {
         testProofFailure: Bool = false,
         testSchemaCreationFailure: Bool = false,
         testBeforeDeletionCheckpoint: (@Sendable () -> Void)? = nil,
-        testProofDisposalBoundary: (@Sendable (String) -> Void)? = nil
+        testProofDisposalBoundary: (@Sendable (String) -> Void)? = nil,
+        testPostCommitCleanupFailure: HistoryStoreError? = nil
     ) throws {
         self.directoryURL = directoryURL
         self.databaseURL = directoryURL.appendingPathComponent(Self.databaseName, isDirectory: false)
@@ -154,6 +167,7 @@ public actor SQLiteHistoryStore: HistoryStore {
         self.testSchemaCreationFailure = testSchemaCreationFailure
         self.testBeforeDeletionCheckpoint = testBeforeDeletionCheckpoint
         self.testProofDisposalBoundary = testProofDisposalBoundary
+        self.testPostCommitCleanupFailure = testPostCommitCleanupFailure
         // Do not create the store in an initializer.  This preserves the
         // default-Off no-files guarantee even if a caller only constructs a
         // dependency container and never records a final transcript.
@@ -386,7 +400,7 @@ public actor SQLiteHistoryStore: HistoryStore {
                 cleanupFailureLatched = false
             } catch {
                 cleanupFailureLatched = true
-                throw error
+                throw committedCleanupFailure(error)
             }
             generation &+= 1
         } else {
@@ -402,15 +416,15 @@ public actor SQLiteHistoryStore: HistoryStore {
         try openIfNeeded()
         let proof = try createCleanupProof()
         defer { close(proof) }
+        try transaction { try execute("DELETE FROM records") }
         do {
-            try transaction { try execute("DELETE FROM records") }
             try checkpointAfterDeletion()
             try verifyCleanupProof(proof)
             try destroyCleanupProof(proof)
             cleanupFailureLatched = false
         } catch {
             cleanupFailureLatched = true
-            throw error
+            throw committedCleanupFailure(error)
         }
         generation &+= 1
     }
@@ -427,7 +441,7 @@ public actor SQLiteHistoryStore: HistoryStore {
             self.policy = .off
             do {
                 try persistPolicyAndPurge(.off)
-            } catch {
+            } catch let error as HistoryCommittedCleanupFailure {
                 cleanupFailureLatched = true
                 self.policy = .off
                 throw error
@@ -438,13 +452,18 @@ public actor SQLiteHistoryStore: HistoryStore {
             // The store owns this exact directory.  Removing it after a
             // truncating checkpoint restores the strict Off/no-store state;
             // it does not make an unsupported forensic-erasure claim.
-            try removeOwnedStoreDirectory()
+            do {
+                try removeOwnedStoreDirectory()
+            } catch {
+                cleanupFailureLatched = true
+                throw committedCleanupFailure(error)
+            }
             return
         }
         try openIfNeeded()
         do {
             try persistPolicyAndPurge(policy)
-        } catch {
+        } catch let error as HistoryCommittedCleanupFailure {
             // A policy transaction may have committed before proof/checkpoint
             // failed. Reconcile the cache from SQLite, then latch all history
             // reads/writes closed until a retry/relaunch completes cleanup.
@@ -470,20 +489,20 @@ public actor SQLiteHistoryStore: HistoryStore {
             integerBindings: [effectiveNow]
         )
         defer { close(proof) }
+        try transaction {
+            let statement = try prepare("DELETE FROM records WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?")
+            defer { sqlite3_finalize(statement) }
+            try bind(effectiveNow, to: statement, at: 1)
+            try stepDone(statement)
+        }
         do {
-            try transaction {
-                let statement = try prepare("DELETE FROM records WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?")
-                defer { sqlite3_finalize(statement) }
-                try bind(effectiveNow, to: statement, at: 1)
-                try stepDone(statement)
-            }
             try checkpointAfterDeletion()
             try verifyCleanupProof(proof)
             try destroyCleanupProof(proof)
             cleanupFailureLatched = false
         } catch {
             cleanupFailureLatched = true
-            throw error
+            throw committedCleanupFailure(error)
         }
         generation &+= 1
     }
@@ -852,9 +871,13 @@ public actor SQLiteHistoryStore: HistoryStore {
                 try execute("DELETE FROM records")
             }
         }
-        try checkpointAfterDeletion()
-        try verifyCleanupProof(proof)
-        try destroyCleanupProof(proof)
+        do {
+            try checkpointAfterDeletion()
+            try verifyCleanupProof(proof)
+            try destroyCleanupProof(proof)
+        } catch {
+            throw committedCleanupFailure(error)
+        }
     }
 
     private func advanceHighWaterMarkForMutation() throws -> Int64 {
@@ -1180,8 +1203,19 @@ public actor SQLiteHistoryStore: HistoryStore {
 
     private func recoverLatchedCleanupForRetry() throws {
         guard cleanupFailureLatched else { return }
-        try recoverInterruptedCleanup()
+        do {
+            try recoverInterruptedCleanup()
+        } catch {
+            throw committedCleanupFailure(error)
+        }
         policy = try storedRetentionPolicy()
+    }
+
+    private func committedCleanupFailure(_ error: Error) -> HistoryCommittedCleanupFailure {
+        if let committed = error as? HistoryCommittedCleanupFailure { return committed }
+        return HistoryCommittedCleanupFailure(
+            cause: error as? HistoryStoreError ?? .ioFailed
+        )
     }
 
     /// Exact UTF-8 plus stable unicode61-like tokens cover both the content
@@ -1346,6 +1380,7 @@ public actor SQLiteHistoryStore: HistoryStore {
 
     private func checkpointAfterDeletion() throws {
         testBeforeDeletionCheckpoint?()
+        if let testPostCommitCleanupFailure { throw testPostCommitCleanupFailure }
         if testCheckpointFailure { throw HistoryStoreError.cleanupIncomplete }
         let statement = try prepare("PRAGMA wal_checkpoint(TRUNCATE)")
         defer { sqlite3_finalize(statement) }

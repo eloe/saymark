@@ -9,6 +9,7 @@ final class RecentDictationsPresentationTests: XCTestCase {
         RecentDictationsController.shared.resetReinsertSeamsForTesting()
         RecentDictationsController.shared.setPreviousApplicationForTesting(nil)
         RecentDictationsController.shared.setRecordsForTesting([])
+        RecentDictationsController.shared.configureStoreForTesting(nil, retention: .off)
         super.tearDown()
     }
 
@@ -205,6 +206,67 @@ final class RecentDictationsPresentationTests: XCTestCase {
         }
     }
 
+    func testActualControllerRoutesClearPresentationForEveryPostCommitCause() async throws {
+        let controller = RecentDictationsController.shared
+
+        var fixture = try await makeCommittedCleanupFixture(cause: .busy)
+        controller.configureStoreForTesting(fixture.store, retention: .days30)
+        controller.setRecordsForTesting([fixture.record])
+        await controller.deleteForTesting(fixture.record)
+        assertCommittedCleanupInvalidated(controller, label: "delete/busy")
+        controller.configureStoreForTesting(nil, retention: .off)
+        await fixture.store.shutdown()
+        try FileManager.default.removeItem(at: fixture.directory)
+
+        fixture = try await makeCommittedCleanupFixture(cause: .ioFailed)
+        controller.configureStoreForTesting(fixture.store, retention: .days30)
+        controller.setRecordsForTesting([fixture.record])
+        await controller.clearHistoryForTesting()
+        assertCommittedCleanupInvalidated(controller, label: "clear/ioFailed")
+        controller.configureStoreForTesting(nil, retention: .off)
+        await fixture.store.shutdown()
+        try FileManager.default.removeItem(at: fixture.directory)
+
+        fixture = try await makeCommittedCleanupFixture(cause: .corrupt)
+        controller.configureStoreForTesting(fixture.store, retention: .days30)
+        controller.setRecordsForTesting([fixture.record])
+        let retentionSucceeded = await controller.setRetention(.days7)
+        XCTAssertFalse(retentionSucceeded)
+        assertCommittedCleanupInvalidated(controller, label: "retention/corrupt")
+        controller.configureStoreForTesting(nil, retention: .off)
+        await fixture.store.shutdown()
+        try FileManager.default.removeItem(at: fixture.directory)
+
+        fixture = try await makeCommittedCleanupFixture(cause: .permissionDenied)
+        controller.configureStoreForTesting(fixture.store, retention: .days30)
+        controller.setRecordsForTesting([fixture.record])
+        let offSucceeded = await controller.setRetention(.off)
+        XCTAssertFalse(offSucceeded)
+        assertCommittedCleanupInvalidated(controller, label: "off/permissionDenied")
+        controller.configureStoreForTesting(nil, retention: .off)
+        await fixture.store.shutdown()
+        try FileManager.default.removeItem(at: fixture.directory)
+
+        fixture = try await makeCommittedCleanupFixture(cause: .busy)
+        controller.configureStoreForTesting(fixture.store, retention: .days30)
+        controller.setRecordsForTesting([fixture.record])
+        let sessionSucceeded = await controller.setRetention(.session)
+        XCTAssertFalse(sessionSucceeded)
+        assertCommittedCleanupInvalidated(controller, label: "session/busy")
+        controller.configureStoreForTesting(nil, retention: .off)
+        await fixture.store.shutdown()
+        try FileManager.default.removeItem(at: fixture.directory)
+
+        fixture = try await makeCommittedCleanupFixture(cause: .ioFailed)
+        controller.configureStoreForTesting(fixture.store, retention: .days30)
+        controller.setRecordsForTesting([fixture.record])
+        await controller.purgeExpiredForTesting()
+        assertCommittedCleanupInvalidated(controller, label: "expiry/ioFailed")
+        controller.configureStoreForTesting(nil, retention: .off)
+        await fixture.store.shutdown()
+        try FileManager.default.removeItem(at: fixture.directory)
+    }
+
     func testIntegratedFinalDeliveryInsertsExactlyOnceAndMarksTheSameRecord() async {
         let expected = makeRecord(text: "integrated exact delivery")
         var insertions = 0
@@ -276,6 +338,40 @@ final class RecentDictationsPresentationTests: XCTestCase {
             deliveryState: .inserted,
             deliveryUpdatedAtMilliseconds: 2
         )
+    }
+
+    private func makeCommittedCleanupFixture(
+        cause: HistoryStoreError
+    ) async throws -> (
+        directory: URL,
+        store: SQLiteHistoryStore,
+        record: HistoryRecord
+    ) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saymark-hosted-cleanup-\(UUID().uuidString)", isDirectory: true)
+        var setup: SQLiteHistoryStore? = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days30
+        )
+        let storedRecord = try await setup?.recordFinal(.init(text: "private hosted fixture"))
+        let record = try XCTUnwrap(storedRecord)
+        await setup?.shutdown()
+        setup = nil
+        let failing = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days30,
+            testPostCommitCleanupFailure: cause
+        )
+        return (directory, failing, record)
+    }
+
+    private func assertCommittedCleanupInvalidated(
+        _ controller: RecentDictationsController,
+        label: String
+    ) {
+        XCTAssertTrue(controller.records.isEmpty, label)
+        XCTAssertFalse(controller.isHistoryAvailable, label)
+        XCTAssertEqual(controller.query, "", label)
     }
 
     private func contains(_ sentinel: String, in value: Any) -> Bool {

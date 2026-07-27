@@ -218,7 +218,10 @@ final class HistoryStoreTests: XCTestCase {
             testCheckpointFailure: true
         )
         await XCTAssertThrowsErrorAsync(try await failing.setRetentionPolicy(.off)) { error in
-            XCTAssertEqual(error as? HistoryStoreError, .cleanupIncomplete)
+            XCTAssertEqual(
+                error as? HistoryCommittedCleanupFailure,
+                HistoryCommittedCleanupFailure(cause: .cleanupIncomplete)
+            )
         }
         let failingPolicy = try await failing.durableRetentionPolicy()
         let blockedRecord = try await failing.recordFinal(.init(text: "must remain blocked"))
@@ -247,7 +250,10 @@ final class HistoryStoreTests: XCTestCase {
             testProofFailure: true
         )
         await XCTAssertThrowsErrorAsync(try await failing.setRetentionPolicy(.days7)) { error in
-            XCTAssertEqual(error as? HistoryStoreError, .cleanupIncomplete)
+            XCTAssertEqual(
+                error as? HistoryCommittedCleanupFailure,
+                HistoryCommittedCleanupFailure(cause: .cleanupIncomplete)
+            )
         }
         let failingPolicy = try await failing.durableRetentionPolicy()
         XCTAssertEqual(failingPolicy, .days7)
@@ -326,7 +332,9 @@ final class HistoryStoreTests: XCTestCase {
                 try await store.clear()
                 XCTFail("Injected proof failure unexpectedly succeeded")
             } catch {
-                guard error as? HistoryStoreError == .cleanupIncomplete else { throw error }
+                guard error as? HistoryCommittedCleanupFailure
+                    == HistoryCommittedCleanupFailure(cause: .cleanupIncomplete)
+                else { throw error }
             }
             XCTAssertTrue(FileManager.default.fileExists(
                 atPath: directory.appendingPathComponent(".cleanup-proof").path
@@ -446,6 +454,37 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(deletedDistinct)
         let finalRows = try await store.records()
         XCTAssertTrue(finalRows.isEmpty)
+    }
+
+    func testPostCommitCleanupFailurePreservesEveryUnderlyingCause() async throws {
+        let root = directory!
+        for cause in [
+            HistoryStoreError.busy,
+            .ioFailed,
+            .corrupt,
+            .permissionDenied,
+        ] {
+            directory = root.appendingPathComponent("\(cause)", isDirectory: true)
+            var setup: SQLiteHistoryStore? = try makeStore()
+            _ = try await setup?.recordFinal(.init(text: "post commit \(cause)"))
+            await setup?.shutdown()
+            setup = nil
+
+            let failing = try SQLiteHistoryStore(
+                directoryURL: directory,
+                policy: .days30,
+                now: { self.now },
+                testPostCommitCleanupFailure: cause
+            )
+            await XCTAssertThrowsErrorAsync(try await failing.clear()) { error in
+                XCTAssertEqual(
+                    error as? HistoryCommittedCleanupFailure,
+                    HistoryCommittedCleanupFailure(cause: cause)
+                )
+            }
+            await failing.shutdown()
+        }
+        directory = root
     }
 
     func testSubprocessProofDisposalRecoversFromKillAtEveryTerminalBoundary() async throws {

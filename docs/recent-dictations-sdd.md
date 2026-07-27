@@ -230,11 +230,17 @@ verified, and promoted to disposable. A crash at any disposable boundary resumes
 safe disposal without parsing its potentially partial contents. Invalid active
 proofs fail closed and remain available for repair. Off closes the in-process
 write gate before cleanup begins and remains fail-closed if proof or
-checkpointing is incomplete. Any cleanup failure after a committed delete,
-Clear, retention decrease, or Off transition immediately clears and disables
-the published private presentation. Idle cleanup runs at background priority
-only after at least five seconds without user input and while no recording,
-history window, or pending history action exists.
+checkpointing is incomplete. Every error arising after a destructive
+transaction commits is normalized to `HistoryCommittedCleanupFailure`, which
+preserves its underlying `HistoryStoreError` cause (including busy, I/O,
+corruption, and permission failures) while unambiguously marking the commit
+boundary. Ordinary pre-commit errors are never given that marker. The
+controller treats the marker—not one specific SQLite error—as authority to
+immediately clear, close, and disable the published private presentation after
+single delete, Clear, retention decrease, Off, Session, or expiry cleanup. Idle
+cleanup runs at background priority only after at least five seconds without
+user input and while no recording, history window, or pending history action
+exists.
 
 ### 3.2 Storage location and format
 
@@ -681,10 +687,10 @@ merely because it appears in a test name.
 | `testUnicodeSearchContractCoversNormalizationScriptsAndLiteralGrammar` and `testTenThousandGeneratedUnicodeQueriesUseRealSQLiteUnicode61WithoutCrash` | RD-U09/U10/I06: SQLite's configured `unicode61 remove_diacritics 2` tokenizer is the sole query-token authority, including normalization, RTL, emoji, category Co/private-use, operators, and 10,000 generated real-database queries. Only implementation-authored quoted-prefix grammar reaches MATCH. Malformed UTF-8 is repaired at Swift's `String` boundary before storage. |
 | `testConcurrentReadsWritesDeletesAndPolicyChangesRemainSerialized` | RD-I03: 120 mixed actor operations complete without `BUSY`, deadlock, resurrection, or cap violation. Reader snapshot isolation remains SQLite's WAL transaction guarantee; the app owns one connection and never exposes a long-lived read transaction. |
 | `testTenThousandRecordSearchAndPurgeAcceptance` | RD-I07/I08/I12: real 10,000-row SQLite+FTS fixture, cold and detached/non-main list checks, twenty searches with <=100 ms p95, <30 s purge budget, logical empty, controlled-artifact proof, and a scan of newly-created external temp artifacts. Test output records macOS, memory, SQLite, fixture size, and measured timings. |
-| `testEveryDestructivePathRemovesFullAndFTSNormalizedTokenFragments`, duplicate/shared-token ownership, proof recovery, and subprocess SIGKILL tests | RD-U12–U14/U21 and RD-I01/I02/I12: delete, Clear, Off, Session, expiry purge, and downward transitions remove full text plus normalized token/prefix/suffix probes; retained duplicate text and shared tokens do not false-latch cleanup; failed proof persists; pre-activation pending proof is scrubbed; invalid active proof fails closed; validated active proof replays after injected failure and SIGKILL with committed frames still live in WAL before checkpoint; kill at every terminal proof-disposal boundary recovers without an invalid active proof. |
+| `testEveryDestructivePathRemovesFullAndFTSNormalizedTokenFragments`, `testPostCommitCleanupFailurePreservesEveryUnderlyingCause`, duplicate/shared-token ownership, proof recovery, and subprocess SIGKILL tests | RD-U12–U14/U21 and RD-I01/I02/I12: delete, Clear, Off, Session, expiry purge, and downward transitions remove full text plus normalized token/prefix/suffix probes; every post-commit cleanup error is distinctly marked while preserving busy/I/O/corrupt/permission cause; retained duplicate text and shared tokens do not false-latch cleanup; failed proof persists; pre-activation pending proof is scrubbed; invalid active proof fails closed; validated active proof replays after injected failure and SIGKILL with committed frames still live in WAL before checkpoint; kill at every terminal proof-disposal boundary recovers without an invalid active proof. |
 | `DiagnosticLoggingTests.testHistoryDiagnosticsAcceptOnlyLiteralEventAndClosedBoundedValues` plus hosted source/privacy tests | RD-U20/I09/I13: only literal `history.operation` with closed operation/outcome/retention and bounded count/duration values crosses diagnostics. History sources contain no PostHog call; the whole-flow negative assertion is compile-time/source evidence because there is no history analytics dependency to inject. |
 | `testStoreIsExcludedFromBackupAndSpotlightDiscovery` | RD-I14: backup exclusion, `.metadata_never_index`, and an `mdfind -onlyin` negative sentinel check. |
-| `RecentDictationsPresentationTests` | RD-I11 and RD-UI03/05/06/09/11/12/13 as deterministic hosted evidence: 21-row lookahead means exactly 20 never advertises more; 20→25 paging; every committed-cleanup failure path (single delete, Clear, retention decrease, and Off) closes and clears published state; integrated history-before-delivery inserts exactly once with or without a history record, plus the private-window/copy/reinsert/accessibility/privacy cases. |
+| `RecentDictationsPresentationTests` | RD-I11 and RD-UI03/05/06/09/11/12/13 as deterministic hosted evidence: 21-row lookahead means exactly 20 never advertises more; 20→25 paging; actual SQLite-backed controller routes inject busy, I/O, corrupt, and permission causes after commit and prove single delete, Clear, retention decrease, Off, Session, and expiry cleanup close and clear published state; integrated history-before-delivery inserts exactly once with or without a history record, plus the private-window/copy/reinsert/accessibility/privacy cases. |
 
 Two platform checks stay release-environment gates rather than ordinary
 developer-account tests:
