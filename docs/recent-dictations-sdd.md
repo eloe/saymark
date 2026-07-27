@@ -748,6 +748,13 @@ developer-account tests:
 9. **Video evidence:** the final demo must use synthetic transcript text and a
    test profile, never a real person's retained history.
 
+The release evidence walkthrough is
+[`videos/recent-dictations-evidence.mp4`](videos/recent-dictations-evidence.mp4).
+It uses synthetic text and is explicitly labeled as an approved-design and
+engineering-evidence walkthrough, not a live screen recording or private-data
+capture. Its claims are bounded to the 82 passing SaymarkKit tests, 43 passing
+hosted app tests, and Sol High approval recorded for `b037ffc`.
+
 ## 10. Claude Opus independent-review package
 
 The initial and follow-up independent reviews are retained in
