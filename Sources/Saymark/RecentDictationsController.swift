@@ -24,6 +24,10 @@ final class RecentDictationsController {
         Task {
             do {
                 if retention == .off {
+                    // An Off setting after relaunch still has to clear any
+                    // existing database; `.off` initialization itself is
+                    // intentionally side-effect free.
+                    if store == nil { store = try makeStore(.days30) }
                     if let store { try await store.setRetentionPolicy(.off) }
                     store = nil
                     records = []
