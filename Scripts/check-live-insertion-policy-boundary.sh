@@ -5,7 +5,6 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 policy_root="$repo_root/SaymarkKit/Sources/LiveInsertionPolicy"
 package_file="$repo_root/SaymarkKit/Package.swift"
 fixture_root="$repo_root/Scripts/fixtures/live-insertion-policy-boundary"
-import_checker="$repo_root/Scripts/check-swift-import-declarations.mjs"
 
 fail() {
   printf 'live-insertion-policy-boundary: %s\n' "$1" >&2
@@ -21,29 +20,46 @@ fail() {
 # deliberately empty: `Swift` is implicit, so any explicit module import fails
 # closed. This excludes Foundation/CoreFoundation/XPC/IPC as well as UI and AX
 # frameworks. A future adapter must live outside this target after evidence.
-# Do not use a source regex to find imports. Swift permits arbitrary comments
-# and trivia between attributes/access modifiers and `import`, and source text
-# also legitimately contains the word in comments, strings, and regex
-# literals. The deterministic lexer skips those lexical regions and examines
-# every #if branch, which compiler parse-tree dumps deliberately do not retain.
-# Each source is separately compiler-parsed first, so malformed source fails
-# closed before the lexical declaration check runs.
+# Do not use a source regex or a home-grown lexer to find imports. Swift permits
+# arbitrary trivia around declarations, while comments, strings, and regex
+# literals can legitimately contain import-like text. The compiler parser
+# represents a real declaration as `(import_decl ...)` in its parse tree.
+#
+# `-dump-parse` intentionally omits inactive conditional-compilation branches.
+# A second compiler pass replaces only conditional directive lines with blank
+# lines, exposing every branch to the parser while preserving source locations.
+# Any syntax failure in either required pass fails the boundary closed.
 forbidden_symbol='\b(AX[A-Za-z0-9_]*|CGEvent[A-Za-z0-9_]*|NSEvent|NSPasteboard|NSAppleScript|NSWorkspace|CFMessagePort|DistributedNotificationCenter|NSXPC|xpc_[A-Za-z0-9_]*|dlopen|dlsym|dladdr|NSClassFromString|objc_lookUpClass|unsafeBitCast|@_silgen_name|@_cdecl|@_expose|@_dynamicReplacement|Process|NSTask|URLSession|Socket)\b'
 
 check_source() {
   local root="$1"
-  local source matches
+  local source parse_tree matches
 
   while IFS= read -r -d '' source; do
-    if ! swiftc -swift-version 6 -parse "$source" >/dev/null 2>&1; then
+    if ! parse_tree="$(xcrun swiftc -swift-version 6 -dump-parse "$source" 2>&1)"; then
+      printf '%s\n' "$parse_tree" >&2
       printf '%s: Swift parser rejected source\n' "${source#$repo_root/}" >&2
       return 1
     fi
-  done < <(find "$root" -type f -name '*.swift' -print0)
 
-  if ! node "$import_checker" "$root"; then
-    return 1
-  fi
+    if printf '%s\n' "$parse_tree" | rg -q '\(import_decl([[:space:]]|$)'; then
+      printf '%s: explicit Swift import declaration\n' "${source#$repo_root/}" >&2
+      return 1
+    fi
+
+    if rg -q '^[[:space:]]*#(if|elseif|else|endif)([[:space:]]|$)' "$source"; then
+      if ! parse_tree="$(perl -pe 'if (/^\s*#(?:if|elseif|else|endif)\b/) { s/[^\r\n]/ /g }' "$source" | xcrun swiftc -swift-version 6 -dump-parse - 2>&1)"; then
+        printf '%s\n' "$parse_tree" >&2
+        printf '%s: Swift parser rejected conditionally flattened source\n' "${source#$repo_root/}" >&2
+        return 1
+      fi
+
+      if printf '%s\n' "$parse_tree" | rg -q '\(import_decl([[:space:]]|$)'; then
+        printf '%s: explicit Swift import declaration in conditional branch\n' "${source#$repo_root/}" >&2
+        return 1
+      fi
+    fi
+  done < <(find "$root" -type f -name '*.swift' -print0)
 
   matches="$(rg -n -P --glob '*.swift' -e "$forbidden_symbol" "$root" || true)"
   [[ -z "$matches" ]] || {
@@ -80,7 +96,7 @@ while IFS= read -r -d '' fixture; do
   fi
 done < <(find "$fixture_root" -maxdepth 1 -type f -name '*.swift' -print0)
 
-# Positive fixtures prove deterministic lexical import detection does not mistake
+# Positive fixtures prove compiler-derived import detection does not mistake
 # comments, strings, raw multiline strings, regex literals, or escaped
 # identifiers for declarations.
 positive_fixture_root="$fixture_root/allowed"

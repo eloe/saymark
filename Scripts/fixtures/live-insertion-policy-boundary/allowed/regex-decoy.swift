@@ -1,1 +1,1 @@
-let importPattern = /public\s+import\s+Foundation/
+let importPattern = { /import Foundation/ }
