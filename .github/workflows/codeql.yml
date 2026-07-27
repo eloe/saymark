@@ -42,19 +42,23 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
-          echo "draft_deferred=false" >> "$GITHUB_OUTPUT"
-
           if [[ "$EVENT_NAME" == "pull_request" && "$PR_DRAFT" == "true" ]]; then
-            echo "draft_deferred=true" >> "$GITHUB_OUTPUT"
-            echo "run_codeql=false" >> "$GITHUB_OUTPUT"
-            echo "query_suite=default" >> "$GITHUB_OUTPUT"
+            {
+              echo "draft_deferred=true"
+              echo "run_codeql=false"
+              echo "query_suite=default"
+            } >> "$GITHUB_OUTPUT"
             echo "Skipping traced Swift build while the pull request is a draft."
             exit 0
           fi
 
+          echo "draft_deferred=false" >> "$GITHUB_OUTPUT"
+
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            echo "run_codeql=true" >> "$GITHUB_OUTPUT"
-            echo "query_suite=security-extended" >> "$GITHUB_OUTPUT"
+            {
+              echo "run_codeql=true"
+              echo "query_suite=security-extended"
+            } >> "$GITHUB_OUTPUT"
             echo "Full extended scan required for $EVENT_NAME."
             exit 0
           fi
