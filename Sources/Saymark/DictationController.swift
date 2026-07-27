@@ -188,7 +188,11 @@ final class DictationController {
         let insert = InsertMode.current
         // History is explicit opt-in at the beginning of the utterance. A later
         // settings change must not retroactively retain speech that began Off.
-        historyEnabledAtStart = RecentDictationsRetention.current != .off && insert != .hudOnly
+        let history = RecentDictationsController.shared
+        historyEnabledAtStart = history.isStartupComplete
+            && history.isHistoryAvailable
+            && history.activeRetention != .off
+            && insert != .hudOnly
         let toggle = TriggerMode.current == .toggle
         // Give visual feedback before AVAudioEngine setup. Capture startup takes
         // around 100 ms on this Mac; the HUD should never wait behind it.

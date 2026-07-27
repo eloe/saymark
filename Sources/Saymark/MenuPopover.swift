@@ -132,7 +132,8 @@ struct MenuPopover: View {
             // Re-run the first-run tour: reset to Welcome, then ask the App scene
             // (via the router) to open the onboarding window.
             footerRow("Setup tour…", "") { onSetupTour() }
-            if RecentDictationsRetention.current != .off {
+            if RecentDictationsController.shared.isStartupComplete,
+               RecentDictationsController.shared.isHistoryAvailable {
                 footerRow("Recent Dictations…", "") { onRecentDictations() }
             }
             footerRow("Quit Saymark", "⌘ Q") { NSApplication.shared.terminate(nil) }

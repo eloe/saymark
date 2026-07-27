@@ -21,10 +21,13 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var previousApplication: NSRunningApplication?
     private var refreshGeneration: UInt64 = 0
-    private(set) var isHistoryAvailable = RecentDictationsRetention.current != .session
+    private(set) var activeRetention: RecentDictationsRetention = .off
+    private(set) var isStartupComplete = false
+    private(set) var isHistoryAvailable = false
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var searchCancellation: HistoryWriteCancellation?
     @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
+    @ObservationIgnored private var isRecordingForMaintenance: @MainActor () -> Bool = { false }
 
     private override init() {}
 
@@ -32,9 +35,9 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     /// path.  A later dictation never waits for directory/schema work merely
     /// to become recoverable.
     func prepareForDelivery() async {
-        guard RecentDictationsRetention.current != .off else { return }
+        guard isStartupComplete, activeRetention != .off else { return }
         do {
-            if store == nil { store = try makeStore(RecentDictationsRetention.current) }
+            if store == nil { store = try makeStore(.off) }
             try await store?.warmUp()
         } catch {
             // History is optional. Keep the failure local and fail open when
@@ -47,7 +50,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     /// path. It runs once storage is warm and may be retried from future idle
     /// opportunities after a busy checkpoint.
     func runIdleMaintenance() async {
-        guard RecentDictationsRetention.current != .off else { return }
+        guard isStartupComplete, activeRetention != .off, isTrulyIdleForMaintenance else { return }
         do {
             await prepareForDelivery()
             try await store?.purgeExpired()
@@ -63,7 +66,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     /// checkpoint without ever putting that work on the delivery path.
     func startRecurringIdleMaintenance() {
         maintenanceTask?.cancel()
-        maintenanceTask = Task { [weak self] in
+        maintenanceTask = Task(priority: .background) { [weak self] in
             while !Task.isCancelled {
                 await self?.runIdleMaintenance()
                 do { try await Task.sleep(nanoseconds: 15 * 60 * 1_000_000_000) }
@@ -72,21 +75,45 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         }
     }
 
+    func configureIdleMaintenance(isRecording: @escaping @MainActor () -> Bool) {
+        isRecordingForMaintenance = isRecording
+    }
+
+    private var isTrulyIdleForMaintenance: Bool {
+        guard !isRecordingForMaintenance(),
+              window?.isVisible != true,
+              pendingReinsert == nil,
+              pendingDeletion == nil
+        else { return false }
+        let inputTypes: [CGEventType] = [
+            .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+            .mouseMoved, .leftMouseDragged, .rightMouseDragged,
+            .otherMouseDragged, .scrollWheel,
+        ]
+        let idleSeconds = inputTypes.map {
+            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0)
+        }.min() ?? 0
+        return idleSeconds >= 5
+    }
+
     /// The store changes policy before the preferences mirror changes.  That
     /// ordering prevents the UI from claiming a destructive privacy transition
     /// succeeded when its transaction/checkpoint failed.
     func setRetention(_ retention: RecentDictationsRetention) async -> Bool {
+        guard isStartupComplete else { return false }
         do {
             if retention == .off {
                     // An Off setting after relaunch still has to clear any
                     // existing database; `.off` initialization itself is
                     // intentionally side-effect free.
-                    if store == nil { store = try makeStore(.days30) }
+                    if store == nil { store = try makeStore(.off) }
                     if let store { try await store.setRetentionPolicy(.off) }
                     store = nil
                     refreshGeneration &+= 1
                     records = []
                 UserDefaults.standard.set(retention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
+                activeRetention = .off
+                isHistoryAvailable = false
                 records = []
                 query = ""
                 return true
@@ -98,17 +125,23 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             if let store {
                 activeStore = store
             } else {
-                activeStore = try makeStore(retention)
+                activeStore = try makeStore(.off)
                 self.store = activeStore
             }
             try await activeStore.setRetentionPolicy(retention.historyPolicy)
+            let durable = try await activeStore.durableRetentionPolicy()
+            guard durable == retention.historyPolicy else { throw HistoryStoreError.corrupt }
             UserDefaults.standard.set(retention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
+            activeRetention = retention
+            isHistoryAvailable = true
             await refresh()
             return true
         } catch HistoryStoreError.cleanupIncomplete {
+            await reconcileToDurablePolicy()
             errorMessage = "History was removed, but Saymark could not finish cleaning its local database. Quit other Saymark windows and try again."
             return false
         } catch {
+            await reconcileToDurablePolicy()
             errorMessage = "Recent Dictations is unavailable on this Mac."
             return false
         }
@@ -117,20 +150,42 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     /// Session history is intentionally durable only for the current process.
     /// Calling this at launch clears a crash-left session before the menu or
     /// window can expose it.
-    func clearPriorSessionAtLaunch() async {
-        guard RecentDictationsRetention.current == .session else {
-            isHistoryAvailable = RecentDictationsRetention.current != .off
-            return
-        }
-        // Do not expose the menu/window while a crash-left session might still
-        // be on disk. The defaults mirror is only a hint; the store transition
-        // is the privacy authority.
+    func initializeAtLaunch() async {
         isHistoryAvailable = false
-        isHistoryAvailable = await setRetention(.session)
+        isStartupComplete = false
+        activeRetention = .off
+        do {
+            let startupStore = try makeStore(.off)
+            store = startupStore
+            var durable = try await startupStore.durableRetentionPolicy()
+            if durable == .off {
+                // Resume any interrupted Off cleanup before publishing startup.
+                try await startupStore.setRetentionPolicy(.off)
+                store = nil
+            } else if durable == .session {
+                // A previous process's session is never exposed in this one.
+                try await startupStore.setRetentionPolicy(.session)
+                durable = .session
+            } else if durable.isEnabled {
+                try await startupStore.purgeExpired()
+            }
+            activeRetention = RecentDictationsRetention(durable)
+            UserDefaults.standard.set(activeRetention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
+            isHistoryAvailable = activeRetention != .off
+            isStartupComplete = true
+        } catch {
+            // No menu, record eligibility, or settings claim is published
+            // until the durable store has opened and launch cleanup completed.
+            store = nil
+            activeRetention = .off
+            isHistoryAvailable = false
+            isStartupComplete = true
+            errorMessage = "Recent Dictations is unavailable on this Mac."
+        }
     }
 
     func clearSessionAtTermination() {
-        guard RecentDictationsRetention.current == .session else { return }
+        guard activeRetention == .session else { return }
         guard let store else { return }
         // `applicationWillTerminate` does not keep ordinary Tasks alive. Give
         // the already-warm writer a bounded, synchronous termination window;
@@ -145,7 +200,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     }
 
     func present() {
-        guard RecentDictationsRetention.current != .off, isHistoryAvailable else { return }
+        guard isStartupComplete, activeRetention != .off, isHistoryAvailable else { return }
         previousApplication = NSWorkspace.shared.frontmostApplication
         let window = self.window ?? makeWindow()
         self.window = window
@@ -157,7 +212,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     func clearHistory() {
         Task {
             do {
-                if store == nil { store = try makeStore(RecentDictationsRetention.current) }
+                if store == nil { store = try makeStore(.off) }
                 try await store?.clear()
                 refreshGeneration &+= 1
                 records = []
@@ -180,8 +235,8 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         let requestedGeneration = refreshGeneration
         let requestedQuery = self.query
         do {
-            if store == nil, RecentDictationsRetention.current != .off {
-                store = try makeStore(RecentDictationsRetention.current)
+            if store == nil, activeRetention != .off {
+                store = try makeStore(.off)
             }
             let snapshot = try await store?.records(
                 query: requestedQuery,
@@ -228,31 +283,25 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         isHUDOnly: Bool
     ) async -> HistoryRecord? {
         guard enabledAtStart,
-              RecentDictationsRetention.current != .off,
+              isStartupComplete,
+              activeRetention != .off,
               !secureInputActive,
               !isHUDOnly
         else { return nil }
-        do {
-            guard let store else {
-                // This must normally already be warm. Never turn late startup
-                // into a release-to-delivery dependency; warm for the next
-                // eligible final instead.
-                Task { await prepareForDelivery() }
-                errorMessage = "Recent Dictations was skipped to keep dictation instant."
-                return nil
-            }
-            let deadline = DispatchTime.now().uptimeNanoseconds + 100_000_000
-            return await recordBeforeDelivery(
-                store: store,
-                finalization: .init(text: text, secureInputActive: secureInputActive, isHUDOnly: isHUDOnly),
-                deadline: deadline
-            )
-        } catch {
-            // History is deliberately fail-open: no persistence error is allowed
-            // to suppress the user's final delivery.
+        guard let store else {
+            // This must normally already be warm. Never turn late startup
+            // into a release-to-delivery dependency; warm for the next
+            // eligible final instead.
+            Task { await prepareForDelivery() }
             errorMessage = "Recent Dictations was skipped to keep dictation instant."
             return nil
         }
+        let deadline = DispatchTime.now().uptimeNanoseconds + 100_000_000
+        return await recordBeforeDelivery(
+            store: store,
+            finalization: .init(text: text, secureInputActive: secureInputActive, isHUDOnly: isHUDOnly),
+            deadline: deadline
+        )
     }
 
     func markDelivery(_ record: HistoryRecord?, state: HistoryDeliveryState) {
@@ -360,7 +409,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
 
     private func announce(_ message: String) {
         NSAccessibility.post(
-            element: window ?? NSApp,
+            element: window ?? NSApplication.shared,
             notification: .announcementRequested,
             userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue]
         )
@@ -373,6 +422,23 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             .appendingPathComponent(bundleID, isDirectory: true)
             .appendingPathComponent("RecentDictations", isDirectory: true)
         return try SQLiteHistoryStore(directoryURL: root, policy: retention.historyPolicy)
+    }
+
+    private func reconcileToDurablePolicy() async {
+        guard let store else {
+            activeRetention = .off
+            isHistoryAvailable = false
+            return
+        }
+        do {
+            let durable = try await store.durableRetentionPolicy()
+            activeRetention = RecentDictationsRetention(durable)
+            UserDefaults.standard.set(activeRetention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
+            isHistoryAvailable = activeRetention != .off
+        } catch {
+            activeRetention = .off
+            isHistoryAvailable = false
+        }
     }
 
     private func makeWindow() -> NSWindow {
@@ -388,6 +454,10 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         window.center()
         return window
     }
+
+    #if DEBUG
+    func makeWindowForTesting() -> NSWindow { makeWindow() }
+    #endif
 
     func windowWillClose(_ notification: Notification) {
         // Do not keep search terms, selected text, records, or the destination
@@ -509,6 +579,17 @@ private final class RecordDeadlineGate: @unchecked Sendable {
 }
 
 private extension RecentDictationsRetention {
+    init(_ policy: HistoryRetentionPolicy) {
+        switch policy {
+        case .off: self = .off
+        case .session: self = .session
+        case .days7: self = .days7
+        case .days30: self = .days30
+        case .days90: self = .days90
+        case .untilDeleted: self = .untilDeleted
+        }
+    }
+
     var historyPolicy: HistoryRetentionPolicy {
         switch self {
         case .off: return .off

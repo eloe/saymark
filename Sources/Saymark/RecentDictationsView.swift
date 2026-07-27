@@ -38,6 +38,8 @@ struct RecentDictationsView: View {
                             .foregroundStyle(.secondary)
                     }
                     .tag(record.id)
+                    .accessibilityLabel("Dictation preview")
+                    .accessibilityValue(record.text.historyExcerpt)
                 }
                 .frame(minWidth: 250)
                 .accessibilityIdentifier("recent-dictations.list")
@@ -97,7 +99,7 @@ struct RecentDictationsView: View {
     }
 }
 
-private extension String {
+extension String {
     /// Lists are deliberately preview-only. Full transcript text is exposed
     /// solely in the selected detail pane or by an explicit Copy/Reinsert.
     var historyExcerpt: String {

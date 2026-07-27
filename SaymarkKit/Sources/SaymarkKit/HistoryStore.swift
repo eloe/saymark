@@ -98,16 +98,20 @@ public extension HistoryStore {
 /// AppKit or delivery dependency: callers cannot persist a secure-input or
 /// HUD-only final through this boundary.
 public actor SQLiteHistoryStore: HistoryStore {
+    private struct FileIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+    }
     public static let databaseName = "history.sqlite3"
     public static let maximumFinalTextBytes = 100_000
     public static let maximumSearchQueryBytes = 1_024
     public static let maximumSearchTokens = 12
     public static let defaultResultLimit = 20
     public static let maximumResultLimit = 25
-    private static let maximumCleanupSentinels = 64
     private static let controlledArtifactNames: Set<String> = [
         databaseName, "\(databaseName)-wal", "\(databaseName)-shm",
-        ".history.lock", ".metadata_never_index"
+        ".history.lock", ".metadata_never_index", ".cleanup-proof",
+        ".migration-temp"
     ]
 
     private let directoryURL: URL
@@ -147,8 +151,24 @@ public actor SQLiteHistoryStore: HistoryStore {
     /// intentionally performs no record mutation, so the final-delivery path
     /// does not pay schema or filesystem setup cost.
     public func warmUp() throws {
-        guard policy.isEnabled else { return }
+        guard policy.isEnabled || FileManager.default.fileExists(atPath: directoryURL.path) else { return }
         try openIfNeeded()
+    }
+
+    /// Reads the transactionally persisted policy. The caller-provided policy
+    /// is only a new-store bootstrap value; an existing store always wins.
+    public func durableRetentionPolicy() throws -> HistoryRetentionPolicy {
+        guard policy.isEnabled || FileManager.default.fileExists(atPath: directoryURL.path) else {
+            return .off
+        }
+        try openIfNeeded()
+        return policy
+    }
+
+    /// Releases the private connection and advisory lock. Primarily useful for
+    /// deterministic lifecycle tests and orderly controller shutdown.
+    public func shutdown() {
+        closeDatabase()
     }
 
     public func recordFinal(_ finalization: HistoryFinalization) throws -> HistoryRecord? {
@@ -338,19 +358,34 @@ public actor SQLiteHistoryStore: HistoryStore {
     public func clear() throws {
         guard policy.isEnabled else { return }
         try openIfNeeded()
-        let (removedText, wasBounded) = try cleanupSentinels()
+        let proof = try createCleanupProof()
+        defer {
+            try? destroyCleanupProof(proof)
+            close(proof)
+        }
         try transaction { try execute("DELETE FROM records") }
         try checkpointAfterDeletion()
-        try verifyRemovedTextIsAbsent(removedText)
-        // The delete committed, but we intentionally refuse to claim a full
-        // artifact scan when the bounded verification set was exhausted.
-        guard !wasBounded else { throw HistoryStoreError.cleanupIncomplete }
+        try verifyCleanupProof(proof)
+        try destroyCleanupProof(proof)
         generation &+= 1
     }
 
     public func setRetentionPolicy(_ policy: HistoryRetentionPolicy) throws {
         if policy == .off {
-            try clear()
+            // Off intent closes the write gate immediately and remains
+            // fail-closed even if checkpoint/artifact cleanup is incomplete.
+            self.policy = .off
+            guard FileManager.default.fileExists(atPath: directoryURL.path) else { return }
+            try openIfNeeded()
+            self.policy = .off
+            let proof = try createCleanupProof()
+            defer {
+                try? destroyCleanupProof(proof)
+                close(proof)
+            }
+            try persistPolicyAndPurge(.off)
+            try verifyCleanupProof(proof)
+            try destroyCleanupProof(proof)
             self.policy = .off
             closeDatabase()
             // The store owns this exact directory.  Removing it after a
@@ -385,7 +420,7 @@ public actor SQLiteHistoryStore: HistoryStore {
         guard database == nil else { return }
         try createProtectedDirectory()
         try acquireAdvisoryLock()
-        let existingDatabase = try validateExistingDatabaseFile()
+        let existingIdentity = try validateExistingDatabaseFile()
         var handle: OpaquePointer?
         // SQLite opens the database itself, but the surrounding directory and
         // file are verified before and after.  NOFOLLOW is used when the
@@ -418,7 +453,7 @@ public actor SQLiteHistoryStore: HistoryStore {
             // sqlite3_open_v2 creates a new database with the process umask;
             // narrow it before any schema or transcript can be written.
             _ = chmod(databaseURL.path, 0o600)
-            try validateOpenedDatabaseFile()
+            try validateOpenedDatabaseFile(expected: existingIdentity)
             try execute("PRAGMA journal_mode = WAL")
             try execute("PRAGMA synchronous = FULL")
             try execute("PRAGMA secure_delete = ON")
@@ -435,7 +470,7 @@ public actor SQLiteHistoryStore: HistoryStore {
             try protectSQLiteArtifacts()
             try verifyProtectedSQLiteArtifacts()
             inMemoryHighWaterMark = try storedHighWaterMark()
-            if existingDatabase {
+            if existingIdentity != nil {
                 // A crash can separate a successful SQLite transition from its
                 // UserDefaults mirror. The durable store wins on reopen.
                 policy = try storedRetentionPolicy()
@@ -767,22 +802,120 @@ public actor SQLiteHistoryStore: HistoryStore {
         return String(cString: value)
     }
 
-    /// Retain only a bounded number of proof sentinels.  Clear is honest about
-    /// partial verification rather than materializing an unbounded history in
-    /// RAM merely to make a stronger claim.
-    private func cleanupSentinels() throws -> ([String], Bool) {
-        let statement = try prepare("SELECT text FROM records LIMIT ?")
-        defer { sqlite3_finalize(statement) }
-        var output: [String] = []
-        var found = 0
-        try bind(Int64(Self.maximumCleanupSentinels + 1), to: statement, at: 1)
-        while sqlite3_step(statement) == SQLITE_ROW {
-            guard let value = sqlite3_column_text(statement, 0) else { throw HistoryStoreError.corrupt }
-            found += 1
-            if output.count < Self.maximumCleanupSentinels { output.append(String(cString: value)) }
+    /// Streams every transcript into an owner-only proof spool before deletion.
+    /// Memory is bounded to one record (100 KB); the spool is itself a
+    /// controlled artifact, securely truncated and unlinked before success.
+    private func createCleanupProof() throws -> Int32 {
+        let descriptor = try withHistoryDirectoryDescriptor { directory in
+            let fd = openat(directory, ".cleanup-proof", O_CREAT | O_TRUNC | O_RDWR | O_NOFOLLOW, 0o600)
+            guard fd >= 0 else { throw HistoryStoreError.ioFailed }
+            guard fchmod(fd, 0o600) == 0 else {
+                close(fd)
+                throw HistoryStoreError.permissionDenied
+            }
+            try verifyPrivateRegularFileDescriptor(fd)
+            return fd
         }
-        guard sqlite3_errcode(database) == SQLITE_DONE else { throw mapSQLiteError(sqlite3_errcode(database)) }
-        return (output, found > Self.maximumCleanupSentinels)
+        do {
+            let statement = try prepare("SELECT CAST(text AS BLOB) FROM records ORDER BY rowid")
+            defer { sqlite3_finalize(statement) }
+            while true {
+                let result = sqlite3_step(statement)
+                if result == SQLITE_DONE { break }
+                guard result == SQLITE_ROW else { throw mapSQLiteError(result) }
+                let byteCount = Int(sqlite3_column_bytes(statement, 0))
+                guard byteCount > 0, byteCount <= Self.maximumFinalTextBytes,
+                      let pointer = sqlite3_column_blob(statement, 0)
+                else { throw HistoryStoreError.corrupt }
+                var length = UInt32(byteCount).littleEndian
+                try withUnsafeBytes(of: &length) { try writeAll($0, to: descriptor) }
+                try writeAll(UnsafeRawBufferPointer(start: pointer, count: byteCount), to: descriptor)
+            }
+            guard fsync(descriptor) == 0 else {
+                throw HistoryStoreError.ioFailed
+            }
+            return descriptor
+        } catch {
+            close(descriptor)
+            try? withHistoryDirectoryDescriptor { _ = unlinkat($0, ".cleanup-proof", 0) }
+            throw error
+        }
+    }
+
+    private func verifyCleanupProof(_ proof: Int32) throws {
+        guard lseek(proof, 0, SEEK_SET) >= 0 else { throw HistoryStoreError.cleanupIncomplete }
+        while true {
+            guard let lengthBytes = try readExact(4, from: proof) else { break }
+            let length = lengthBytes.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self)) }
+            guard length > 0, length <= Self.maximumFinalTextBytes,
+                  let sentinel = try readExact(Int(length), from: proof)
+            else { throw HistoryStoreError.cleanupIncomplete }
+            try withHistoryDirectoryDescriptor { directory in
+                try verifyNoUnexpectedArtifacts(directory)
+                for name in Self.controlledArtifactNames where name != ".cleanup-proof" {
+                    let artifact = openat(directory, name, O_RDONLY | O_NOFOLLOW)
+                    if artifact < 0 {
+                        guard errno == ENOENT else { throw HistoryStoreError.cleanupIncomplete }
+                        continue
+                    }
+                    defer { close(artifact) }
+                    try verifyPrivateRegularFileDescriptor(artifact)
+                    if try artifactContainsAnySentinel(artifact, sentinels: [sentinel]) {
+                        throw HistoryStoreError.cleanupIncomplete
+                    }
+                }
+            }
+        }
+    }
+
+    private func destroyCleanupProof(_ descriptor: Int32) throws {
+        guard lseek(descriptor, 0, SEEK_SET) >= 0 else { throw HistoryStoreError.cleanupIncomplete }
+        let zeros = [UInt8](repeating: 0, count: 16_384)
+        var remaining = lseek(descriptor, 0, SEEK_END)
+        guard remaining >= 0, lseek(descriptor, 0, SEEK_SET) >= 0 else {
+            throw HistoryStoreError.cleanupIncomplete
+        }
+        while remaining > 0 {
+            let count = min(Int(remaining), zeros.count)
+            try zeros.withUnsafeBytes { try writeAll(UnsafeRawBufferPointer(rebasing: $0.prefix(count)), to: descriptor) }
+            remaining -= off_t(count)
+        }
+        guard fsync(descriptor) == 0, ftruncate(descriptor, 0) == 0, fsync(descriptor) == 0 else {
+            throw HistoryStoreError.cleanupIncomplete
+        }
+        try withHistoryDirectoryDescriptor { directory in
+            if unlinkat(directory, ".cleanup-proof", 0) != 0 && errno != ENOENT {
+                throw HistoryStoreError.cleanupIncomplete
+            }
+        }
+    }
+
+    private func writeAll(_ bytes: UnsafeRawBufferPointer, to descriptor: Int32) throws {
+        var offset = 0
+        while offset < bytes.count {
+            let result = write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+            if result < 0, errno == EINTR { continue }
+            guard result > 0 else { throw HistoryStoreError.ioFailed }
+            offset += result
+        }
+    }
+
+    private func readExact(_ count: Int, from descriptor: Int32) throws -> Data? {
+        var data = Data(count: count)
+        var offset = 0
+        while offset < count {
+            let result = data.withUnsafeMutableBytes {
+                read(descriptor, $0.baseAddress!.advanced(by: offset), count - offset)
+            }
+            if result < 0, errno == EINTR { continue }
+            if result == 0 {
+                if offset == 0 { return nil }
+                throw HistoryStoreError.cleanupIncomplete
+            }
+            guard result > 0 else { throw HistoryStoreError.ioFailed }
+            offset += result
+        }
+        return data
     }
 
     /// Successful deletion is only reported after SQLite's truncating
@@ -790,10 +923,11 @@ public actor SQLiteHistoryStore: HistoryStore {
     /// is not a forensic-erasure promise: if SQLite leaves a matching byte
     /// sequence behind, the operation is reported as incomplete.
     private func verifyRemovedTextIsAbsent(_ values: [String]) throws {
-        let sentinels = values.filter { !$0.isEmpty }.prefix(Self.maximumCleanupSentinels).map { Data($0.utf8) }
+        let sentinels = values.filter { !$0.isEmpty }.map { Data($0.utf8) }
         guard !sentinels.isEmpty else { return }
         try withHistoryDirectoryDescriptor { descriptor in
-            for name in [Self.databaseName, "\(Self.databaseName)-wal", "\(Self.databaseName)-shm"] {
+            try verifyNoUnexpectedArtifacts(descriptor)
+            for name in Self.controlledArtifactNames {
                 let artifact = openat(descriptor, name, O_RDONLY | O_NOFOLLOW)
                 if artifact < 0 {
                     guard errno == ENOENT else { throw HistoryStoreError.ioFailed }
@@ -961,24 +1095,42 @@ public actor SQLiteHistoryStore: HistoryStore {
         guard mode.map({ ($0 & 0o077) == 0 }) == true else { throw HistoryStoreError.permissionDenied }
     }
 
-    private func validateExistingDatabaseFile() throws -> Bool {
+    private func validateExistingDatabaseFile() throws -> FileIdentity? {
         try withHistoryDirectoryDescriptor { directory in
             let descriptor = openat(directory, Self.databaseName, O_RDONLY | O_NOFOLLOW)
             if descriptor < 0 {
                 guard errno == ENOENT else { throw HistoryStoreError.unsupportedFilesystem }
-                return false
+                return nil
             }
             defer { close(descriptor) }
             try verifyPrivateRegularFileDescriptor(descriptor)
-            return true
+            return try fileIdentity(descriptor)
         }
     }
 
-    private func validateOpenedDatabaseFile() throws {
-        let descriptor = open(databaseURL.path, O_RDONLY | O_NOFOLLOW)
-        guard descriptor >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
-        defer { close(descriptor) }
-        try verifyPrivateRegularFileDescriptor(descriptor)
+    private func validateOpenedDatabaseFile(expected: FileIdentity?) throws {
+        guard let database,
+              let filename = sqlite3_db_filename(database, "main"),
+              URL(fileURLWithPath: String(cString: filename)).standardizedFileURL == databaseURL.standardizedFileURL
+        else { throw HistoryStoreError.unsupportedFilesystem }
+        var sqliteFile: UnsafeMutableRawPointer?
+        guard sqlite3_file_control(database, "main", SQLITE_FCNTL_FILE_POINTER, &sqliteFile) == SQLITE_OK,
+              sqliteFile != nil
+        else { throw HistoryStoreError.unsupportedFilesystem }
+        let identity = try withHistoryDirectoryDescriptor { directory in
+            let descriptor = openat(directory, Self.databaseName, O_RDONLY | O_NOFOLLOW)
+            guard descriptor >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
+            defer { close(descriptor) }
+            try verifyPrivateRegularFileDescriptor(descriptor)
+            return try fileIdentity(descriptor)
+        }
+        if let expected, expected != identity { throw HistoryStoreError.unsupportedFilesystem }
+    }
+
+    private func fileIdentity(_ descriptor: Int32) throws -> FileIdentity {
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else { throw HistoryStoreError.ioFailed }
+        return FileIdentity(device: status.st_dev, inode: status.st_ino)
     }
 
     private func acquireAdvisoryLock() throws {
@@ -1025,6 +1177,9 @@ public actor SQLiteHistoryStore: HistoryStore {
                 }
                 defer { close(descriptor) }
                 try verifyPrivateRegularFileDescriptor(descriptor)
+                if name == ".cleanup-proof" || name == ".migration-temp" {
+                    throw HistoryStoreError.cleanupIncomplete
+                }
             }
         }
     }
@@ -1108,19 +1263,24 @@ public final class HistoryWriteCancellation: @unchecked Sendable {
     }
 
     func attach(_ database: OpaquePointer) {
-        let shouldCancel = lock.withLock { () -> Bool in
+        lock.withLock {
             self.database = database
-            return interrupted || (deadline.map { DispatchTime.now().uptimeNanoseconds >= $0 } ?? false)
+            if interrupted || (deadline.map { DispatchTime.now().uptimeNanoseconds >= $0 } ?? false) {
+                interrupted = true
+                // Keep the lease lock held across the C call. `finish()` and
+                // actor-owned connection close must acquire this same lock,
+                // so the handle cannot be detached/reused while interrupt is
+                // dereferencing it.
+                sqlite3_interrupt(database)
+            }
         }
-        if shouldCancel { sqlite3_interrupt(database) }
     }
 
     public func interrupt() {
-        let handle = lock.withLock { () -> OpaquePointer? in
+        lock.withLock {
             interrupted = true
-            return database
+            if let database { sqlite3_interrupt(database) }
         }
-        if let handle { sqlite3_interrupt(handle) }
     }
 
     func acknowledge(_ acknowledgement: Acknowledgement) {

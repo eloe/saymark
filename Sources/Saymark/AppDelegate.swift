@@ -34,11 +34,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DiagnosticLogSetting.configure()
-        // Session retention is deliberately process-scoped.  Clear any data a
-        // previous crashed/terminated process left before it can be displayed.
         Task {
-            await RecentDictationsController.shared.clearPriorSessionAtLaunch()
+            // Durable store metadata is the sole policy authority. History
+            // remains unavailable until open, validation, and launch purge
+            // finish for every retained policy.
+            await RecentDictationsController.shared.initializeAtLaunch()
             await RecentDictationsController.shared.prepareForDelivery()
+            RecentDictationsController.shared.configureIdleMaintenance { [weak self] in
+                self?.dictation.isActive ?? false
+            }
             RecentDictationsController.shared.startRecurringIdleMaintenance()
         }
         SaymarkDiagnostics.log(.info, "app.launched", fields: [

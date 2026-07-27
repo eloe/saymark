@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import SaymarkKit
 
@@ -107,6 +108,38 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(beta.isEmpty)
     }
 
+    func testClearStreamsProofForMoreThanSixtyFourRows() async throws {
+        let store = try makeStore()
+        for index in 0..<80 {
+            _ = try await store.recordFinal(.init(text: "proof-sentinel-\(index)-\(UUID().uuidString)"))
+        }
+
+        try await store.clear()
+
+        let records = try await store.records()
+        XCTAssertTrue(records.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".cleanup-proof").path
+        ))
+    }
+
+    func testExistingDurablePolicyOverridesConflictingBootstrapHint() async throws {
+        var original: SQLiteHistoryStore? = try makeStore(policy: .days7)
+        try await original?.warmUp()
+        let originalPolicy = try await original?.durableRetentionPolicy()
+        XCTAssertEqual(originalPolicy, .days7)
+        await original?.shutdown()
+        original = nil
+
+        let reopened = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .untilDeleted,
+            now: { self.now }
+        )
+        let reopenedPolicy = try await reopened.durableRetentionPolicy()
+        XCTAssertEqual(reopenedPolicy, .days7)
+    }
+
     func testExternalDeadlineInterruptRollsBackWithoutLateRow() async throws {
         let store = try SQLiteHistoryStore(
             directoryURL: directory,
@@ -164,6 +197,22 @@ final class HistoryStoreTests: XCTestCase {
         let second = try SQLiteHistoryStore(directoryURL: directory, policy: .days30, now: { self.now })
         await XCTAssertThrowsErrorAsync(try await second.records()) { error in
             XCTAssertEqual(error as? HistoryStoreError, .busy)
+        }
+    }
+
+    func testDatabaseSymlinkAttackFailsClosed() async throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let outside = directory.deletingLastPathComponent()
+            .appendingPathComponent("\(directory.lastPathComponent)-outside")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        XCTAssertTrue(FileManager.default.createFile(atPath: outside.path, contents: Data("foreign".utf8)))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outside.path)
+        XCTAssertEqual(symlink(outside.path, directory.appendingPathComponent(SQLiteHistoryStore.databaseName).path), 0)
+        let store = try makeStore()
+
+        await XCTAssertThrowsErrorAsync(try await store.warmUp()) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .unsupportedFilesystem)
         }
     }
 

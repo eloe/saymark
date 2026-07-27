@@ -198,6 +198,22 @@ queue on the store actor. A token may interrupt SQLite only after that same
 operation attaches its handle; cancelling a queued request is therefore unable
 to interrupt an unrelated active write. Search input is bounded to 1,024 UTF-8
 bytes and 12 literal tokens, and window close/replacement cancels its token.
+The token's handle lease remains locked through `sqlite3_interrupt`; detach,
+connection close, and handle reuse cannot race the C call.
+
+**Durable authority and cleanup decision (2026-07-26):** history UI, menu
+availability, and dictation eligibility begin disabled on every launch. The
+controller opens and validates the store, reads its transactional retention
+metadata, clears a prior-session policy or purges expiry for every other enabled
+policy, and only then mirrors UserDefaults and publishes availability. A
+preference value is never policy authority. Clear and Off stream every saved
+transcript through an owner-only controlled proof spool one record at a time,
+scan all controlled artifacts in bounded chunks, then zero, truncate, fsync,
+and unlink the spool. There is no row-count cap. Off closes the in-process write
+gate before cleanup begins and remains fail-closed if proof or checkpointing is
+incomplete. Idle cleanup runs at background priority only after at least five
+seconds without user input and while no recording, history window, or pending
+history action exists.
 
 ### 3.2 Storage location and format
 
