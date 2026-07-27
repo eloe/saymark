@@ -7,6 +7,7 @@ import SwiftUI
 /// shortcut and where the transcript goes on release.
 struct SettingsView: View {
     @AppStorage(InsertMode.defaultsKey) private var insertModeRaw = InsertMode.inField.rawValue
+    @AppStorage(RecentDictationsRetention.defaultsKey) private var historyRetentionRaw = RecentDictationsRetention.off.rawValue
     @AppStorage(AnalyticsConsent.key) private var analyticsEnabled = false
     @AppStorage(DiagnosticLogSetting.key) private var logLevelRaw = DiagnosticLogSetting.defaultLevel.name
 
@@ -30,6 +31,28 @@ struct SettingsView: View {
                 Text("Insert")
             } footer: {
                 Text("“HUD only” never types into other apps — it shows live subtitles in the HUD, handy for presentations and demos.")
+            }
+
+            Section {
+                Picker("Keep recent dictations", selection: $historyRetentionRaw) {
+                    ForEach(RecentDictationsRetention.allCases) { retention in
+                        Text(retention.label).tag(retention.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Button("Clear Recent Dictations") {
+                    RecentDictationsController.shared.clearHistory()
+                }
+                .disabled(RecentDictationsRetention.current == .off)
+            } header: {
+                Text("Recent Dictations")
+            } footer: {
+                Text("Off is the default. When enabled, Saymark keeps final text only on this Mac—never audio, secure-input dictation, or HUD-only sessions. 30 days is recommended after you choose to enable history. Clearing removes Saymark’s current local store; it cannot erase earlier backups or snapshots.")
+            }
+            .onChange(of: historyRetentionRaw) { _, rawValue in
+                let policy = RecentDictationsRetention(rawValue: rawValue) ?? .off
+                RecentDictationsController.shared.setRetention(policy)
             }
 
             if AnalyticsConsent.isAvailable {

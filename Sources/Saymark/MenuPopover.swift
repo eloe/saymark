@@ -10,6 +10,7 @@ struct MenuPopover: View {
     let dictation: DictationController
     /// Re-open the onboarding window (resets to Welcome + presents it).
     let onSetupTour: () -> Void
+    let onRecentDictations: () -> Void
     @Environment(\.openSettings) private var openSettings
     @Environment(\.colorScheme) private var scheme
 
@@ -131,6 +132,9 @@ struct MenuPopover: View {
             // Re-run the first-run tour: reset to Welcome, then ask the App scene
             // (via the router) to open the onboarding window.
             footerRow("Setup tour…", "") { onSetupTour() }
+            if RecentDictationsRetention.current != .off {
+                footerRow("Recent Dictations…", "") { onRecentDictations() }
+            }
             footerRow("Quit Saymark", "⌘ Q") { NSApplication.shared.terminate(nil) }
         }
         .padding(.horizontal, 6).padding(.vertical, 5)

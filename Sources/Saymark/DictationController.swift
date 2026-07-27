@@ -34,6 +34,7 @@ final class DictationController {
     var dictationSession: DictationSession { session }
     @ObservationIgnored private var promptedAccessibility = false
     @ObservationIgnored private var isPreparing = false
+    @ObservationIgnored private var historyEnabledAtStart = false
     #if DEBUG
     @ObservationIgnored private var dailyDriverUITestConfiguration: DailyDriverUITestConfiguration?
     #endif
@@ -183,6 +184,9 @@ final class DictationController {
             return
         }
         let insert = InsertMode.current
+        // History is explicit opt-in at the beginning of the utterance. A later
+        // settings change must not retroactively retain speech that began Off.
+        historyEnabledAtStart = RecentDictationsRetention.current != .off && insert != .hudOnly
         let toggle = TriggerMode.current == .toggle
         // Give visual feedback before AVAudioEngine setup. Capture startup takes
         // around 100 ms on this Mac; the HUD should never wait behind it.
@@ -237,25 +241,52 @@ final class DictationController {
         hud.processing()
         let modelModeAtStop = ModelSetting.current.rawValue
         let insertModeAtStop = InsertMode.current.rawValue
+        let historyWasEnabledAtStart = historyEnabledAtStart
         let diagnosticSessionID = session.activeSessionID
         let stopStarted = ProcessInfo.processInfo.systemUptime
         SaymarkDiagnostics.log(.info, "dictation.ui_stop_requested", sessionID: diagnosticSessionID)
         // Drain off the main thread so a slow finish never freezes the UI, then
         // paste the final on the main thread (pasteboard + ⌘V).
-        Task.detached(priority: .userInitiated) { [session] in
+        Task.detached(priority: .userInitiated) { [weak self, session] in
             let final = session.stop()
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                if final.isEmpty {
-                    self.hud.error(
-                        title: String(localized: "No speech detected"),
-                        detail: String(localized: "Try again and speak a little longer")
-                    )
-                } else if InsertMode.current == .inField {
-                    self.insertFinal(final, sessionID: diagnosticSessionID)
-                } else {
-                    self.hud.finish(final)
-                }
+            await self?.completeFinal(
+                final,
+                diagnosticSessionID: diagnosticSessionID,
+                modelModeAtStop: modelModeAtStop,
+                insertModeAtStop: insertModeAtStop,
+                stopStarted: stopStarted,
+                historyWasEnabledAtStart: historyWasEnabledAtStart
+            )
+        }
+    }
+
+    private func completeFinal(
+        _ final: String,
+        diagnosticSessionID: String?,
+        modelModeAtStop: String,
+        insertModeAtStop: String,
+        stopStarted: TimeInterval,
+        historyWasEnabledAtStart: Bool
+    ) async {
+        if final.isEmpty {
+            hud.error(
+                title: String(localized: "No speech detected"),
+                detail: String(localized: "Try again and speak a little longer")
+            )
+        } else {
+            let historyRecord = await RecentDictationsController.shared.recordFinal(
+                final,
+                enabledAtStart: historyWasEnabledAtStart,
+                secureInputActive: TextInjector.secureInputActive,
+                isHUDOnly: InsertMode.current == .hudOnly
+            )
+            if InsertMode.current == .inField {
+                let outcome = insertFinal(final, sessionID: diagnosticSessionID)
+                RecentDictationsController.shared.markDelivery(historyRecord, state: outcome)
+            } else {
+                hud.finish(final)
+            }
+        }
                 SaymarkDiagnostics.log(.info, "dictation.ui_completed", sessionID: diagnosticSessionID, fields: [
                     "word_count": final.split(separator: " ").count,
                     "character_count": final.count,
@@ -265,15 +296,11 @@ final class DictationController {
                     "stop_to_complete_ms": (ProcessInfo.processInfo.systemUptime - stopStarted) * 1_000,
                 ])
                 PostHogSDK.shared.capture("dictation_completed", properties: [
-                    "word_count": final.split(separator: " ").count,
-                    "character_count": final.count,
                     "is_empty": final.isEmpty,
                     "model_mode": modelModeAtStop,
                     "insert_mode": insertModeAtStop,
                 ])
-                self.state = .transcribed(final)
-            }
-        }
+        state = .transcribed(final)
     }
 
     /// Paste the final transcript into the focused field (In-field mode). Posting
@@ -284,7 +311,7 @@ final class DictationController {
         _ text: String,
         sessionID: String?,
         uiTestCompletion: ((String) -> Void)? = nil
-    ) {
+    ) -> HistoryDeliveryState {
         #if DEBUG
         if RuntimeEnvironment.isDailyDriverUITesting {
             switch RuntimeEnvironment.dailyDriverOutcome {
@@ -297,11 +324,12 @@ final class DictationController {
                     hideAfter: 2.0
                 )
                 uiTestCompletion?("copied")
+                return .copiedAccessibility
             default:
                 hud.finish(text)
                 uiTestCompletion?("inserted")
+                return .inserted
             }
-            return
         }
         #endif
 
@@ -318,7 +346,7 @@ final class DictationController {
                 detail: String(localized: "Enable Accessibility to paste automatically"),
                 hideAfter: 5.0
             )
-            return
+            return .copiedAccessibility
         }
         let started = ProcessInfo.processInfo.systemUptime
         switch TextInjector.paste(text + " ") {
@@ -329,6 +357,7 @@ final class DictationController {
                 "character_count": text.count,
             ])
             hud.finish(text)
+            return .inserted
         case .failed:
             SaymarkDiagnostics.log(.error, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "failed",
@@ -339,6 +368,7 @@ final class DictationController {
                 title: String(localized: "Couldn’t paste text"),
                 detail: String(localized: "The transcript was copied — press ⌘V")
             )
+            return .insertionFailed
         case .copiedSecureInput:
             SaymarkDiagnostics.log(.warn, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "copied_secure_input",
@@ -349,6 +379,7 @@ final class DictationController {
                 title: String(localized: "Field is protected"),
                 detail: String(localized: "The transcript was copied — press ⌘V")
             )
+            return .insertionFailed
         }
     }
 
