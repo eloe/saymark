@@ -20,8 +20,8 @@ and deletion did not remove plaintext from active SQLite artifacts.
 
 The remediation revision updates
 [`../recent-dictations-sdd.md`](../recent-dictations-sdd.md) before code begins.
-Every finding below must be re-reviewed; “addressed in SDD” does not mean
-verified in code.
+“Addressed in SDD” never means verified in code; the follow-up review disposition
+and Slice C/E code-evidence re-review requirements appear below.
 
 ## Blockers
 
@@ -42,7 +42,7 @@ verified in code.
 | H4 | Existing diagnostic allowlist checks keys but permits arbitrary strings under allowed keys. | §4.2 requires typed closed-value history diagnostics and per-key general logger validation. `RD-U20`. |
 | H5 | PostHog is live for opted-in keyed builds and has no property allowlist; exact transcript counts already conflict with no-fingerprinting language. | §4.2 correctly states opt-in reality, forbids all history PostHog data, and makes removal/coarse-banding of exact counts a release precondition. `RD-I13`. |
 | H6 | VACUUM and spill files can copy plaintext outside the protected directory. | §3.2 bans v1 VACUUM, uses memory temp store and protected controlled temp directory; byte scan covers maintenance. `RD-I12`. |
-| H7 | Wall-clock rollback can resurrect expired rows/reorder records. | §3.2 uses transactional monotonic high-water time for creation/expiry/order. `RD-U02`, `RD-U11`. |
+| H7 | Wall-clock rollback can resurrect expired rows/reorder records. | §3.2 uses durable high-water time at open/mutation/idle plus read-only in-memory filtering for creation/expiry/order. `RD-U02`, `RD-U11`. |
 | H8 | An unspecified persistent lock could permanently disable history after crash. | §3.3 requires kernel-released advisory lock only. `RD-U22`. |
 | H9 | Parent symlink precheck is TOCTOU and incomplete. | §3.3 uses no-follow opens and descriptor verification; explicitly states defense-in-depth limit. `RD-U16`, `RD-I10`. |
 | H10 | Future Spotlight/Time Machine inclusion is preventable, not merely an uncontrollable deletion caveat. | §3.2 creates `.metadata_never_index` and backup exclusion. `RD-I14`. |
@@ -76,7 +76,29 @@ verified in code.
 | L5 | Accessibility result-count announcement lacked a macOS mechanism. | §4.3 specifies debounced `NSAccessibility` announcement. |
 | L6 | History window sharing could expose transcript wall during recording/share. | §4.3 uses `sharingType = .none` pending approved exception. |
 
-## Required re-review questions
+## Follow-up review and final documentation corrections
+
+**Follow-up verdict:** **APPROVE-WITH-CHANGES** on `60e0e7d`. No further
+full-document review is required once the following documentation corrections
+are committed. Code must receive independent re-review at Slice C/E evidence
+stage; this is not an implementation approval.
+
+| ID | Follow-up finding | Final SDD remediation / future evidence |
+| --- | --- | --- |
+| D1 | A typed event's properties were closed but its event name could still bypass logger controls. | §4.2 permits only literal `history.operation`, requires event-name validation, and extends `RD-U20` to reject dynamic/unknown names. |
+| D2 | Search/transcript controls can leak tokens into spellcheck/autocorrect/replacement/completion services. | §4.3 disables those services on both native controls; `RD-I16` scans `~/Library/Spelling` under a dedicated test account. |
+| D2b | Search needed explicit multi-token literal semantics. | §2.1/`RD-U09` define deduplicated all-token AND/prefix matching in any order; empty tokens return recents. |
+| D3 | Reinsert activation could wait indefinitely or paste after a target changed. | §2.3 caps wait at 500 ms and pins/rechecks PID immediately before paste; `RD-UI13`. |
+| D4 | Persisting high-water time on every read creates write/WAL churn. | §3.2 makes reads in-memory/filter-only and persists at open/mutation/idle; `RD-U11` states the precise durable guarantee. |
+| D5 | `secure_delete` must apply to every SQLite connection, not just the main writer. | §3.2/`RD-I12` require verification on every read/migration/test/recovery connection. |
+| D6 | `hud_only` remained in v1 schema despite being unapproved. | §2.2/§3.2 remove it; HUD-only is no-row until a later reviewed migration. `RD-U05–U06`. |
+| D7 | The same-user unsandboxed caveat and safe directory creation needed stronger wording. | §3.2 states atomic verified 0700 creation and that it is not a confidentiality boundary for the unlocked same user. `RD-U17`. |
+| D8 | Privacy scan omitted window title. | §4.3 makes title static; `RD-I09` scans it for sentinels. |
+| D9 | Approval/mocks omitted deadline-miss and delivery-unknown copy. | §5 adds both decisions and minimum mockup states. |
+| D10 | Approval/mocks omitted immediate deletion when switching to This session. | §5 adds the destructive transition/copy and mockup. |
+| D11 | All review findings must remain durable. | This section preserves the follow-up verdict/disposition; §10 points to this record. |
+
+## Required code re-review questions (Slice C/E)
 
 1. Is the bounded pre-delivery transaction/cancellation mechanism technically
    capable of a true 100 ms deadline without a late commit or main-thread wait?
@@ -87,9 +109,9 @@ verified in code.
    platform?
 4. Does the planned diagnostic/PostHog remediation actually close existing
    free-form-property paths, rather than merely adding a history convention?
-5. Are the UI approval/mocking decisions complete, especially secure input,
-   HUD-only retention, prior-app Reinsert, oversize finals, shortening, and
-   window sharing?
+5. Do implementation evidence and UI tests cover secure input, deadline miss,
+   delivery unknown, HUD-only no-row, prior-app PID reinsert, oversize finals,
+   shortening/This-session deletion, spelling artifacts, and window sharing?
 
 ## Re-review context
 

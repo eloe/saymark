@@ -60,7 +60,7 @@ recommended initial explicit choice is **30 days** (pending approval), with:
 | --- | --- | --- |
 | Off (default) | none | Delete the active store and disable all writes. |
 | This session | final text durably during the current app session | Delete on orderly quit; on relaunch remove any prior session store before accepting a new record. A crash can leave data until that next launch, so it is durable-within-session and best-effort removal, not no-disk persistence. |
-| 7 / 30 / 90 days | final text until its individual expiry | Purge before reads and at launch/idle maintenance. On a shorter-policy change, recompute existing expiry and purge immediately; increasing retention affects new records only. |
+| 7 / 30 / 90 days | final text until its individual expiry | Reads filter expired rows without writing; purge runs at launch/idle maintenance. On a shorter-policy change, recompute existing expiry and purge immediately; increasing retention affects new records only. |
 | Until I delete | final text | Show the chosen indefinite retention plainly; clear/delete remains available. |
 
 The recent-list query is newest first, has a default limit of **20**, and has a
@@ -72,9 +72,13 @@ tokenizer, and it deliberately does **not** promise equivalence for `ß`/`ss`
 or Turkish `I`/dotless `ı`. RTL tokens remain literal tokenizer tokens. The
 query is tokenized using that same tokenizer; empty tokens are dropped; each
 token is double-quoted with internal `"` doubled and a prefix `*` is appended
-outside the closing quote. Thus FTS punctuation and `AND`, `OR`, `NOT`, and
-`NEAR` are user text, not query grammar. It returns the same maximum. The list
-does not promise a complete archive browser.
+outside the closing quote. Multiple unique query tokens are joined by
+implementation-authored `AND`: every token must prefix-match one stored token,
+in any order and without adjacency/phrase semantics. Repeated tokens are
+deduplicated. A query yielding no tokens is the ordinary newest-first recent
+list, not a match-all FTS expression. Thus FTS punctuation and `AND`, `OR`,
+`NOT`, and `NEAR` are user text, not query grammar. It returns the same maximum.
+The list does not promise a complete archive browser.
 
 Record creation has a size limit of 100,000 UTF-8 bytes after finalization. A
 larger final text is not retained; the delivery flow still uses the complete
@@ -104,7 +108,7 @@ how to tell the person that this recovery copy was not saved.
    path; it runs at launch and idle maintenance.
 4. The existing live/final delivery code runs exactly once. When a row exists,
    it maps its only canonical outcomes to `inserted`, `copied_accessibility`,
-   `insertion_failed`, or `hud_only`. If the process ends or state update fails
+   or `insertion_failed`. If the process ends or state update fails
    after the committed insert, the durable state remains `pending` and is shown
    as **delivery status unknown**. Secure input intentionally has no row.
 5. A delivery-state update failure never causes a second insert, second
@@ -146,11 +150,13 @@ or failure. When the history window opens, `HistoryController` transiently
 captures the previously frontmost `NSRunningApplication` identity; it is never
 stored in a row, preferences, diagnostics, or telemetry. Reinsert requires an
 explicit activation/confirmation, resigns the history window, activates that
-still-running captured app, waits for it to be frontmost, and only then calls
-`TextInjector.paste(text)` once. If the app quit, identity cannot be verified,
-or another app becomes frontmost, it performs no paste and offers Copy. Reinsert
-is exact-text (no trailing-space suffix), unlike a new final insertion; the
-approved copy must say so if needed. It has the same Accessibility, secure-input,
+still-running captured app, and waits no more than **500 ms** for it to be
+frontmost. It pins the captured process identifier and re-verifies that exact
+PID is frontmost immediately before its one `TextInjector.paste(text)` call. If
+the app quit/relaunched, identity cannot be verified within 500 ms, or another
+app becomes frontmost, it posts nothing and offers Copy. Reinsert is exact-text
+(no trailing-space suffix), unlike a new final insertion; approved copy must
+say so if needed. It has the same Accessibility, secure-input,
 clipboard-restoration, and result reporting rules as a new dictation, cannot be
 invoked by keyboard focus alone, and never runs automatically.
 
@@ -192,21 +198,26 @@ For bundle id `B`, the preferred path is:
 ~/Library/Application Support/B/RecentDictations/history.sqlite3-shm
 ```
 
-The directory is created with owner-only permissions (`0700`); database, WAL,
-SHM, migration, and advisory-lock files are owner-read/write (`0600`). At
-creation, write `.metadata_never_index` and set the directory's
+The directory is created atomically with owner-only permissions (`0700`) under
+a verified Application Support descriptor; it is never created broadly then
+chmodded. Database, WAL, SHM, migration, and advisory-lock files are
+owner-read/write (`0600`) and verified by descriptor before use. At creation,
+write `.metadata_never_index` and set the directory's
 `URLResourceValues.isExcludedFromBackup` flag, preventing future Spotlight and
 Time Machine inclusion. Use Application Support discovered through
 `FileManager`, not a hard-coded home path, Documents, Logs, defaults, the
 pasteboard, or a cache. The directory is excluded from diagnostic-log paths and
 all “Reveal diagnostic log” actions. These permissions defend against other
-normal local users; Saymark is not sandboxed, so another application running as
-the unlocked same user can read the files.
+normal local users, not processes running as the same unlocked account. Saymark
+is unsandboxed: another app or tool running as that user can read these files.
 
 SQLite is selected for atomic transactions, bounded indexed reads, crash
 recovery, and schema migration. Use `journal_mode=WAL`, `synchronous=FULL`, a
 short pre-delivery `busy_timeout` bounded by §2.2, `secure_delete=ON`,
-`journal_size_limit=0`, and a transaction for every mutation. After every
+`journal_size_limit=0`, and a transaction for every mutation. **Every SQLite
+connection**, including read, migration, test, and recovery connections, must
+set and verify `secure_delete=ON` before opening/creating history tables or
+executing any statement. After every
 delete, clear, Off transition, expiry purge, or migration, finish the mutation
 with `wal_checkpoint(TRUNCATE)` before reporting deletion complete. A busy
 checkpoint is retried only by idle maintenance; deletion UI must say it is
@@ -234,12 +245,18 @@ Minimal schema (schema version 1):
 | `delivery_updated_at_ms` | integer nullable | Audits a state transition locally. |
 
 `PRAGMA user_version` is the sole schema migration guard; no per-row version is
-permitted. A small store-metadata table holds the current retention policy and
-`last_observed_now_ms` high-water mark. Every store access advances that mark
-transactionally to `max(wall_clock_now, last_observed_now_ms)`. Creation time
-uses the same value, expiry compares against it, and ordering breaks equal times
-by opaque id. Therefore wall-clock rollback cannot extend retention or reorder
-new records.
+permitted. A small store-metadata table holds current retention policy and the
+durable `last_observed_now_ms` high-water mark. Open and every mutation/idle
+maintenance advance the durable mark transactionally to
+`max(wall_clock_now, last_observed_now_ms)`. A read never writes: it compares
+against `max(wall_clock_now, durable_mark, in_memory_mark)`, advances only the
+actor's in-memory mark, filters expiry in the query, and schedules rather than
+performs a purge. The next mutation/idle maintenance durably advances and
+purges. Creation time uses the effective mark and ordering breaks equal times by
+opaque id. Thus reads do not create WAL churn; no row that is expired against a
+durably observed mark can resurrect after clock rollback. A crash before idle
+maintenance may lose only a non-durable read observation, which is not claimed
+as a cross-restart guarantee.
 
 The sole v1 delivery-state enum and `CHECK` constraint are:
 
@@ -249,10 +266,11 @@ The sole v1 delivery-state enum and `CHECK` constraint are:
 | `inserted` | one final paste was posted. |
 | `copied_accessibility` | Accessibility unavailable; clipboard fallback was used. |
 | `insertion_failed` | synthetic final paste failed; clipboard fallback was used. |
-| `hud_only` | approved HUD-only retention path completed without external paste. |
 
 Only `pending → terminal` is valid and terminal values never change. Secure
-input and planned live-ownership loss are no-row cases in v1.
+input, HUD-only, and planned live-ownership loss are no-row cases in v1.
+HUD-only retention requires a later approved schema migration and independent
+security review; it is not silently enabled by a UI choice.
 
 Search uses external-content SQLite FTS5 only, configured with the tokenizer
 and escaping contract in §2.1. The implementation must keep its triggers
@@ -352,18 +370,20 @@ be removed or converted to approved coarse bands so they cannot fingerprint a
 short transcript; this is a release precondition, not evidence that history
 itself sent data.
 
-History diagnostics use a dedicated typed `HistoryDiagnosticEvent` API, not
-the general free-form `SaymarkDiagnostics.log(fields:)` API until that API has
-per-key value validation. Its closed vocabulary is: operation
-`insert|query|delete|clear|purge|policy_change`; outcome
+History diagnostics use a dedicated typed `HistoryDiagnosticEvent` API. Its
+only permitted event name is the literal enum case `history.operation`; event
+names are validated before the existing free-form logger/unified-log sink and
+may not be constructed from an operation, error, record, or input. Its closed
+property vocabulary is: operation `insert|query|delete|clear|purge|policy_change`;
+outcome
 `success|unavailable|corrupt|migration_failed|permission_denied|busy|io_failed|unsupported_filesystem|deadline_exceeded|record_too_large`;
 retention `off|session|days_7|days_30|days_90|until_deleted`; result count
 integer 0...25; and duration a non-negative bounded integer. Do not log record
 ids, timestamps, raw errors/paths, query tokens/count, precise text length,
 delivery target, or arbitrary string under an allowlisted key. The general
-logger's existing name-only allowlist is not sufficient; production code must
-add per-key closed-value validators and negative tests before it can receive
-any history event.
+logger's existing name-only allowlist is not sufficient: production code must
+add closed event-name validation as well as per-key closed-value validators and
+negative tests before it can receive any history event.
 
 Test fixtures must use synthetic, non-personal text.  Test databases,
 WAL/SHM, exports, and crash artifacts belong under temporary test directories
@@ -388,11 +408,19 @@ report, repository, CI artifact, video, or PR screenshot.
   reduced motion, localization-friendly strings, and no time-only error
   message.  Transcript text must be selectable and must not be truncated
   without an accessible way to read the full value.
+- The native search field and the selectable transcript view explicitly disable
+  continuous spell checking, grammar checking, automatic spelling correction,
+  text replacement, quote/dash substitution, and text completion. They must
+  not learn search/transcript tokens into macOS spelling services or offer
+  replacement/completion UI. This is required even when a SwiftUI wrapper makes
+  the underlying AppKit control less visible.
 - The history `NSWindow` sets `isRestorable = false`, never enables
   `NSSearchField.recentsAutosaveName`, provides no search suggestions, and uses
   `sharingType = .none` unless the approved mockup explicitly accepts a
-  support/demo exception. This prevents ordinary state restoration, search
-  recents, and window sharing from exposing queries/transcripts.
+  support/demo exception. Its title is a static localized product label and
+  never includes a transcript, search query, count, or target-app identity.
+  This prevents ordinary state restoration, search recents, window titles, and
+  sharing from exposing queries/transcripts.
 - Opening history, search, deletion, and retention changes must not steal focus
   from the target app until a person explicitly opens history. Reinsert names
   the previously-frontmost app and changes only that verified target, never the
@@ -430,11 +458,14 @@ Implementation must pause for a user-approved mockup covering these decisions:
 | History access and layout | Menu item opens a standard window with list/detail | Determines discoverability, information density, and accidental disclosure risk. |
 | Result presentation | 20 initially, 25 maximum; full text selected in detail pane | Determines whether text is exposed in the menu or only on explicit open. |
 | Failure affordance | HUD link to history only when an eligible row committed | Affects recovery and must not imply secure-input credentials were retained. |
+| Deadline-miss feedback | Same clipboard fallback as History Off; no misleading history route | Storage is optional and must not make a failed write look recoverable. |
+| Delivery-status-unknown copy | Explain that delivery cannot be confirmed after interruption, without saying it failed | A pending row is not proof of insertion failure. |
 | Secure-input retention | Never retain when secure input is sampled at finalization (recommended) | This avoids a password/secure-terminal credential archive. |
 | HUD-only retention | Disallowed by default pending explicit approval | Presentation/demo mode has a different expectation of persistence. |
 | Reinsert confirmation | Required; names the transient previously-frontmost app and falls back to Copy if gone/unknown | Prevents pasting into Saymark's own history window or another app. |
 | Oversize dictation feedback | Decide whether to say a >100 KB final was not saved | Recovery otherwise disappears for the longest content. |
 | Retention-shortening copy | States “Changing to 7 days deletes items older than 7 days now” | This privacy operation is immediate and irreversible. |
+| Switching to This session | States that existing saved dictations are deleted immediately | This policy transition is destructive, not merely prospective. |
 | Delete/Clear/Off confirmation and backup wording | Explicit confirmation, no secure-wipe claim | This is privacy-critical language. |
 | Session-only crash behavior | Best-effort removal at next launch, not a durability claim | Users need a truthful expectation. |
 | Window sharing | `sharingType = .none` (recommended) | Balances transcript privacy against support/demo workflows. |
@@ -445,9 +476,10 @@ history window at normal and large text size; (c) secure-input HUD state that
 clearly has no history route and insertion-failed state that does; (d) Reinsert
 confirmation naming a prior app and its quit/unknown fallback; (e) Delete,
 Clear History, and turning-Off confirmations; and (f) a 90-to-7-day shortening
-confirmation. Provide light and dark macOS appearances plus VoiceOver labels or
-an accessibility annotation sheet. Do not proceed to production UI until these
-are approved.
+confirmation and switch-to-This-session confirmation; and (g) deadline-miss
+and delivery-status-unknown HUD copy. Provide light and dark macOS appearances
+plus VoiceOver labels or an accessibility annotation sheet. Do not proceed to
+production UI until these are approved.
 
 ## 6. Test-driven implementation plan
 
@@ -469,7 +501,7 @@ public queries clamp to 25.
 Add the start/final secure-input/policy eligibility gate, bounded pre-delivery
 write, and canonical delivery-state transition. Use a fake `TextInjector` to
 test inserted, unavailable Accessibility, secure-input no-row,
-synthetic-paste failure, approved HUD-only, unknown-after-crash, and the DEBUG
+synthetic-paste failure, HUD-only no-row, unknown-after-crash, and the DEBUG
 harness exclusion. Prove delivery happens once even when store/state update
 fails, times out, is busy, or is cancelled; history never retries automatically.
 
@@ -508,22 +540,22 @@ revision, and fixture revision as required by `performance-acceptance.md`.
 | RD-U02 | Each enabled policy produces the correct nullable expiry; bounded durations use elapsed epoch duration, and the monotonic high-water mark prevents clock rollback from extending/reordering rows. |
 | RD-U03 | An eligible non-empty final commits at most one exact-text row before fake delivery within the deadline; text has no synthetic trailing insertion space. |
 | RD-U04 | Empty final, cancellation, pre-final failure, too-large final, Off at start/finalization, disallowed HUD-only, and secure input store no row; delivery semantics remain unchanged. |
-| RD-U05 | The canonical `pending|inserted|copied_accessibility|insertion_failed|hud_only` enum is the sole accepted constraint; only `pending → terminal` is valid, idempotent, and cannot create a missing row. |
-| RD-U06 | Final insertion, approved HUD-only, missing Accessibility, injection failure, update failure, and DEBUG daily-driver harness exclusion produce required states/no-row behavior; secure input has no state because it has no row. |
+| RD-U05 | The canonical `pending|inserted|copied_accessibility|insertion_failed` enum is the sole accepted constraint; only `pending → terminal` is valid, idempotent, and cannot create a missing row. |
+| RD-U06 | Final insertion, HUD-only no-row, missing Accessibility, injection failure, update failure, and DEBUG daily-driver harness exclusion produce required states/no-row behavior; secure input has no state because it has no row. |
 | RD-U07 | If outcome update fails or process restarts between write/update, one recoverable canonical `pending` row exists (shown as delivery status unknown) and delivery is not invoked again. |
 | RD-U08 | List/search are newest first, deterministic for equal timestamps via opaque id ordering, default 20, and caller values 0/negative/26/huge clamp safely to 1…25. |
-| RD-U09 | FTS5 search uses the specified `unicode61 remove_diacritics 2` folding/escaping contract, literal token prefixes, 25 cap, and named café/combining/ß/Turkish/RTL cases; it never persists query values. |
-| RD-U10 | Insert/search fuzz includes quotes, every FTS5 operator/metacharacter, bare boolean keywords, SQL metacharacters, emoji, combining marks, RTL, newlines, 100k boundary, and malformed UTF-8; it produces literal results/no crash, not merely parameter safety. |
-| RD-U11 | Expiry purge runs before read and at launch/idle; exact-boundary behavior is deterministic; high-water time prevents rollback/advance resurrection. |
+| RD-U09 | FTS5 search uses the specified `unicode61 remove_diacritics 2` folding/escaping contract, literal token prefixes, 25 cap, and named café/combining/ß/Turkish/RTL cases; multiple unique tokens are ANDed in any order, duplicates collapse, empty tokenization returns recents, and query values never persist. |
+| RD-U10 | Insert/search fuzz includes quotes, every FTS5 operator/metacharacter, bare boolean keywords, SQL metacharacters, emoji, combining marks, RTL, newlines, 100k boundary, and malformed UTF-8; it produces literal one-/multi-token AND results/no crash, not merely parameter safety. |
+| RD-U11 | Reads perform no SQLite write/WAL change, filter expiry against durable plus in-memory high-water time, and schedule cleanup; launch/mutation/idle maintenance persist high-water and prevent rollback resurrection after durable observation. |
 | RD-U12 | Single delete/clear remove primary/search rows atomically, run secure deletion plus truncating checkpoint, and leave old rows intact on a failed transaction. |
 | RD-U13 | Switching to Off deletes store data before the preference mirror changes; a concurrent stale writer re-checks metadata and cannot recreate a row. |
 | RD-U14 | Session policy removes an orderly-quit store and clears prior-session remnants on next launch; crash behavior is labelled best-effort. |
 | RD-U15 | Schema vN→vN+1 migration preserves valid rows/state, is repeat-safe, rolls back fully on injected failure, uses `user_version` only, and creates no plaintext backup. |
 | RD-U16 | Corrupt DB, foreign app id, future schema, no-follow/symlink attack, wrong descriptor permissions, advisory-lock contention, unsupported network filesystem, and I/O error fail closed with typed errors/no destructive reset. |
-| RD-U17 | Store creates owner-only parent/database/WAL/SHM/temp/lock artifacts; path/raw error text never enters diagnostics. |
+| RD-U17 | Store atomically creates verified 0700 parent and owner-only database/WAL/SHM/temp/lock artifacts; path/raw error text never enters diagnostics. |
 | RD-U18 | Copy writes exact saved text only on user action; Reinsert posts exact saved text (no suffix) once to a verified prior app and propagates fallback results. |
 | RD-U19 | Reinsert never consults saved original application/field/clipboard/selection metadata because none exists. |
-| RD-U20 | Typed history diagnostics and general logger validation reject transcript, search term, clipboard, field text, id, raw SQLite error/path, URL, and payload values carried under otherwise allowlisted names such as `reason`, `state`, or `destination`. |
+| RD-U20 | Typed history diagnostics and general logger validation accept only literal event name `history.operation` and closed property enums; they reject transcript, search term, clipboard, field text, id, raw SQLite error/path, URL, payload values under allowed names (`reason`, `state`, `destination`), and dynamic/unknown history event names. |
 | RD-U21 | Every downward transition, including Until-I-delete→bounded, atomically shortens `expires_at_ms` and immediately purges rows excluded by the new policy; increases never extend existing rows. |
 | RD-U22 | Simulated abnormal termination while holding advisory lock permits next launch to open the store; no stale lockfile permanently disables history. |
 | RD-U23 | Secure input sampled at finalization produces no row/FTS row and no sentinel byte in store files, regardless of retention policy. |
@@ -541,12 +573,13 @@ revision, and fixture revision as required by `performance-acceptance.md`.
 | RD-I06 | Fuzz 10,000 generated Unicode transcripts/query strings including FTS5 expression syntax/keywords; no crash, grammar reinterpretation, SQL injection, invalid UTF-8, unbounded allocation, or log leak occurs. |
 | RD-I07 | On declared reference Mac, cold-open and warm 10,000-record list/search p95 <= 100 ms; record Mac model/memory/macOS/app/dependency/fixture revisions and ensure 20 refreshes do not stall main thread >100 ms. |
 | RD-I08 | Idle retention purge/clear on 10,000 records has a documented budget, never runs pre-delivery, and leaves no logical orphan FTS/WAL rows. |
-| RD-I09 | Static/dynamic privacy scan of JSONL, unified log, crash/error sink, URL/file names, UserDefaults, saved-state artifacts, and CI artifacts finds no final/provisional/query/app/clipboard sentinel. |
+| RD-I09 | Static/dynamic privacy scan of JSONL, unified log, crash/error sink, URL/file names, **window title**, UserDefaults, saved-state artifacts, and CI artifacts finds no final/provisional/query/app/clipboard sentinel. |
 | RD-I10 | Security audit verifies bound SQL plus FTS escaping, no-follow descriptor checks, permissions, enum constraint, size cap, no UserDefaults text/key material, Spotlight/backup exclusion, and unsupported-filesystem failure. |
 | RD-I11 | Store insert failure, `BUSY`, deadline timeout, and cancellation still deliver exactly once; on a 10,000-row store the added stop-to-final delta remains within the existing 300/500/750 ms p50/p95/hard gates. |
-| RD-I12 | After delete/clear/Off/purge/migration, close store and byte-scan database, WAL, SHM, FTS shadow, lock, migration, and controlled-temp artifacts: no sentinel exists; 10k maintenance never writes sentinel outside store directory. |
+| RD-I12 | Every SQLite connection verifies `secure_delete=ON`; after delete/clear/Off/purge/migration, close store and byte-scan database, WAL, SHM, FTS shadow, lock, migration, and controlled-temp artifacts: no sentinel exists; 10k maintenance never writes sentinel outside store directory. |
 | RD-I13 | A PostHog fake receives zero `history_*` events/properties across full flow, and existing transcript-size values are absent or approved coarse bands only. |
 | RD-I14 | The store directory has backup exclusion and `.metadata_never_index`; an integration check verifies a sentinel is not returned by Spotlight/`mdfind`. |
+| RD-I16 | Under a dedicated test account, search and selectable-transcript sentinel text never appear in any `~/Library/Spelling` artifact before/after window interaction; spellcheck, autocorrect, replacement, and completion are disabled on both AppKit controls. |
 
 ### 7.3 Native UI and accessibility tests (after approval)
 
@@ -564,20 +597,21 @@ revision, and fixture revision as required by `performance-acceptance.md`.
 | RD-UI10 | Opening/closing/history refresh does not steal focus from the former target app except after explicit Reinsert confirmation, and the app releases observers/windows after close. |
 | RD-UI11 | With history window key, Reinsert deactivates it and delivers only to the previously-frontmost verified app; if that app quit/changed, it never pastes into Saymark and offers Copy. |
 | RD-UI12 | Search a sentinel, quit/relaunch, and assert no sentinel in UserDefaults or saved-application-state artifact; window is non-restorable and sharing policy matches approved mockup. |
+| RD-UI13 | Reinsert waits at most 500 ms, pins/re-verifies the original process ID immediately before paste, and offers Copy without posting if activation, PID, or frontmost verification fails. |
 
 ## 8. Requirements-to-tests traceability
 
 | Requirement | Primary tests | Release evidence |
 | --- | --- | --- |
-| Local text-only history, no audio/provisional/secure-input text | RD-U01, U03–U04, U20, U23–U24, I09–I10 | Privacy scan and fixture review |
+| Local text-only history, no audio/provisional/secure-input text | RD-U01, U03–U04, U20, U23–U24, I09–I10, I16 | Privacy scan and fixture review |
 | Explicit default-Off / retroactive retention controls | RD-U01–U02, U13–U14, U21, UI01–UI02, UI08 | Approved settings/shortening mockup and UI run |
-| 20 initial / 25 max literal local search | RD-U08–U10, I06–I07, UI03–UI04 | FTS escaping decision and cold/warm 10k p95 report |
-| Copy and explicit Reinsert target safety | RD-U18–U19, UI05–UI06, UI11 | Target/fallback matrix |
+| 20 initial / 25 max literal local search | RD-U08–U10, I06–I07, I16, UI03–UI04 | FTS escaping decision and cold/warm 10k p95 report |
+| Copy and explicit Reinsert target safety | RD-U18–U19, UI05–UI06, UI11, UI13 | Target/fallback matrix |
 | Bounded final recovery / no delivery dependency | RD-U03–U07, U24, I01–I03, I11, UI07 | Failure injection and stop-to-final delta report |
 | Crash consistency / migration / concurrency | RD-U07, U11–U17, U22, I01–I05 | Migration/crash/temp containment fixtures |
 | Delete/clear/Off byte removal | RD-U12–U14, U21, I04, I08, I12, UI08 | Byte-level DB/WAL/SHM/FTS/temp report |
 | Data protection and injection resistance | RD-U10, U16–U17, I06, I10, I14 | Security review/check output |
-| Accessibility and disclosure-safe UI | RD-UI01–UI12 | Approved mockups and XCUITest artifacts |
+| Accessibility and disclosure-safe UI | RD-UI01–UI13 | Approved mockups and XCUITest artifacts |
 | Privacy-safe diagnostics/telemetry | RD-U20, I09, I13 | Closed-value logger diff and PostHog negative scan |
 
 ## 9. Open questions and risks
@@ -608,9 +642,11 @@ revision, and fixture revision as required by `performance-acceptance.md`.
 
 ## 10. Claude Opus independent-review package
 
-The initial independent review is retained in
+The initial and follow-up independent reviews are retained in
 [`reviews/recent-dictations-claude-opus-5.md`](reviews/recent-dictations-claude-opus-5.md).
-Re-submit this revision plus that review/disposition before implementation:
+The documented follow-up verdict is approve-with-changes; no further full design
+review is needed after this remediation. Re-review the code and Slice C/E
+evidence against this package before implementation promotion:
 
 - `docs/recent-dictations-sdd.md` (this contract)
 - `docs/product-roadmap.md`, `docs/privacy-and-security.md`,
