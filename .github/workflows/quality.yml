@@ -98,6 +98,9 @@ jobs:
       - name: Verify the pinned Apple toolchain
         run: Scripts/check-xcode-version.sh 26.5 17F42
 
+      - name: Validate zsh automation
+        run: Scripts/check-zsh-syntax.sh
+
       - name: Install the Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 

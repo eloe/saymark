@@ -23,14 +23,4 @@ fi
 
 shellcheck "${bash_scripts[@]}"
 
-zsh_scripts=()
-while IFS= read -r script; do
-  zsh_scripts+=("$script")
-done < <(git grep -lE '^#!(/usr/bin/env zsh|/bin/zsh)$' -- 'Scripts/*.sh')
-
-for script in "${zsh_scripts[@]}"; do
-  zsh -n "$script"
-done
-
-printf 'ci-config: PASS (%d Bash scripts, %d zsh scripts)\n' \
-  "${#bash_scripts[@]}" "${#zsh_scripts[@]}"
+printf 'ci-config: PASS (%d Bash scripts)\n' "${#bash_scripts[@]}"
