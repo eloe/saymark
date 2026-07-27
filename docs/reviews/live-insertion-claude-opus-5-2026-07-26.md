@@ -1,7 +1,7 @@
 # Claude Opus 5 independent review — live insertion
 
 **Date:** 2026-07-26  
-**Reviewer:** Claude Opus 5 High, read-only desktop review  
+**Reviewer model:** `claude-opus-5` (effort: High), read-only desktop review
 **Reviewed commit:** c175d25 on codex/live-insertion  
 **Verdict:** APPROVE-WITH-CHANGES, scoped. Slice 1 policy core may proceed; any cross-application field mutation is blocked.
 
@@ -59,3 +59,21 @@ LI-U35 through LI-U42, LI-I22 through LI-I25, LI-P06, and LI-S07 are required in
 * Slice 1 may implement policy-only code with no production AX mutation or synthetic-input path.
 * Slices 2 through 5 remain blocked. A failed evidence spike retains the atomic Tier C/D policy; it must not weaken ownership guarantees.
 
+## Follow-up review of f0acd93
+
+**Reviewer model:** `claude-opus-5` (effort: High)
+**Reviewed commit:** f0acd93
+**Verdict:** Slice 1 APPROVE-WITH-CHANGES; Slices 2–5 REJECT/remain blocked.
+
+| Finding | Documentation disposition |
+| --- | --- |
+| R-01 selection-first verification | Verification now requires the read-only kAXStringForRangeParameterizedAttribute over the tracked range before any selection. It is a Tier A capability, LI-U43 proves zero verification-path selection mutation, and B-01/B-02 spikes begin with ranged read. Any unprovable read/select race disqualifies the target. |
+| R-02 Slice 1 boundary | Slice 1 must first create the separate LiveInsertionPolicy target. LI-U44 is a CI build/unit gate rejecting ApplicationServices/CoreGraphics imports and AX write/CGEvent post references. No policy code may land before this gate. |
+| R-03 secure in-flight residual | The SDD states at most one already-issued mutation may complete after secure-input activation; polling is detection only, not a security or latency guarantee. B-04 must determine whether it can land in a protected field. |
+| R-04 over-cap tail | The explicit tail-throttled live substate is in the state diagram: the capped tail stays untouched and excess provisional content is HUD-only. |
+| R-05 secure transition before a tail | It routes to fallback-final, whose existing atomic path refuses secure paste and recovers through copy/HUD. |
+| R-06 off-main proof | LI-S07 now asserts all AX I/O is off-main as well as hung-target timeout failure. |
+| R-07 polling lifetime | The 25 ms poll runs only while a live lease exists and must not regress idle-CPU lifecycle gates. |
+| R-08 model identifier | This record uses the exact identifier `claude-opus-5`; High is recorded as effort. |
+
+The follow-up preserves every B-01 through B-05 missing-evidence blocker and every D-01 through D-07 design approval. Slice 1 remains policy-only and is not yet implemented; Slices 2–5 remain blocked.
