@@ -487,6 +487,46 @@ final class HistoryStoreTests: XCTestCase {
         directory = root
     }
 
+    func testOpenReplayMarksEveryPostCommitCleanupCause() async throws {
+        let root = directory!
+        for cause in [
+            HistoryStoreError.busy,
+            .ioFailed,
+            .corrupt,
+            .permissionDenied,
+        ] {
+            directory = root.appendingPathComponent("replay-\(cause)", isDirectory: true)
+            var setup: SQLiteHistoryStore? = try makeStore()
+            _ = try await setup?.recordFinal(.init(text: "relaunch replay \(cause)"))
+            await setup?.shutdown()
+            setup = nil
+
+            let interrupted = try SQLiteHistoryStore(
+                directoryURL: directory,
+                policy: .days30,
+                now: { self.now },
+                testProofFailure: true
+            )
+            await XCTAssertThrowsErrorAsync(try await interrupted.clear())
+            await interrupted.shutdown()
+
+            let reopened = try SQLiteHistoryStore(
+                directoryURL: directory,
+                policy: .days30,
+                now: { self.now },
+                testPostCommitCleanupFailure: cause
+            )
+            await XCTAssertThrowsErrorAsync(try await reopened.warmUp()) { error in
+                XCTAssertEqual(
+                    error as? HistoryCommittedCleanupFailure,
+                    HistoryCommittedCleanupFailure(cause: cause)
+                )
+            }
+            await reopened.shutdown()
+        }
+        directory = root
+    }
+
     func testSubprocessProofDisposalRecoversFromKillAtEveryTerminalBoundary() async throws {
         let environment = ProcessInfo.processInfo.environment
         if let boundary = environment["SAYMARK_HISTORY_DISPOSAL_CRASH_BOUNDARY"] {

@@ -10,7 +10,7 @@ import SwiftUI
 @Observable
 final class RecentDictationsController: NSObject, NSWindowDelegate {
     enum CommittedCleanupPath: CaseIterable {
-        case singleDelete, clear, retention, off, session, expiry
+        case singleDelete, clear, retention, off, session, expiry, recovery
     }
     static let shared = RecentDictationsController()
 
@@ -62,6 +62,9 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         do {
             if store == nil { store = try makeStore(.off) }
             try await store?.warmUp()
+        } catch is HistoryCommittedCleanupFailure {
+            invalidatePresentationAfterCommittedCleanupFailure(.recovery)
+            errorMessage = "Recent Dictations recovery committed, but Saymark could not finish cleaning its local database."
         } catch {
             // History is optional. Keep the failure local and fail open when
             // the next dictation is delivered.
@@ -206,6 +209,12 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             UserDefaults.standard.set(activeRetention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
             isHistoryAvailable = activeRetention != .off
             isStartupComplete = true
+        } catch is HistoryCommittedCleanupFailure {
+            store = nil
+            activeRetention = .off
+            isStartupComplete = true
+            invalidatePresentationAfterCommittedCleanupFailure(.recovery)
+            errorMessage = "Recent Dictations is unavailable on this Mac."
         } catch {
             // No menu, record eligibility, or settings claim is published
             // until the durable store has opened and launch cleanup completed.

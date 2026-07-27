@@ -267,6 +267,27 @@ final class RecentDictationsPresentationTests: XCTestCase {
         try FileManager.default.removeItem(at: fixture.directory)
     }
 
+    func testActualControllerOpenReplayClearsPresentationForEveryPostCommitCause() async throws {
+        let controller = RecentDictationsController.shared
+        for cause in [
+            HistoryStoreError.busy,
+            .ioFailed,
+            .corrupt,
+            .permissionDenied,
+        ] {
+            let fixture = try await makeReplayRecoveryFixture(cause: cause)
+            controller.configureStoreForTesting(fixture.store, retention: .days30)
+            controller.setRecordsForTesting([fixture.record])
+
+            await controller.prepareForDelivery()
+
+            assertCommittedCleanupInvalidated(controller, label: "open replay/\(cause)")
+            controller.configureStoreForTesting(nil, retention: .off)
+            await fixture.store.shutdown()
+            try FileManager.default.removeItem(at: fixture.directory)
+        }
+    }
+
     func testIntegratedFinalDeliveryInsertsExactlyOnceAndMarksTheSameRecord() async {
         let expected = makeRecord(text: "integrated exact delivery")
         var insertions = 0
@@ -363,6 +384,45 @@ final class RecentDictationsPresentationTests: XCTestCase {
             testPostCommitCleanupFailure: cause
         )
         return (directory, failing, record)
+    }
+
+    private func makeReplayRecoveryFixture(
+        cause: HistoryStoreError
+    ) async throws -> (
+        directory: URL,
+        store: SQLiteHistoryStore,
+        record: HistoryRecord
+    ) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saymark-hosted-replay-\(UUID().uuidString)", isDirectory: true)
+        var setup: SQLiteHistoryStore? = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days30
+        )
+        let storedRecord = try await setup?.recordFinal(.init(text: "private replay fixture"))
+        let record = try XCTUnwrap(storedRecord)
+        await setup?.shutdown()
+        setup = nil
+
+        let interrupted = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days30,
+            testProofFailure: true
+        )
+        do {
+            try await interrupted.clear()
+            XCTFail("Expected interrupted cleanup fixture")
+        } catch is HistoryCommittedCleanupFailure {
+            // The active proof is intentionally retained for reopen replay.
+        }
+        await interrupted.shutdown()
+
+        let recovering = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days30,
+            testPostCommitCleanupFailure: cause
+        )
+        return (directory, recovering, record)
     }
 
     private func assertCommittedCleanupInvalidated(

@@ -1195,9 +1195,13 @@ public actor SQLiteHistoryStore: HistoryStore {
                 try stepDone(statement)
             }
         }
-        try checkpointAfterDeletion()
-        try verifyCleanupProof(proof)
-        try destroyCleanupProof(proof)
+        do {
+            try checkpointAfterDeletion()
+            try verifyCleanupProof(proof)
+            try destroyCleanupProof(proof)
+        } catch {
+            throw committedCleanupFailure(error)
+        }
         cleanupFailureLatched = false
     }
 
