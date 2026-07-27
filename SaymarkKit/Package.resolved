@@ -1,5 +1,5 @@
 {
-  "originHash" : "8870e1f486e4de15f966b620b0cf06fc9dc737e7c8aa99c00a6c76d31900a0bb",
+  "originHash" : "ba95e1614e15c0bf9d6c36edeac36b6cd08a703f85baa623c0d81bd7d86e8cd8",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -15,7 +15,6 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/beshkenadze/mlx-audio-swift.git",
       "state" : {
-        "branch" : "main",
         "revision" : "6671490176d24bc962f0b8cd50dbf24e2427e387"
       }
     },
