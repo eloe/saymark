@@ -148,10 +148,7 @@ analysis:
 
 The required branch-protection context is `CodeQL policy gate`, not the
 conditionally skipped `Swift security analysis` context. Keep compiled
-`DerivedData` out of caches so CodeQL observes every compiler invocation. The
-traced build retains Release compilation conditions but disables compiler
-optimization and whole-module compilation because CodeQL needs compiler
-invocations, not an optimized distributable binary.
+`DerivedData` out of caches so CodeQL observes every compiler invocation.
 
 ## GitHub repository controls
 
