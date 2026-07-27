@@ -135,19 +135,21 @@ Before Tier A is unblocked, commit: B-01 spike result, B-02 adversarial read-bac
 4. **Product integration — blocked:** only after Tier A is certified; opt-in first.
 5. **Tier B certification/promotion — blocked:** only after Tier A, real-app results, D-07 if hold mode is requested, user testing, and final review.
 
-## UI/design approvals required
+## Approved UI/design contract
 
-No mockups or UI are created here. Every item is a prerequisite for a changed product surface.
+The recommended native macOS package was approved on 2026-07-26. This approval
+resolves D-01…D-07 but does not waive B-01…B-05 or authorize Slices 2–5 before
+their evidence gates pass.
 
-| Decision | Required decision/mockup |
+| Decision | Approved behavior |
 | --- | --- |
-| D-01 setting/default | Atomic final versus live choice; consent explicitly says provisional text is written and may change. |
-| D-02 revisable-text cue | HUD/field storyboard, VoiceOver, and Reduce Motion treatment. |
-| D-03 ownership-loss recovery | Live/frozen/secure/fallback states; copy-only versus explicit confirmed replace; include HUD-click stop. |
-| D-04 undo | One Undo/Redo storyboard for safe settle and loss case. |
-| D-05 compatibility disclosure | “Live here” versus “final on release,” including terminal. |
-| D-06 residual provisional text | On loss, approve leave-as-is, one-step undo offer, or explicit replacement; no implicit modification. |
-| D-07 Tier B hold mode | Decide whether held-chord live synthesis is permitted. Default is disabled pending modifier-discipline proof. |
+| D-01 setting/default | Keep atomic final-on-release as the safe default. “Insert while I speak” is an explicit opt-in, and its consent says provisional words are written into the active app and may change before settling. Unsupported fields automatically use final-on-release. |
+| D-02 revisable-text cue | The HUD labels the state “Live here” and uses a native dotted underline for provisional words with the accessible description “Underlined words may still change.” Reduce Motion removes nonessential transition animation. |
+| D-03 ownership-loss recovery | Show “Editing paused,” explain that live updates stopped because the text changed outside Saymark, and offer **Copy final text** plus **Done**. Never perform an implicit replacement. HUD-click Stop follows the same ownership rule. |
+| D-04 undo | Offer a single coalesced Undo/Redo only where target-specific evidence proves it is safe. Otherwise make no special undo claim and preserve the target application’s native history. |
+| D-05 compatibility disclosure | Show “Live here” only for a certified target; otherwise show/use “Final on release,” including Terminal and every unverified control. |
+| D-06 residual provisional text | Leave residual provisional text as-is after ownership loss and offer Copy final text. Never silently replace or remove unverified text. |
+| D-07 Tier B hold mode | Held-chord live synthesis remains disabled until modifier-discipline evidence proves it cannot emit contaminated events. |
 
 ## Traceability
 
