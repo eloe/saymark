@@ -115,4 +115,47 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertNil(object["destination"])
         XCTAssertNil(object["state"])
     }
+
+    func testHistoryDiagnosticsAcceptOnlyLiteralEventAndClosedBoundedValues() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saymark-history-diagnostics-\(UUID().uuidString)")
+        let file = directory.appendingPathComponent("test.jsonl")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        SaymarkDiagnostics.configure(.init(level: .info, fileURL: file))
+        SaymarkDiagnostics.logHistoryOperation(
+            .query,
+            outcome: .success,
+            retention: .days30,
+            resultCount: 999,
+            durationMilliseconds: 80_000
+        )
+        SaymarkDiagnostics.log(.info, "history.query.private words", fields: [
+            "history_operation": "query",
+            "history_outcome": "success",
+        ])
+        SaymarkDiagnostics.log(.info, "history.operation", fields: [
+            "history_operation": "query",
+            "history_outcome": "private transcript",
+            "history_retention": "/Users/private",
+        ])
+
+        let deadline = Date().addingTimeInterval(2)
+        while (!FileManager.default.fileExists(atPath: file.path) ||
+               (try? Data(contentsOf: file).isEmpty) != false), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+        XCTAssertEqual(lines.count, 1)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(object["event"] as? String, "history.operation")
+        XCTAssertEqual(object["history_operation"] as? String, "query")
+        XCTAssertEqual(object["history_outcome"] as? String, "success")
+        XCTAssertEqual(object["history_retention"] as? String, "days_30")
+        XCTAssertEqual(object["history_result_count"] as? Int, 25)
+        XCTAssertEqual(object["history_duration_ms"] as? Int, 60_000)
+        XCTAssertFalse(lines[0].contains("private"))
+    }
 }

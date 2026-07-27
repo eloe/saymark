@@ -206,9 +206,16 @@ availability, and dictation eligibility begin disabled on every launch. The
 controller opens and validates the store, reads its transactional retention
 metadata, clears a prior-session policy or purges expiry for every other enabled
 policy, and only then mirrors UserDefaults and publishes availability. A
-preference value is never policy authority. Clear and Off stream every saved
+preference value and an initializer/cache hint are never policy authority;
+reconciliation executes a fresh metadata query. If metadata/deletion commits
+but proof/checkpoint fails, the committed metadata remains authoritative while
+the store latches every history read and write closed and the controller neither
+mirrors defaults nor publishes availability until launch/retry cleanup succeeds.
+Clear and Off stream every saved
 transcript through an owner-only controlled proof spool one record at a time,
-scan all controlled artifacts in bounded chunks, then zero, truncate, fsync,
+as do purge, Session, and every bounded transition for the rows each removes.
+Proof verification scans all controlled artifacts in bounded 64-row chunks,
+then zeroes, truncates, fsyncs,
 and unlink the spool. There is no row-count cap. Off closes the in-process write
 gate before cleanup begins and remains fail-closed if proof or checkpointing is
 incomplete. Idle cleanup runs at background priority only after at least five
@@ -242,7 +249,7 @@ SQLite is selected for atomic transactions, bounded indexed reads, crash
 recovery, and schema migration. Use `journal_mode=WAL`, `synchronous=FULL`, a
 short pre-delivery `busy_timeout` bounded by §2.2, `secure_delete=ON`,
 `journal_size_limit=0`, and a transaction for every mutation. **Every SQLite
-connection**, including read, migration, test, and recovery connections, must
+connection**, including read, schema-creation, test, and recovery connections, must
 set and verify `secure_delete=ON` before opening/creating history tables or
 executing any statement. After every
 delete, clear, Off transition, expiry purge, or migration, finish the mutation
@@ -251,13 +258,15 @@ checkpoint is retried only by idle maintenance; deletion UI must say it is
 still completing, never claim completion early.
 
 Version 1 does not run `VACUUM`: it can copy text outside the protected
-directory. Every history connection uses `temp_store=MEMORY`; before migration,
-purge, or large search it also establishes a process-serialized SQLite temp
-directory inside the protected store directory (and restores it afterward). If
-that containment cannot be established, maintenance fails closed and delivery
-fails open. The implementation must prove no temp/spill artifact contains text
-outside the store directory. A network filesystem that cannot support WAL/SHM
-is unsupported and disables history with a typed `unsupported_filesystem`
+directory. Every history connection sets `temp_store=MEMORY` before schema or
+text access, and all queries are hard-capped. This is the containment boundary:
+v1 must not create a disk temp file at all. It deliberately does not mutate
+SQLite's deprecated process-global `sqlite3_temp_directory`, which would race
+unrelated connections and weaken isolation. Startup and every destructive proof
+fail closed on any unexpected artifact, including migration/temp names, and the
+10,000-row fixture verifies no sentinel appears outside the controlled store.
+A network filesystem that cannot support WAL/SHM is unsupported and disables
+history with a typed `unsupported_filesystem`
 error; it must not silently fall back to unsafe behavior.
 
 Minimal schema (schema version 1):
@@ -334,9 +343,12 @@ Database startup follows this sequence:
    timeout then exposes typed `busy`, without a persistent lockfile;
 3. verify application id, `user_version`, schema, constraints, filesystem
    support, and temp-directory containment;
-4. run each migration in one transaction. Do not make automatic plaintext
-   backups; preserve the original on failure and remove all migration artifacts
-   after success; and
+4. create schema v1 from SQLite `user_version = 0` in one transaction, including
+   exact-schema validation before commit. Version 0 has never been a released
+   transcript schema, so there is no legacy row migration in this slice.
+   Injected failure rolls back to an empty v0 database with no plaintext backup
+   or migration artifact. Any future v1→v2 migration must add row-preservation,
+   repeatability, rollback, and byte-proof fixtures before its code lands; and
 5. advance the time high-water mark, purge expired/search rows transactionally,
    run secure deletion/checkpoint, then make the store available.
 
@@ -406,7 +418,7 @@ names are validated before the existing free-form logger/unified-log sink and
 may not be constructed from an operation, error, record, or input. Its closed
 property vocabulary is: operation `insert|query|delete|clear|purge|policy_change`;
 outcome
-`success|unavailable|corrupt|migration_failed|permission_denied|busy|io_failed|unsupported_filesystem|deadline_exceeded|record_too_large`;
+`success|unavailable|corrupt|migration_failed|permission_denied|busy|io_failed|unsupported_filesystem|deadline_exceeded|cleanup_incomplete|record_too_large`;
 retention `off|session|days_7|days_30|days_90|until_deleted`; result count
 integer 0...25; and duration a non-negative bounded integer. Do not log record
 ids, timestamps, raw errors/paths, query tokens/count, precise text length,
@@ -640,6 +652,38 @@ revision, and fixture revision as required by `performance-acceptance.md`.
 | RD-UI11 | With history window key, Reinsert deactivates it and delivers only to the previously-frontmost verified app; if that app quit/changed, it never pastes into Saymark and offers Copy. |
 | RD-UI12 | Search a sentinel, quit/relaunch, and assert no sentinel in UserDefaults or saved-application-state artifact; window is non-restorable and sharing policy matches approved mockup. |
 | RD-UI13 | Reinsert waits at most 500 ms, pins/re-verifies the original process ID immediately before paste, and offers Copy without posting if activation, PID, or frontmost verification fails. |
+
+### 7.4 Executable evidence and justified scope reconciliations (2026-07-26)
+
+The identifiers above remain the product/security contract. The following is
+the concrete evidence shipped with this slice; an ID is not considered covered
+merely because it appears in a test name.
+
+| Evidence | Contract coverage |
+| --- | --- |
+| `HistoryStoreTests` default/eligibility/state/search/limits/deadline cases | RD-U01–U14, U16, U21, U23, U25; exact policy and delivery-state behavior, default-Off no-files, literal bound search, cancellation, advisory lock, symlink rejection. |
+| `testCheckpointFailureReconcilesFromCommittedOffMetadataAndFailsClosed` and `testProofFailureAfterDownwardCommitUsesDurablePolicyAndBlocksRowsUntilRecovery` | RD-U13/U21 and startup authority: injected failure after SQLite commit proves a fresh metadata read wins, the in-process store exposes no rows/accepts no writes, and relaunch resumes cleanup. |
+| `testSchemaZeroCreationRollsBackAtomicallyOnInjectedFailure` | RD-U15/I05 as applicable to the only supported v0 state. v0 is an empty SQLite database, not a released transcript schema; the test proves transactional creation/validation rollback, `user_version == 0`, zero schema objects, and no backup/migration file. Future row-bearing migrations require new evidence. |
+| `testUnicodeSearchContractCoversNormalizationScriptsAndLiteralGrammar` and `testTenThousandGeneratedUnicodeQueriesProduceOnlyBoundedQuotedGrammar` | RD-U09/U10/I06: named normalization/script/operator cases plus 10,000 deterministic generated query strings; only implementation-authored quoted-prefix grammar is produced. Malformed UTF-8 is repaired at Swift's `String` boundary before storage. |
+| `testConcurrentReadsWritesDeletesAndPolicyChangesRemainSerialized` | RD-I03: 120 mixed actor operations complete without `BUSY`, deadlock, resurrection, or cap violation. Reader snapshot isolation remains SQLite's WAL transaction guarantee; the app owns one connection and never exposes a long-lived read transaction. |
+| `testTenThousandRecordSearchAndPurgeAcceptance` | RD-I07/I08/I12: real 10,000-row SQLite+FTS fixture, twenty 25-row searches with <=100 ms p95 on the executing Mac, <30 s background purge budget, logical empty result, and first/last sentinel absence across every controlled artifact. The test reports measured values on failure rather than recording machine identity in the repository. |
+| `testPurgeAndSessionTransitionsByteScanEveryControlledArtifact`, Clear/Off/delete tests | RD-U12–U14/U21 and RD-I12: proof spools cover all removed rows without a row cap for delete, Clear, Off, Session, expiry purge, and downward transitions; DB/WAL/SHM/FTS/lock/marker/proof/unexpected artifacts are descriptor scanned. |
+| `DiagnosticLoggingTests.testHistoryDiagnosticsAcceptOnlyLiteralEventAndClosedBoundedValues` plus hosted source/privacy tests | RD-U20/I09/I13: only literal `history.operation` with closed operation/outcome/retention and bounded count/duration values crosses diagnostics. History sources contain no PostHog call; the whole-flow negative assertion is compile-time/source evidence because there is no history analytics dependency to inject. |
+| `testStoreIsExcludedFromBackupAndSpotlightDiscovery` | RD-I14: backup exclusion, `.metadata_never_index`, and an `mdfind -onlyin` negative sentinel check. |
+| `RecentDictationsPresentationTests` | RD-UI03/05/06/09/11/12/13 as deterministic hosted evidence: private/non-restorable window, static title, bounded preview/full selectable value, exact Copy, 20→25 paging contract, spelling/recents controls, exact reinsert, Accessibility/secure-input/failed-target fallbacks, PID mismatch no-post, announcement, and 500 ms maximum. |
+
+Two platform checks stay release-environment gates rather than ordinary
+developer-account tests:
+
+- RD-I16's inspection of `~/Library/Spelling` must run in the dedicated clean
+  CI account. Reading a developer's personal spelling database from unit tests
+  would itself violate the fixture privacy rule. Hosted tests instead assert
+  every AppKit learning/replacement/completion flag and search-recents setting.
+- Visual VoiceOver focus traversal, localization expansion, high-contrast,
+  reduced-motion, and the confirmation-dialog appearance remain the approved
+  macOS UI/video review. Deterministic hosted tests cover the underlying action,
+  privacy, target, and fallback state machines; screenshots or videos must use
+  synthetic text only.
 
 ## 8. Requirements-to-tests traceability
 

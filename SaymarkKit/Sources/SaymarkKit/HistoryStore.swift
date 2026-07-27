@@ -121,8 +121,12 @@ public actor SQLiteHistoryStore: HistoryStore {
     private var policy: HistoryRetentionPolicy
     private var inMemoryHighWaterMark: Int64 = 0
     private var generation: UInt64 = 0
+    private var cleanupFailureLatched = false
     private var lockFileDescriptor: Int32 = -1
     private let testPreCommitDelayMicroseconds: useconds_t
+    private let testCheckpointFailure: Bool
+    private let testProofFailure: Bool
+    private let testSchemaCreationFailure: Bool
 
     /// Passing `.off` is intentionally side-effect free: no directory, database,
     /// WAL, or metadata file is created until an explicit enabled policy arrives.
@@ -130,13 +134,19 @@ public actor SQLiteHistoryStore: HistoryStore {
         directoryURL: URL,
         policy: HistoryRetentionPolicy = .off,
         now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) },
-        testPreCommitDelayMicroseconds: useconds_t = 0
+        testPreCommitDelayMicroseconds: useconds_t = 0,
+        testCheckpointFailure: Bool = false,
+        testProofFailure: Bool = false,
+        testSchemaCreationFailure: Bool = false
     ) throws {
         self.directoryURL = directoryURL
         self.databaseURL = directoryURL.appendingPathComponent(Self.databaseName, isDirectory: false)
         self.policy = policy
         self.now = now
         self.testPreCommitDelayMicroseconds = testPreCommitDelayMicroseconds
+        self.testCheckpointFailure = testCheckpointFailure
+        self.testProofFailure = testProofFailure
+        self.testSchemaCreationFailure = testSchemaCreationFailure
         // Do not create the store in an initializer.  This preserves the
         // default-Off no-files guarantee even if a caller only constructs a
         // dependency container and never records a final transcript.
@@ -162,7 +172,12 @@ public actor SQLiteHistoryStore: HistoryStore {
             return .off
         }
         try openIfNeeded()
-        return policy
+        let durable = try storedRetentionPolicy()
+        // Never reconcile from the bootstrap/cache hint. SQLite metadata is
+        // the sole authority, including after a transaction committed but its
+        // destructive proof/checkpoint subsequently failed.
+        policy = durable
+        return durable
     }
 
     /// Releases the private connection and advisory lock. Primarily useful for
@@ -185,7 +200,9 @@ public actor SQLiteHistoryStore: HistoryStore {
         deadlineUptimeNanoseconds: UInt64?,
         cancellation: HistoryWriteCancellation? = nil
     ) throws -> HistoryRecord? {
+        try reconcilePolicyBeforeGate()
         guard policy.isEnabled,
+              !cleanupFailureLatched,
               !finalization.secureInputActive,
               !finalization.isHUDOnly,
               !finalization.text.isEmpty
@@ -240,6 +257,8 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     public func updateDeliveryState(id: String, to state: HistoryDeliveryState) throws -> Bool {
+        try reconcilePolicyBeforeGate()
+        if cleanupFailureLatched { throw HistoryStoreError.cleanupIncomplete }
         guard state.isTerminal, policy.isEnabled else { return false }
         try openIfNeeded()
         let updatedAt = try advanceHighWaterMarkForMutation()
@@ -272,6 +291,8 @@ public actor SQLiteHistoryStore: HistoryStore {
         limit: Int = 20,
         cancellation: HistoryWriteCancellation? = nil
     ) throws -> [HistoryRecord] {
+        try reconcilePolicyBeforeGate()
+        if cleanupFailureLatched { throw HistoryStoreError.cleanupIncomplete }
         guard policy.isEnabled else { return [] }
         if let query, query.lengthOfBytes(using: .utf8) > Self.maximumSearchQueryBytes {
             throw HistoryStoreError.recordTooLarge
@@ -337,6 +358,8 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     public func delete(id: String) throws -> Bool {
+        try reconcilePolicyBeforeGate()
+        if cleanupFailureLatched { throw HistoryStoreError.cleanupIncomplete }
         guard policy.isEnabled else { return false }
         try openIfNeeded()
         let removedText = try textForRecord(id: id)
@@ -348,14 +371,22 @@ public actor SQLiteHistoryStore: HistoryStore {
             return sqlite3_changes(database)
         }
         if changes > 0 {
-            try checkpointAfterDeletion()
-            try verifyRemovedTextIsAbsent(removedText.map { [$0] } ?? [])
+            do {
+                try checkpointAfterDeletion()
+                try verifyRemovedTextIsAbsent(removedText.map { [$0] } ?? [])
+                cleanupFailureLatched = false
+            } catch {
+                cleanupFailureLatched = true
+                throw error
+            }
             generation &+= 1
         }
         return changes > 0
     }
 
     public func clear() throws {
+        try reconcilePolicyBeforeGate()
+        if cleanupFailureLatched { throw HistoryStoreError.cleanupIncomplete }
         guard policy.isEnabled else { return }
         try openIfNeeded()
         let proof = try createCleanupProof()
@@ -363,10 +394,16 @@ public actor SQLiteHistoryStore: HistoryStore {
             try? destroyCleanupProof(proof)
             close(proof)
         }
-        try transaction { try execute("DELETE FROM records") }
-        try checkpointAfterDeletion()
-        try verifyCleanupProof(proof)
-        try destroyCleanupProof(proof)
+        do {
+            try transaction { try execute("DELETE FROM records") }
+            try checkpointAfterDeletion()
+            try verifyCleanupProof(proof)
+            try destroyCleanupProof(proof)
+            cleanupFailureLatched = false
+        } catch {
+            cleanupFailureLatched = true
+            throw error
+        }
         generation &+= 1
     }
 
@@ -378,14 +415,14 @@ public actor SQLiteHistoryStore: HistoryStore {
             guard FileManager.default.fileExists(atPath: directoryURL.path) else { return }
             try openIfNeeded()
             self.policy = .off
-            let proof = try createCleanupProof()
-            defer {
-                try? destroyCleanupProof(proof)
-                close(proof)
+            do {
+                try persistPolicyAndPurge(.off)
+            } catch {
+                cleanupFailureLatched = true
+                self.policy = .off
+                throw error
             }
-            try persistPolicyAndPurge(.off)
-            try verifyCleanupProof(proof)
-            try destroyCleanupProof(proof)
+            cleanupFailureLatched = false
             self.policy = .off
             closeDatabase()
             // The store owns this exact directory.  Removing it after a
@@ -395,24 +432,51 @@ public actor SQLiteHistoryStore: HistoryStore {
             return
         }
         try openIfNeeded()
-        try persistPolicyAndPurge(policy)
+        do {
+            try persistPolicyAndPurge(policy)
+        } catch {
+            // A policy transaction may have committed before proof/checkpoint
+            // failed. Reconcile the cache from SQLite, then latch all history
+            // reads/writes closed until a retry/relaunch completes cleanup.
+            self.policy = (try? storedRetentionPolicy()) ?? .off
+            cleanupFailureLatched = true
+            throw error
+        }
         // Metadata is the commit authority. Do not publish this in-memory
         // policy until its transaction and truncating checkpoint have passed.
         self.policy = policy
+        cleanupFailureLatched = false
         generation &+= 1
     }
 
     public func purgeExpired() throws {
+        try reconcilePolicyBeforeGate()
         guard policy.isEnabled else { return }
         try openIfNeeded()
         let effectiveNow = try advanceHighWaterMarkForMutation()
-        try transaction {
-            let statement = try prepare("DELETE FROM records WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?")
-            defer { sqlite3_finalize(statement) }
-            try bind(effectiveNow, to: statement, at: 1)
-            try stepDone(statement)
+        let proof = try createCleanupProof(
+            whereClause: "expires_at_ms IS NOT NULL AND expires_at_ms <= ?",
+            integerBindings: [effectiveNow]
+        )
+        defer {
+            try? destroyCleanupProof(proof)
+            close(proof)
         }
-        try checkpointAfterDeletion()
+        do {
+            try transaction {
+                let statement = try prepare("DELETE FROM records WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?")
+                defer { sqlite3_finalize(statement) }
+                try bind(effectiveNow, to: statement, at: 1)
+                try stepDone(statement)
+            }
+            try checkpointAfterDeletion()
+            try verifyCleanupProof(proof)
+            try destroyCleanupProof(proof)
+            cleanupFailureLatched = false
+        } catch {
+            cleanupFailureLatched = true
+            throw error
+        }
         generation &+= 1
     }
 
@@ -464,9 +528,16 @@ public actor SQLiteHistoryStore: HistoryStore {
             // handling adds a second, externally observable interruption path.
             sqlite3_busy_timeout(handle, 20)
             try verifySecureDelete()
-            try validateDatabaseIdentity()
-            try createSchema()
-            try validateExactSchema()
+            let schemaVersion = try validatedSchemaVersion()
+            if schemaVersion == 0 {
+                try transaction {
+                    try createSchema()
+                    if testSchemaCreationFailure { throw HistoryStoreError.migrationFailed }
+                    try validateExactSchema()
+                }
+            } else {
+                try validateExactSchema()
+            }
             try protectSQLiteArtifacts()
             try verifyProtectedSQLiteArtifacts()
             inMemoryHighWaterMark = try storedHighWaterMark()
@@ -481,6 +552,14 @@ public actor SQLiteHistoryStore: HistoryStore {
             closeDatabase()
             throw error
         }
+    }
+
+    private func reconcilePolicyBeforeGate() throws {
+        guard database == nil,
+              FileManager.default.fileExists(atPath: directoryURL.path)
+        else { return }
+        try openIfNeeded()
+        policy = try storedRetentionPolicy()
     }
 
     private func createProtectedDirectory() throws {
@@ -724,6 +803,25 @@ public actor SQLiteHistoryStore: HistoryStore {
 
     private func persistPolicyAndPurge(_ policy: HistoryRetentionPolicy) throws {
         let effectiveNow = try advanceHighWaterMarkForMutation()
+        let proof: Int32
+        switch policy {
+        case .off, .session:
+            proof = try createCleanupProof()
+        case .days7, .days30, .days90:
+            proof = try createCleanupProof(
+                whereClause: """
+                    MIN(COALESCE(expires_at_ms, 9223372036854775807), created_at_ms + ?) <= ?
+                    """,
+                integerBindings: [policy.durationMilliseconds!, effectiveNow]
+            )
+        case .untilDeleted:
+            // No existing expiry is extended and no row is removed.
+            proof = try createCleanupProof(whereClause: "0")
+        }
+        defer {
+            try? destroyCleanupProof(proof)
+            close(proof)
+        }
         try transaction {
             try metadataSet("retention_policy", policy.rawValue)
             switch policy {
@@ -748,6 +846,8 @@ public actor SQLiteHistoryStore: HistoryStore {
             }
         }
         try checkpointAfterDeletion()
+        try verifyCleanupProof(proof)
+        try destroyCleanupProof(proof)
     }
 
     private func advanceHighWaterMarkForMutation() throws -> Int64 {
@@ -805,7 +905,10 @@ public actor SQLiteHistoryStore: HistoryStore {
     /// Streams every transcript into an owner-only proof spool before deletion.
     /// Memory is bounded to one record (100 KB); the spool is itself a
     /// controlled artifact, securely truncated and unlinked before success.
-    private func createCleanupProof() throws -> Int32 {
+    private func createCleanupProof(
+        whereClause: String? = nil,
+        integerBindings: [Int64] = []
+    ) throws -> Int32 {
         let descriptor = try withHistoryDirectoryDescriptor { directory in
             let fd = openat(directory, ".cleanup-proof", O_CREAT | O_TRUNC | O_RDWR | O_NOFOLLOW, 0o600)
             guard fd >= 0 else { throw HistoryStoreError.ioFailed }
@@ -817,8 +920,12 @@ public actor SQLiteHistoryStore: HistoryStore {
             return fd
         }
         do {
-            let statement = try prepare("SELECT CAST(text AS BLOB) FROM records ORDER BY rowid")
+            let predicate = whereClause.map { " WHERE \($0)" } ?? ""
+            let statement = try prepare("SELECT CAST(text AS BLOB) FROM records\(predicate) ORDER BY rowid")
             defer { sqlite3_finalize(statement) }
+            for (offset, value) in integerBindings.enumerated() {
+                try bind(value, to: statement, at: Int32(offset + 1))
+            }
             while true {
                 let result = sqlite3_step(statement)
                 if result == SQLITE_DONE { break }
@@ -843,13 +950,24 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     private func verifyCleanupProof(_ proof: Int32) throws {
+        if testProofFailure { throw HistoryStoreError.cleanupIncomplete }
         guard lseek(proof, 0, SEEK_SET) >= 0 else { throw HistoryStoreError.cleanupIncomplete }
         while true {
-            guard let lengthBytes = try readExact(4, from: proof) else { break }
-            let length = lengthBytes.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self)) }
-            guard length > 0, length <= Self.maximumFinalTextBytes,
-                  let sentinel = try readExact(Int(length), from: proof)
-            else { throw HistoryStoreError.cleanupIncomplete }
+            // Bound memory while avoiding one full artifact scan per row.
+            // Every row is still covered; only the batch size is capped.
+            var sentinels: [Data] = []
+            sentinels.reserveCapacity(64)
+            for _ in 0..<64 {
+                guard let lengthBytes = try readExact(4, from: proof) else { break }
+                let length = lengthBytes.withUnsafeBytes {
+                    UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self))
+                }
+                guard length > 0, length <= Self.maximumFinalTextBytes,
+                      let sentinel = try readExact(Int(length), from: proof)
+                else { throw HistoryStoreError.cleanupIncomplete }
+                sentinels.append(sentinel)
+            }
+            if sentinels.isEmpty { break }
             try withHistoryDirectoryDescriptor { directory in
                 try verifyNoUnexpectedArtifacts(directory)
                 for name in Self.controlledArtifactNames where name != ".cleanup-proof" {
@@ -860,7 +978,7 @@ public actor SQLiteHistoryStore: HistoryStore {
                     }
                     defer { close(artifact) }
                     try verifyPrivateRegularFileDescriptor(artifact)
-                    if try artifactContainsAnySentinel(artifact, sentinels: [sentinel]) {
+                    if try artifactContainsAnySentinel(artifact, sentinels: sentinels) {
                         throw HistoryStoreError.cleanupIncomplete
                     }
                 }
@@ -959,6 +1077,7 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     private func checkpointAfterDeletion() throws {
+        if testCheckpointFailure { throw HistoryStoreError.cleanupIncomplete }
         let statement = try prepare("PRAGMA wal_checkpoint(TRUNCATE)")
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw mapSQLiteError(sqlite3_errcode(database)) }
@@ -1057,18 +1176,24 @@ public actor SQLiteHistoryStore: HistoryStore {
     /// Build only implementation-authored FTS grammar.  Every user token is
     /// quoted and the wildcard is outside that quote, so FTS operators remain
     /// literal search text rather than executable grammar.
-    private static func ftsQuery(_ tokens: [String]) -> String {
+    static func ftsQuery(_ tokens: [String]) -> String {
         tokens.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"*" }.joined(separator: " AND ")
     }
 
     /// Mirrors the unicode61 notion of a word closely enough to avoid exposing
     /// any punctuation or FTS operators as grammar. The FTS layer remains the
     /// authority for case/diacritic folding and matching.
-    private static func literalTokens(_ query: String) -> [String] {
+    static func literalTokens(_ query: String) -> [String] {
         let allowed = CharacterSet.alphanumerics.union(.nonBaseCharacters)
         let parts = query.components(separatedBy: allowed.inverted).filter { !$0.isEmpty }
         var seen = Set<String>()
-        return parts.filter { seen.insert($0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)).inserted }
+        let stableLocale = Locale(identifier: "en_US_POSIX")
+        return parts.filter {
+            seen.insert($0.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: stableLocale
+            )).inserted
+        }
     }
 
     private func requireBeforeDeadline(_ deadline: UInt64?, cancellation: HistoryWriteCancellation? = nil) throws {
@@ -1152,11 +1277,12 @@ public actor SQLiteHistoryStore: HistoryStore {
         lockFileDescriptor = descriptor
     }
 
-    private func validateDatabaseIdentity() throws {
+    private func validatedSchemaVersion() throws -> Int32 {
         let applicationID = try pragmaInt("application_id")
         guard applicationID == 0 || applicationID == 1_396_788_296 else { throw HistoryStoreError.corrupt }
         let version = try pragmaInt("user_version")
         guard version == 0 || version == 1 else { throw HistoryStoreError.migrationFailed }
+        return version
     }
 
     private func pragmaInt(_ name: String) throws -> Int32 {

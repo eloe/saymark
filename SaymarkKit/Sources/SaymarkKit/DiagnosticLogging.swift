@@ -85,21 +85,37 @@ public enum SaymarkDiagnostics {
     /// or raw-error parameter.
     public static func logHistoryOperation(
         _ operation: HistoryDiagnosticOperation,
-        outcome: HistoryDiagnosticOutcome
+        outcome: HistoryDiagnosticOutcome,
+        retention: HistoryRetentionPolicy? = nil,
+        resultCount: Int? = nil,
+        durationMilliseconds: Int? = nil
     ) {
-        storage.log(.info, event: "history.operation", sessionID: nil, fields: [
+        var fields: [String: Any] = [
             "history_operation": operation.rawValue,
             "history_outcome": outcome.rawValue,
-        ])
+        ]
+        if let retention { fields["history_retention"] = retention.rawValue }
+        if let resultCount { fields["history_result_count"] = min(max(resultCount, 0), 25) }
+        if let durationMilliseconds { fields["history_duration_ms"] = min(max(durationMilliseconds, 0), 60_000) }
+        storage.log(.info, event: "history.operation", sessionID: nil, fields: fields)
     }
 }
 
 public enum HistoryDiagnosticOperation: String, Sendable {
-    case record, clear, delete, retention, reinsert
+    case insert, query, delete, clear, purge
+    case policyChange = "policy_change"
 }
 
 public enum HistoryDiagnosticOutcome: String, Sendable {
-    case committed, skipped, unavailable, deadlineExceeded, cleanupIncomplete
+    case success, unavailable, corrupt
+    case migrationFailed = "migration_failed"
+    case permissionDenied = "permission_denied"
+    case busy
+    case ioFailed = "io_failed"
+    case unsupportedFilesystem = "unsupported_filesystem"
+    case deadlineExceeded = "deadline_exceeded"
+    case cleanupIncomplete = "cleanup_incomplete"
+    case recordTooLarge = "record_too_large"
 }
 
 private final class DiagnosticStorage: @unchecked Sendable {
@@ -116,7 +132,9 @@ private final class DiagnosticStorage: @unchecked Sendable {
         "duration_ms", "duration_seconds", "error_type", "fallback", "fed",
         "fed_audio_seconds", "fed_chunks", "feed_interval_ms", "feed_samples",
         "final_source", "finish_compute_ms", "from_mode",
-        "gated_chunks", "granted", "history_operation", "history_outcome", "input_buffer_count", "input_channels",
+        "gated_chunks", "granted", "history_duration_ms", "history_operation",
+        "history_outcome", "history_result_count", "history_retention",
+        "input_buffer_count", "input_channels",
         "input_chunks", "input_sample_rate", "insert_mode", "interval_seconds",
         "is_empty", "lane", "language", "latency_ms", "level", "log_level",
         "max_file_bytes", "mlx_active_bytes", "mlx_cache_bytes", "mlx_peak_bytes",
@@ -203,12 +221,30 @@ private final class DiagnosticStorage: @unchecked Sendable {
 
     private static func isClosedHistoryEvent(_ event: String, fields: [String: Any]) -> Bool {
         guard event == "history.operation",
-              Set(fields.keys) == Set(["history_operation", "history_outcome"]),
+              Set(fields.keys).isSubset(of: [
+                "history_operation", "history_outcome", "history_retention",
+                "history_result_count", "history_duration_ms",
+              ]),
+              fields["history_operation"] != nil,
+              fields["history_outcome"] != nil,
               let operation = fields["history_operation"] as? String,
               let outcome = fields["history_outcome"] as? String
         else { return false }
-        return HistoryDiagnosticOperation(rawValue: operation) != nil
-            && HistoryDiagnosticOutcome(rawValue: outcome) != nil
+        guard HistoryDiagnosticOperation(rawValue: operation) != nil,
+              HistoryDiagnosticOutcome(rawValue: outcome) != nil
+        else { return false }
+        if let retention = fields["history_retention"] {
+            guard let retention = retention as? String,
+                  HistoryRetentionPolicy(rawValue: retention) != nil
+            else { return false }
+        }
+        if let resultCount = fields["history_result_count"] {
+            guard let resultCount = resultCount as? Int, (0...25).contains(resultCount) else { return false }
+        }
+        if let duration = fields["history_duration_ms"] {
+            guard let duration = duration as? Int, (0...60_000).contains(duration) else { return false }
+        }
+        return true
     }
 
     private func prepareFile(_ configuration: SaymarkDiagnosticsConfiguration) {
@@ -279,6 +315,9 @@ private final class DiagnosticStorage: @unchecked Sendable {
             "log_level": ["off", "error", "warn", "info", "debug", "trace"],
             "configured_level": ["off", "error", "warn", "info", "debug", "trace"],
             "language": ["auto", "en"],
+            "history_operation": Set(HistoryDiagnosticOperation.allRawValues),
+            "history_outcome": Set(HistoryDiagnosticOutcome.allRawValues),
+            "history_retention": Set(HistoryRetentionPolicy.allCases.map(\.rawValue)),
         ]
         if let values = closedValues[key] { return values.contains(string) }
         switch key {
@@ -301,5 +340,21 @@ private final class DiagnosticStorage: @unchecked Sendable {
 
     private static func isOpaqueSessionID(_ value: String) -> Bool {
         UUID(uuidString: value) != nil
+    }
+}
+
+private extension HistoryDiagnosticOperation {
+    static var allRawValues: [String] {
+        [Self.insert, .query, .delete, .clear, .purge, .policyChange].map(\.rawValue)
+    }
+}
+
+private extension HistoryDiagnosticOutcome {
+    static var allRawValues: [String] {
+        [
+            Self.success, .unavailable, .corrupt, .migrationFailed,
+            .permissionDenied, .busy, .ioFailed, .unsupportedFilesystem,
+            .deadlineExceeded, .cleanupIncomplete, .recordTooLarge,
+        ].map(\.rawValue)
     }
 }

@@ -21,6 +21,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var previousApplication: NSRunningApplication?
     private var refreshGeneration: UInt64 = 0
+    private var resultLimit = 20
     private(set) var activeRetention: RecentDictationsRetention = .off
     private(set) var isStartupComplete = false
     private(set) var isHistoryAvailable = false
@@ -28,6 +29,24 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     @ObservationIgnored private var searchCancellation: HistoryWriteCancellation?
     @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
     @ObservationIgnored private var isRecordingForMaintenance: @MainActor () -> Bool = { false }
+    @ObservationIgnored var reinsertAccessibilityTrusted: () -> Bool = { Accessibility.isTrusted }
+    @ObservationIgnored var reinsertSecureInputActive: () -> Bool = { TextInjector.secureInputActive }
+    @ObservationIgnored var reinsertActivate: (NSRunningApplication) -> Void = {
+        $0.activate(options: [.activateIgnoringOtherApps])
+    }
+    @ObservationIgnored var reinsertFrontmostPID: () -> pid_t? = {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+    @ObservationIgnored var reinsertPaste: (String) -> TextInjector.Result = { TextInjector.paste($0) }
+    @ObservationIgnored var reinsertDelay: TimeInterval = 0.5
+    @ObservationIgnored var allowSelfReinsertTargetForTesting = false
+    @ObservationIgnored var announcementSink: (String) -> Void = { message in
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+        )
+    }
 
     private override init() {}
 
@@ -137,11 +156,11 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             await refresh()
             return true
         } catch HistoryStoreError.cleanupIncomplete {
-            await reconcileToDurablePolicy()
+            await reconcileToDurablePolicy(mirrorDefaults: false, publishAvailability: false)
             errorMessage = "History was removed, but Saymark could not finish cleaning its local database. Quit other Saymark windows and try again."
             return false
         } catch {
-            await reconcileToDurablePolicy()
+            await reconcileToDurablePolicy(mirrorDefaults: false, publishAvailability: false)
             errorMessage = "Recent Dictations is unavailable on this Mac."
             return false
         }
@@ -217,7 +236,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                 refreshGeneration &+= 1
                 records = []
                 resultSummary = "0 results"
-                SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .committed)
+                SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .success)
             } catch {
                 SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .unavailable)
                 if error as? HistoryStoreError == .cleanupIncomplete {
@@ -240,7 +259,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             }
             let snapshot = try await store?.records(
                 query: requestedQuery,
-                limit: 20,
+                limit: resultLimit,
                 cancellation: cancellation
             ) ?? []
             // Search and closing the private window can race slow I/O. A stale
@@ -248,6 +267,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             guard requestedGeneration == refreshGeneration, self.query == requestedQuery else { return }
             records = snapshot
             resultSummary = "\(snapshot.count) \(snapshot.count == 1 ? "result" : "results")"
+            announce(resultSummary)
         } catch {
             guard requestedGeneration == refreshGeneration else { return }
             errorMessage = "Recent Dictations is unavailable on this Mac."
@@ -261,6 +281,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         searchTask?.cancel()
         searchCancellation?.interrupt()
         query = value
+        resultLimit = 20
         refreshGeneration &+= 1
         let requestedGeneration = refreshGeneration
         let cancellation = HistoryWriteCancellation()
@@ -272,6 +293,16 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             guard let self, self.refreshGeneration == requestedGeneration else { return }
             await self.refresh(query: value, cancellation: cancellation)
         }
+    }
+
+    var canLoadMore: Bool {
+        resultLimit < SQLiteHistoryStore.maximumResultLimit && records.count == resultLimit
+    }
+
+    func loadMore() {
+        guard canLoadMore else { return }
+        resultLimit = SQLiteHistoryStore.maximumResultLimit
+        Task { await refresh() }
     }
 
     /// The controller samples policy at both dictation start and finalization;
@@ -361,33 +392,34 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         guard let target = previousApplication,
               !target.isTerminated,
               target.processIdentifier > 0,
-              target.processIdentifier != ProcessInfo.processInfo.processIdentifier
+              (allowSelfReinsertTargetForTesting ||
+               target.processIdentifier != ProcessInfo.processInfo.processIdentifier)
         else { showReinsertFallback(record, message: "That app is no longer available. The text was copied instead."); return }
-        guard Accessibility.isTrusted else {
+        guard reinsertAccessibilityTrusted() else {
             showReinsertFallback(record, message: "Accessibility is needed to reinsert. The text was copied.")
             return
         }
-        guard !TextInjector.secureInputActive else {
+        guard !reinsertSecureInputActive() else {
             showReinsertFallback(record, message: "The current field is protected. The text was copied.")
             return
         }
         let expectedPID = target.processIdentifier
         window?.orderOut(nil)
-        target.activate(options: [.activateIgnoringOtherApps])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self, weak target] in
+        reinsertActivate(target)
+        DispatchQueue.main.asyncAfter(deadline: .now() + reinsertDelay) { [weak self, weak target] in
             guard let self, let target,
                   !target.isTerminated,
                   target.processIdentifier == expectedPID,
-                  NSWorkspace.shared.frontmostApplication?.processIdentifier == expectedPID
+                  self.reinsertFrontmostPID() == expectedPID
             else {
                 self?.showReinsertFallback(record, message: "That app is no longer active. The text was copied instead.")
                 return
             }
-            guard !TextInjector.secureInputActive else {
+            guard !self.reinsertSecureInputActive() else {
                 self.showReinsertFallback(record, message: "The current field is protected. The text was copied.")
                 return
             }
-            switch TextInjector.paste(record.text) {
+            switch self.reinsertPaste(record.text) {
             case .pasted:
                 errorMessage = "Reinserted into \(target.localizedName ?? "the selected app")."
                 self.announce("Dictation reinserted.")
@@ -408,23 +440,35 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     }
 
     private func announce(_ message: String) {
-        NSAccessibility.post(
-            element: window ?? NSApplication.shared,
-            notification: .announcementRequested,
-            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue]
-        )
+        if let window {
+            NSAccessibility.post(
+                element: window,
+                notification: .announcementRequested,
+                userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+            )
+        } else {
+            announcementSink(message)
+        }
     }
 
     private func makeStore(_ retention: RecentDictationsRetention) throws -> SQLiteHistoryStore {
         let bundleID = Bundle.main.bundleIdentifier ?? "com.eloe.saymark"
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        let applicationSupport = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let root = applicationSupport
             .appendingPathComponent(bundleID, isDirectory: true)
             .appendingPathComponent("RecentDictations", isDirectory: true)
         return try SQLiteHistoryStore(directoryURL: root, policy: retention.historyPolicy)
     }
 
-    private func reconcileToDurablePolicy() async {
+    private func reconcileToDurablePolicy(
+        mirrorDefaults: Bool = true,
+        publishAvailability: Bool = true
+    ) async {
         guard let store else {
             activeRetention = .off
             isHistoryAvailable = false
@@ -433,8 +477,10 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         do {
             let durable = try await store.durableRetentionPolicy()
             activeRetention = RecentDictationsRetention(durable)
-            UserDefaults.standard.set(activeRetention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
-            isHistoryAvailable = activeRetention != .off
+            if mirrorDefaults {
+                UserDefaults.standard.set(activeRetention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
+            }
+            isHistoryAvailable = publishAvailability && activeRetention != .off
         } catch {
             activeRetention = .off
             isHistoryAvailable = false
@@ -457,6 +503,31 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
 
     #if DEBUG
     func makeWindowForTesting() -> NSWindow { makeWindow() }
+    func setPreviousApplicationForTesting(_ application: NSRunningApplication?) {
+        previousApplication = application
+    }
+
+    func setRecordsForTesting(_ records: [HistoryRecord]) {
+        self.records = records
+        resultLimit = 20
+    }
+
+    func resetReinsertSeamsForTesting() {
+        reinsertAccessibilityTrusted = { Accessibility.isTrusted }
+        reinsertSecureInputActive = { TextInjector.secureInputActive }
+        reinsertActivate = { $0.activate(options: [.activateIgnoringOtherApps]) }
+        reinsertFrontmostPID = { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+        reinsertPaste = { TextInjector.paste($0) }
+        reinsertDelay = 0.5
+        allowSelfReinsertTargetForTesting = false
+        announcementSink = { message in
+            NSAccessibility.post(
+                element: NSApplication.shared,
+                notification: .announcementRequested,
+                userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+            )
+        }
+    }
     #endif
 
     func windowWillClose(_ notification: Notification) {
@@ -470,6 +541,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         records = []
         resultSummary = "0 results"
         query = ""
+        resultLimit = 20
         previousApplication = nil
         pendingReinsert = nil
         pendingDeletion = nil
@@ -524,21 +596,23 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
 
     private func applyRecordAttempt(_ result: RecordAttempt) {
         switch result {
-        case .record(_):
-            break
+        case .record(let record):
+            if record != nil {
+                SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .success)
+            }
         case .deadline:
-            SaymarkDiagnostics.logHistoryOperation(.record, outcome: .deadlineExceeded)
+            SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .deadlineExceeded)
             errorMessage = "Recent Dictations was skipped to keep dictation instant."
         case .failure(let error):
             switch error {
             case .some(.recordTooLarge):
-                SaymarkDiagnostics.logHistoryOperation(.record, outcome: .skipped)
+                SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .recordTooLarge)
                 errorMessage = "This dictation is too large to save in Recent Dictations."
             case .some(.deadlineExceeded):
-                SaymarkDiagnostics.logHistoryOperation(.record, outcome: .deadlineExceeded)
+                SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .deadlineExceeded)
                 errorMessage = "Recent Dictations was skipped to keep dictation instant."
             default:
-                SaymarkDiagnostics.logHistoryOperation(.record, outcome: .unavailable)
+                SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .unavailable)
                 errorMessage = "Recent Dictations is temporarily unavailable."
             }
         }

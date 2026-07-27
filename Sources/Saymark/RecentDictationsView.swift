@@ -29,20 +29,28 @@ struct RecentDictationsView: View {
                 .accessibilityIdentifier("recent-dictations.result-count")
 
             HSplitView {
-                List(controller.records, selection: $selectedID) { record in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(record.text.historyExcerpt)
-                            .lineLimit(2)
-                        Text(record.deliveryState.displayName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                VStack(spacing: 0) {
+                    List(controller.records, selection: $selectedID) { record in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(record.text.historyExcerpt)
+                                .lineLimit(2)
+                            Text(record.deliveryState.displayName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(record.id)
+                        .accessibilityLabel("Dictation preview")
+                        .accessibilityValue(record.text.historyExcerpt)
                     }
-                    .tag(record.id)
-                    .accessibilityLabel("Dictation preview")
-                    .accessibilityValue(record.text.historyExcerpt)
+                    .accessibilityIdentifier("recent-dictations.list")
+                    if controller.canLoadMore {
+                        Button("Load 5 More") { controller.loadMore() }
+                            .buttonStyle(.plain)
+                            .padding(8)
+                            .accessibilityHint("Shows up to 25 recent dictations")
+                    }
                 }
                 .frame(minWidth: 250)
-                .accessibilityIdentifier("recent-dictations.list")
 
                 VStack(alignment: .leading, spacing: 12) {
                     if let selected {
@@ -115,14 +123,8 @@ private struct HistorySearchField: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSSearchField {
-        let field = NSSearchField()
+        let field = makePrivateHistorySearchField()
         field.delegate = context.coordinator
-        field.placeholderString = "Search recent dictations"
-        field.recentsAutosaveName = nil
-        // NSTextField delegates editing to a shared field editor.  Configure
-        // that editor when editing begins rather than attempting to set these
-        // NSTextView-only options on NSSearchField itself.
-        field.setAccessibilityIdentifier("recent-dictations.search")
         return field
     }
 
@@ -137,13 +139,7 @@ private struct HistorySearchField: NSViewRepresentable {
             guard let field = obj.object as? NSSearchField,
                   let editor = field.currentEditor() as? NSTextView
             else { return }
-            editor.isContinuousSpellCheckingEnabled = false
-            editor.isGrammarCheckingEnabled = false
-            editor.isAutomaticSpellingCorrectionEnabled = false
-            editor.isAutomaticTextReplacementEnabled = false
-            editor.isAutomaticQuoteSubstitutionEnabled = false
-            editor.isAutomaticDashSubstitutionEnabled = false
-            editor.isAutomaticTextCompletionEnabled = false
+            configurePrivateHistoryTextView(editor)
         }
         func controlTextDidChange(_ obj: Notification) {
             parent.text = (obj.object as? NSSearchField)?.stringValue ?? ""
@@ -160,13 +156,7 @@ private struct SelectableHistoryText: NSViewRepresentable {
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = false
-        view.isContinuousSpellCheckingEnabled = false
-        view.isGrammarCheckingEnabled = false
-        view.isAutomaticSpellingCorrectionEnabled = false
-        view.isAutomaticTextReplacementEnabled = false
-        view.isAutomaticQuoteSubstitutionEnabled = false
-        view.isAutomaticDashSubstitutionEnabled = false
-        view.isAutomaticTextCompletionEnabled = false
+        configurePrivateHistoryTextView(view)
         view.setAccessibilityIdentifier("recent-dictations.detail")
         scroll.documentView = view
         scroll.hasVerticalScroller = true
@@ -176,6 +166,24 @@ private struct SelectableHistoryText: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         (scroll.documentView as? NSTextView)?.string = text
     }
+}
+
+func makePrivateHistorySearchField() -> NSSearchField {
+    let field = NSSearchField()
+    field.placeholderString = "Search recent dictations"
+    field.recentsAutosaveName = nil
+    field.setAccessibilityIdentifier("recent-dictations.search")
+    return field
+}
+
+func configurePrivateHistoryTextView(_ view: NSTextView) {
+    view.isContinuousSpellCheckingEnabled = false
+    view.isGrammarCheckingEnabled = false
+    view.isAutomaticSpellingCorrectionEnabled = false
+    view.isAutomaticTextReplacementEnabled = false
+    view.isAutomaticQuoteSubstitutionEnabled = false
+    view.isAutomaticDashSubstitutionEnabled = false
+    view.isAutomaticTextCompletionEnabled = false
 }
 
 private extension HistoryDeliveryState {

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SQLite3
 import XCTest
 @testable import SaymarkKit
 
@@ -72,6 +73,64 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(common.count, 25)
     }
 
+    func testUnicodeSearchContractCoversNormalizationScriptsAndLiteralGrammar() async throws {
+        let store = try makeStore()
+        let fixtures = [
+            "café crème",
+            "cafe\u{301} combine",
+            "Straße berlin",
+            "İstanbul Türkiye",
+            "مرحبا بالعالم",
+            "AND OR NOT \"quoted\" star* caret^ dash-",
+        ]
+        for fixture in fixtures {
+            _ = try await store.recordFinal(.init(text: fixture))
+            now += 1
+        }
+
+        let cafe = try await store.records(query: "cafe café")
+        let german = try await store.records(query: "straße ber")
+        let turkish = try await store.records(query: "istanbul tür")
+        let rtl = try await store.records(query: "مرحبا بالع")
+        let boolean = try await store.records(query: "AND OR NOT")
+        let grammar = try await store.records(query: "\"quoted\" star* caret^ dash-")
+        let emojiOnly = try await store.records(query: "🧪✨")
+        XCTAssertEqual(cafe.count, 2)
+        XCTAssertEqual(german.count, 1)
+        XCTAssertEqual(turkish.count, 1)
+        XCTAssertEqual(rtl.count, 1)
+        XCTAssertEqual(boolean.count, 1)
+        XCTAssertEqual(grammar.count, 1)
+        XCTAssertEqual(emojiOnly.count, fixtures.count)
+
+        let repairedMalformed = String(decoding: [0x66, 0x80, 0x6f], as: UTF8.self)
+        _ = try await store.recordFinal(.init(text: repairedMalformed))
+        let malformedResults = try await store.records(query: repairedMalformed)
+        XCTAssertEqual(malformedResults.count, 1)
+    }
+
+    func testTenThousandGeneratedUnicodeQueriesProduceOnlyBoundedQuotedGrammar() {
+        let metacharacters = [
+            "\"", "'", "*", "^", "-", ":", "(", ")", "{", "}", "[", "]",
+            "AND", "OR", "NOT", "NEAR", "café", "cafe\u{301}", "ß", "İ",
+            "مرحبا", "עברית", "🧪", "\n", ";DROP TABLE records;--",
+        ]
+        for index in 0..<10_000 {
+            let query = [
+                metacharacters[index % metacharacters.count],
+                metacharacters[(index * 7 + 3) % metacharacters.count],
+                "token\(index % 97)",
+            ].joined(separator: " ")
+            let tokens = SQLiteHistoryStore.literalTokens(query)
+            XCTAssertLessThanOrEqual(tokens.count, SQLiteHistoryStore.maximumSearchTokens)
+            let grammar = SQLiteHistoryStore.ftsQuery(tokens)
+            for token in tokens {
+                let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
+                XCTAssertTrue(grammar.contains("\"\(escaped)\"*"))
+            }
+        }
+    }
+
     func testShorterRetentionPurgesAndIncreasingDoesNotExtendExistingRows() async throws {
         let store = try makeStore(policy: .untilDeleted)
         let inserted = try await store.recordFinal(.init(text: "bounded"))
@@ -138,6 +197,194 @@ final class HistoryStoreTests: XCTestCase {
         )
         let reopenedPolicy = try await reopened.durableRetentionPolicy()
         XCTAssertEqual(reopenedPolicy, .days7)
+    }
+
+    func testCheckpointFailureReconcilesFromCommittedOffMetadataAndFailsClosed() async throws {
+        var original: SQLiteHistoryStore? = try makeStore()
+        _ = try await original?.recordFinal(.init(text: "off-checkpoint-private-sentinel"))
+        await original?.shutdown()
+        original = nil
+
+        let failing = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days30,
+            now: { self.now },
+            testCheckpointFailure: true
+        )
+        await XCTAssertThrowsErrorAsync(try await failing.setRetentionPolicy(.off)) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .cleanupIncomplete)
+        }
+        let failingPolicy = try await failing.durableRetentionPolicy()
+        let blockedRecord = try await failing.recordFinal(.init(text: "must remain blocked"))
+        XCTAssertEqual(failingPolicy, .off)
+        XCTAssertNil(blockedRecord)
+        await failing.shutdown()
+
+        let recovered = try SQLiteHistoryStore(directoryURL: directory, policy: .days30, now: { self.now })
+        let recoveredPolicy = try await recovered.durableRetentionPolicy()
+        XCTAssertEqual(recoveredPolicy, .off)
+        try await recovered.setRetentionPolicy(.off)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    func testProofFailureAfterDownwardCommitUsesDurablePolicyAndBlocksRowsUntilRecovery() async throws {
+        var original: SQLiteHistoryStore? = try makeStore(policy: .untilDeleted)
+        _ = try await original?.recordFinal(.init(text: "downward-private-sentinel"))
+        await original?.shutdown()
+        original = nil
+        now += HistoryRetentionPolicy.days7.durationMilliseconds! + 1
+
+        let failing = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .untilDeleted,
+            now: { self.now },
+            testProofFailure: true
+        )
+        await XCTAssertThrowsErrorAsync(try await failing.setRetentionPolicy(.days7)) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .cleanupIncomplete)
+        }
+        let failingPolicy = try await failing.durableRetentionPolicy()
+        XCTAssertEqual(failingPolicy, .days7)
+        await XCTAssertThrowsErrorAsync(try await failing.records()) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .cleanupIncomplete)
+        }
+        await failing.shutdown()
+
+        let recovered = try SQLiteHistoryStore(directoryURL: directory, policy: .untilDeleted, now: { self.now })
+        let recoveredPolicy = try await recovered.durableRetentionPolicy()
+        XCTAssertEqual(recoveredPolicy, .days7)
+        try await recovered.purgeExpired()
+        let recoveredRecords = try await recovered.records()
+        XCTAssertTrue(recoveredRecords.isEmpty)
+    }
+
+    func testPurgeAndSessionTransitionsByteScanEveryControlledArtifact() async throws {
+        let purgeSentinel = "purge-byte-sentinel-\(UUID().uuidString)"
+        var store: SQLiteHistoryStore? = try makeStore(policy: .days7)
+        _ = try await store?.recordFinal(.init(text: purgeSentinel))
+        now += HistoryRetentionPolicy.days7.durationMilliseconds! + 1
+        try await store?.purgeExpired()
+        await store?.shutdown()
+        XCTAssertFalse(try controlledArtifactsContain(Data(purgeSentinel.utf8)))
+
+        let sessionSentinel = "session-byte-sentinel-\(UUID().uuidString)"
+        store = try makeStore(policy: .days30)
+        _ = try await store?.recordFinal(.init(text: sessionSentinel))
+        try await store?.setRetentionPolicy(.session)
+        await store?.shutdown()
+        XCTAssertFalse(try controlledArtifactsContain(Data(sessionSentinel.utf8)))
+    }
+
+    func testTenThousandRecordSearchAndPurgeAcceptance() async throws {
+        let fixturePrefix = "rd-10k-\(UUID().uuidString)"
+        var setup: SQLiteHistoryStore? = try makeStore(policy: .days30)
+        try await setup?.warmUp()
+        await setup?.shutdown()
+        setup = nil
+        try seedFixtures(count: 10_000, prefix: fixturePrefix)
+
+        let store = try SQLiteHistoryStore(directoryURL: directory, policy: .off, now: { self.now })
+        var queryDurations: [Double] = []
+        for _ in 0..<20 {
+            let started = ContinuousClock.now
+            let records = try await store.records(query: "cafe", limit: 25)
+            queryDurations.append(milliseconds(since: started))
+            XCTAssertEqual(records.count, 25)
+        }
+        let p95 = queryDurations.sorted()[18]
+        XCTAssertLessThanOrEqual(p95, 100, "10k warm query p95 was \(p95) ms")
+
+        now += HistoryRetentionPolicy.days30.durationMilliseconds! + 20_000
+        let purgeStarted = ContinuousClock.now
+        try await store.purgeExpired()
+        let purgeMilliseconds = milliseconds(since: purgeStarted)
+        XCTAssertLessThan(purgeMilliseconds, 30_000, "10k purge exceeded idle-maintenance budget")
+        let remaining = try await store.records()
+        XCTAssertTrue(remaining.isEmpty)
+        await store.shutdown()
+        XCTAssertFalse(try controlledArtifactsContain(Data("\(fixturePrefix)-0".utf8)))
+        XCTAssertFalse(try controlledArtifactsContain(Data("\(fixturePrefix)-9999".utf8)))
+    }
+
+    func testConcurrentReadsWritesDeletesAndPolicyChangesRemainSerialized() async throws {
+        let store = try makeStore(policy: .days30)
+        let initial = try await store.recordFinal(.init(text: "concurrency-seed"))
+        let seedID = try XCTUnwrap(initial?.id)
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<120 {
+                group.addTask {
+                    do {
+                        switch index % 4 {
+                        case 0:
+                            _ = try await store.recordFinal(.init(text: "concurrent-\(index)"))
+                        case 1:
+                            _ = try await store.records(query: "concurrent", limit: 25)
+                        case 2:
+                            _ = try await store.delete(id: seedID)
+                        default:
+                            try await store.setRetentionPolicy(index.isMultiple(of: 8) ? .days7 : .days30)
+                        }
+                    } catch {
+                        XCTFail("serialized actor operation leaked error: \(error)")
+                    }
+                }
+            }
+        }
+        let records = try await store.records(limit: 25)
+        XCTAssertLessThanOrEqual(records.count, 25)
+        XCTAssertFalse(records.contains(where: { $0.id == seedID }))
+    }
+
+    func testSchemaZeroCreationRollsBackAtomicallyOnInjectedFailure() async throws {
+        let failing = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days30,
+            now: { self.now },
+            testSchemaCreationFailure: true
+        )
+        await XCTAssertThrowsErrorAsync(try await failing.warmUp()) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .migrationFailed)
+        }
+
+        var handle: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(
+            directory.appendingPathComponent(SQLiteHistoryStore.databaseName).path,
+            &handle,
+            SQLITE_OPEN_READONLY,
+            nil
+        ), SQLITE_OK)
+        defer { if let handle { sqlite3_close_v2(handle) } }
+        XCTAssertEqual(try pragmaInt("user_version", database: handle), 0)
+        XCTAssertEqual(try schemaObjectCount(database: handle), 0)
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertFalse(names.contains(where: { $0.contains("backup") || $0.contains("migration") }))
+    }
+
+    func testStoreIsExcludedFromBackupAndSpotlightDiscovery() async throws {
+        let sentinel = "spotlight-private-\(UUID().uuidString)"
+        let store = try makeStore()
+        _ = try await store.recordFinal(.init(text: sentinel))
+        await store.shutdown()
+
+        let values = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        XCTAssertEqual(values.isExcludedFromBackup, true)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(".metadata_never_index").path
+        ))
+
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        process.arguments = ["-onlyin", directory.path, sentinel]
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        let result = String(
+            data: output.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        XCTAssertTrue(result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     func testExternalDeadlineInterruptRollsBackWithoutLateRow() async throws {
@@ -256,6 +503,87 @@ final class HistoryStoreTests: XCTestCase {
     private func makeStore(policy: HistoryRetentionPolicy = .days30) throws -> SQLiteHistoryStore {
         try SQLiteHistoryStore(directoryURL: directory, policy: policy, now: { self.now })
     }
+
+    private func controlledArtifactsContain(_ sentinel: Data) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return false }
+        for name in try FileManager.default.contentsOfDirectory(atPath: directory.path) {
+            let data = try Data(contentsOf: directory.appendingPathComponent(name))
+            if data.range(of: sentinel) != nil { return true }
+        }
+        return false
+    }
+
+    private func pragmaInt(_ name: String, database: OpaquePointer?) throws -> Int32 {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA \(name)", -1, &statement, nil) == SQLITE_OK else {
+            throw HistoryStoreError.unavailable
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw HistoryStoreError.unavailable }
+        return sqlite3_column_int(statement, 0)
+    }
+
+    private func schemaObjectCount(database: OpaquePointer?) throws -> Int32 {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else { throw HistoryStoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw HistoryStoreError.unavailable }
+        return sqlite3_column_int(statement, 0)
+    }
+
+    private func seedFixtures(count: Int, prefix: String) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(
+            directory.appendingPathComponent(SQLiteHistoryStore.databaseName).path,
+            &database,
+            SQLITE_OPEN_READWRITE,
+            nil
+        ) == SQLITE_OK else { throw HistoryStoreError.unavailable }
+        defer { if let database { sqlite3_close_v2(database) } }
+        guard sqlite3_exec(database, "PRAGMA secure_delete=ON; BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else {
+            throw HistoryStoreError.unavailable
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            """
+            INSERT INTO records
+              (id, created_at_ms, expires_at_ms, text, delivery_state, delivery_updated_at_ms)
+            VALUES (?, ?, ?, ?, 'pending', NULL)
+            """,
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else { throw HistoryStoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        for index in 0..<count {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+            let created = now + Int64(index)
+            let id = "fixture-id-\(index)"
+            let text = "\(prefix)-\(index) cafe مرحبا literal AND quote\""
+            sqlite3_bind_text(statement, 1, id, -1, SQLITE_TRANSIENT_TEST)
+            sqlite3_bind_int64(statement, 2, created)
+            sqlite3_bind_int64(statement, 3, created + HistoryRetentionPolicy.days30.durationMilliseconds!)
+            sqlite3_bind_text(statement, 4, text, -1, SQLITE_TRANSIENT_TEST)
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw HistoryStoreError.unavailable }
+        }
+        guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+            throw HistoryStoreError.unavailable
+        }
+    }
+
+    private func milliseconds(since start: ContinuousClock.Instant) -> Double {
+        let duration = start.duration(to: .now)
+        return Double(duration.components.seconds) * 1_000
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000
+    }
 }
 
 private func XCTAssertThrowsErrorAsync<T>(
@@ -271,3 +599,5 @@ private func XCTAssertThrowsErrorAsync<T>(
         handler(error)
     }
 }
+
+private let SQLITE_TRANSIENT_TEST = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
