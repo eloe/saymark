@@ -53,6 +53,9 @@ real-time factor:
 During continuous speech:
 
 - The production audio/inference feed cadence must be between 100 and 160 ms.
+- A target eligible for live **field** insertion has a stricter maximum streaming
+  step of <= 300 ms. It may not rely on the general Live Preview 450 ms maximum:
+  one such step would itself violate the visible-freeze gate below.
 - No visible transcript freeze may exceed 300 ms while speech and hypotheses
   continue.
 - Field updates must remain ordered and must not build an inference or insertion
@@ -63,6 +66,13 @@ During continuous speech:
 - Focus, selection, cursor, or user-edit changes must stop revision safely rather
   than overwrite text Saymark no longer owns.
 - Atomic final insertion remains the required compatibility fallback.
+
+For live field insertion, word-appearance timing measures provisional text. The
+committed-prefix policy must also report and pass these stability limits: no
+committed word is revoked; provisional revision depth is at most four words; and
+p95 provisional revoked-word rate is <= 2 words/s. The initial policy values are
+documented in [`live-insertion-sdd.md`](live-insertion-sdd.md); changing them
+requires the same evidence review as changing feed cadence.
 
 These are initial product thresholds, not universal psychophysical constants.
 Validate them with observed user testing as well as automated measurement. A

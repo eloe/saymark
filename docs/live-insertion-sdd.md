@@ -1,195 +1,156 @@
-# Live insertion — software design and test specification
+# Live insertion — evidence-gated software design and test specification
 
-**Status:** implementation design; not shipped.  
-**Scope:** write stable dictation text into the active field while the user is speaking, without ever revising text Saymark cannot prove it owns. The current single final paste remains the compatibility baseline and fallback.
+**Status:** policy-core design approved for implementation; no cross-application live field mutation is approved.
+**Scope:** establish safe, testable policy for writing stable dictation text only after platform and UX evidence proves Saymark can distinguish its own provisional tail from user-owned text. The current atomic final paste is the shipped delivery contract.
 
-This implements the planned follow-up in [product roadmap](product-roadmap.md#planned-follow-up--live-field-insertion) and its [performance contract](performance-acceptance.md#human-perceived-live-insertion-gates). It does not change model selection, audio retention, vocabulary, or history.
+Independent review record: [Claude Opus 5 review](reviews/live-insertion-claude-opus-5-2026-07-26.md). It permits Slice 1 only. Slices 2–5 are blocked by B-01 through B-05 and the evidence table below.
 
-## Product contract
+## Product contract and requirements
 
-In-field delivery gains an opt-in **Live insertion** policy for Live Preview. While speaking, Saymark writes a stable prefix at the captured insertion point and may revise only its provisional tail. On stop it replaces the remaining tail with the authoritative final transcript, then releases ownership. If ownership cannot be proven, live revision ends before another field mutation. Efficient mode continues using atomic final insertion; HUD-only never mutates another application.
-
-### Requirements
+Live insertion is an opt-in future delivery policy for Live Preview. Efficient mode and HUD-only must remain non-live; unknown, terminal, and protected targets retain atomic final delivery. A future live session may write a stable prefix at the captured insertion point and revise only Saymark's provisional tail. It fails closed before a further write whenever ownership is uncertain.
 
 | ID | Requirement | Acceptance criterion |
 | --- | --- | --- |
-| LI-01 | Capture one active target and insertion point before recording. | No live mutation begins without Accessibility trust, writable supported target, collapsed cursor, and valid ownership lease. |
-| LI-02 | Maintain committed-prefix/revisable-tail ownership. | Corrections change only the current Saymark tail; released prefix is never selected, deleted, or rewritten. |
-| LI-03 | Meet the human-visible latency contract. | The performance gates below pass on every supported target. |
-| LI-04 | Fail closed on ownership loss. | Focus, target, selection/cursor, user edit, notification, or sequence mismatch stops revision before a further mutation. |
-| LI-05 | Settle exactly once. | Final text replaces the owned tail once, or one atomic fallback delivers the unresolved final text; no duplicated prefix/tail. |
-| LI-06 | Preserve security and privacy. | Secure input is never bypassed; diagnostics contain no text, clipboard, target identity, or field content. |
-| LI-07 | Retain compatibility. | Unsupported/unproven targets use the existing atomic final insertion path. |
-| LI-08 | Be ordered and cancelable. | No stale or concurrent mutation can run after stop, restart, focus loss, or app termination. |
+| LI-01 | Capture a lease before any live write. | Accessibility is trusted; focus, editable role, collapsed selection, capability, and protection state satisfy the certified tier. |
+| LI-02 | Preserve prefix/tail ownership. | Released prefix is never selected or rewritten. A bounded read-back validates only the selected Saymark tail before a replacement. |
+| LI-03 | Meet human-visible latency and stability gates. | Pass the authoritative [performance acceptance](performance-acceptance.md#human-perceived-live-insertion-gates), including its live-insertion step/freeze reconciliation and committed-stability bounds. |
+| LI-04 | Fail closed on loss of ownership. | Focus/PID/element/range change, same-offset content substitution, user edit, undo/redo, target close/termination, invalid AX element, secure transition, notification/order error, or timeout produces zero later writes. |
+| LI-05 | Distinguish final delivery states. | In fallback-final, where no live tail was written, existing atomic final insertion occurs exactly once. In frozen-final, where a live tail exists but is unverified, there are zero AX writes and zero synthetic paste events; recovery is copy-only until an explicit user-approved action. |
+| LI-06 | Preserve security and privacy. | No synthetic event or AX mutation in protected states; no provisional clipboard write; diagnostics and remote events use closed enums/buckets only. |
+| LI-07 | Retain compatibility and mode isolation. | Atomic paste is the current shipped contract, not proven real-app compatibility evidence. Efficient, HUD-only, Tier C, and Tier D emit zero AX writes and zero synthetic events. |
+| LI-08 | Be ordered, bounded, and cancelable. | No stale/concurrent write after stop/restart/focus loss/quit; AX I/O is off-main, bounded, and timeout fails closed. |
 
-## Ownership design
+## Non-negotiable evidence gates
 
-### Definitions and invariants
+No production code may mutate another application field until every B gate is closed with a committed evidence artifact and a follow-up independent review. The absence of B-01 alone disqualifies Tier A.
 
-* **Lease:** one dictation-scoped capability bound to the frontmost process PID, AXUIElement identity, target capability tier, and initial collapsed selected range. It contains no field text.
-* **Committed prefix:** Saymark-inserted text released irrevocably; it is never selected or changed by this session.
-* **Revisable tail:** the only contiguous range Saymark may replace. Store its UTF-16 length, expected selected range, mutation sequence, and operation token—not field contents.
-* **Ownership proof:** same target is focused; selected range exactly matches the expected tail end; lease and operation generation are current; no unmatched AX notification exists.
-* **Fail closed:** an indeterminate AX read, missing/late notification, timeout, unsupported attribute, synthetic-input failure, or ordering conflict loses ownership. It never retries into the field.
+| Gate | Required evidence artifact | Status |
+| --- | --- | --- |
+| B-01 public acknowledged AX mutation | Reference NSTextView spike: select-tail/replace-tail result; notification ordering/coalescing; self-vs-user origin ambiguity; transport versus acknowledgement proof. If ambiguity remains, Tier A is not shippable. | Missing — blocks Tier A API/UI. |
+| B-02 same-offset substitution | Privacy-reviewed bounded read-back spike and adversarial proof that same-length replacement at the same range is detected before the next write. | Missing — blocks ownership claim. |
+| B-03 frozen-final delivery | Test evidence proving frozen-final emits zero AX writes and zero synthetic paste, with copy-only recovery. | Missing — blocks live settlement. |
+| B-04 protected AX behavior | Secure-input × AX-write matrix for secure roles and IsSecureEventInputEnabled; result must establish rejection or force Tier D. | Missing — blocks AX mutation. |
+| B-05 AX execution/liveness | Dedicated-run-loop observer and messaging-timeout experiment against deliberately hung target; timeout must fail closed within the mutation budget. | Missing — blocks coordinator. |
 
-The conceptual field is user-before + committed-prefix + tail + user-after. Saymark can affect only tail; it must never read, retain, or log user-before/user-after.
+Evidence is versioned by macOS, target/control, architecture, fixture, and test harness. Target name/version may appear in the evidence artifact, never in runtime diagnostics or authority decisions.
 
-### State machine
+## Ownership model
+
+### Data boundary and proof
+
+A lease holds ephemeral process/AX element identity, role/capabilities, numeric ranges, mutation generation, and **Saymark-authored tokens**. Saymark may retain its own prefix and tail in memory only for the active session so it can compute final delta. It never persists or logs them.
+
+Before every future replacement, Saymark reads back at most the currently selected provisional tail, capped at **64 UTF-16 code units**. This is a narrow, privacy-reviewed exception: a lost lease can cause the read to contain user text. The value is compared in memory to Saymark's own tail, immediately discarded unhashed, never logged/persisted/transmitted, and any mismatch freezes the lease. A tail that would exceed the cap is not live-written; it remains HUD-only until a safe settle or fallback. This read-back is necessary to detect same-length, same-offset substitution; range equality or notification absence is not ownership proof.
+
+Committed prefix is irrevocably released and is never selected or changed. Revisable tail is the only contiguous selectable/replacement range. The conceptual field is user-before + committed-prefix + tail + user-after; user-before/user-after are never read, retained, or logged.
+
+### State and exact-once rule
 
 ~~~text
-idle
-  └─ hotkey → captureTarget → live(lease) ─ update → live(lease)
-                                  │  │                       │
-                                  │  ├ ownership lost ───────┤
-                                  │  └ secure/unsupported ───┤
-                                  ▼                          ▼
-                           fallback-final              frozen-final
-                                  └─ stop → atomic final / HUD / clipboard → idle
-
-live(lease) ─ stop → settle-owned-tail → idle
+idle → capture-target → live(lease) → settle-owned-tail → idle
+                         │                 │
+                         ├ unsupported ───→ fallback-final → existing atomic final once → idle
+                         └ ownership loss → frozen-final → copy-only / explicit approved recovery → idle
 ~~~
 
-fallback-final has written no live tail and retains the current final atomic insertion. frozen-final leaves its existing tail unchanged. On stop it must not guess where to apply the model final text; it exposes the approved recovery action (D-03).
+fallback-final is reachable only before a live tail is written. It may use the existing atomic path, whose settled field string is byte-identical to the current contract: final transcript plus one ASCII trailing space. frozen-final is reachable after any tail write whose ownership cannot be re-proven. It leaves residual field text untouched, performs no automatic final insertion, and offers only copy until the user explicitly chooses an approved recovery. It never delivers full final text blindly at the current cursor.
 
-### Publication and settlement
+### Stability policy
 
-1. On hotkey down, show listening feedback first. Capture the focused target only if Accessibility is trusted, secure input is off, selection is collapsed, the role is editable, and the target is live-capable. Otherwise choose fallback-final without moving focus or synthesizing input.
-2. Normalize each ordered ASR hypothesis into word tokens. Find the longest common prefix with the previous hypothesis. Commit a word only after it survives N consecutive hypotheses and a minimum age T; N/T are versioned, experiment-backed policy values. Punctuation and whitespace belong to the preceding token so the tail stays contiguous.
-3. Coalesce newer hypotheses while one target operation is in flight. A serial coordinator revalidates the lease, selects exactly the current tail, replaces it with newly committed delta plus candidate tail, awaits acknowledgement, then advances range/generation. Never keep more than one obsolete pending mutation.
-4. Words cross into prefix only after that operation is acknowledged. Failed acknowledgement freezes ownership rather than assuming text was written.
-5. On stop, cancel pending publication, await the last acknowledged operation, revalidate, then replace the tail with final delta once. If finalization/revalidation fails, touch nothing and use recovery policy. Tear down observer, tasks, ranges, and tokens.
+The first field appearance gate measures **provisional** text. Initial policy is two matching ordered hypotheses (N=2) and minimum tail age T=160 ms before a token can become committed; both are experiment-revisable only with renewed performance evidence. A committed token is never revoked. For eligible targets, maximum provisional revision depth is four words and p95 provisional revoked-word rate is at most two words per second. LI-P06 enforces these limits together with the authoritative performance gates.
 
-The mutator must have an acknowledgement mechanism. For AX-capable native controls it must replace only a selected range; for synthetic replacement it must demonstrate ordered AX selection/value acknowledgement. Blind Command-V is not live capable.
+### AX and user-edit invalidation
 
-### AX target, range, focus, and user-edit loss
+Future AX work uses a dedicated thread with a CFRunLoop hosting AXObserver. Observer callbacks hop to the serial coordinator; they do not mutate UI. All AX reads/writes are off the main actor and set AXUIElementSetMessagingTimeout to **100 ms**. A timeout, unavailable run-loop source, transport error, missing/late expected observation, or operation exceeding the 150 ms mutation hard limit freezes the lease. Secure-input state is polled every **25 ms**, and is checked immediately before AX I/O; secure-input-on to the last possible AX/synthetic mutation is bounded by 125 ms (poll interval plus I/O timeout), below the hard limit.
 
-Capture system-wide focused application and AXFocusedUIElement on the main actor. A narrow adapter reads only focused element, selected text range, role, editability, and selected-range support. It registers an AXObserver for application/focus changes and selected-range/value changes before the first mutation.
+The coordinator must invalidate on focus/application/PID/element/range change; read-back mismatch; pointer/keyboard selection; user edit; undo/redo; IME, spellcheck, or autocorrect change; target termination, document/window close, kAXErrorInvalidUIElement; secure state; observer failure; stop/restart/quit; or stale sequence/generation. It never restores focus, cursor, or selection.
 
-Immediately before and after every operation require: same frontmost process and focused element; expected collapsed cursor before selecting; expected cursor/range after acknowledgement; no unmatched target-change notification; and current session generation. Do not read AXValue to prove ownership, and never restore user focus, selection, or cursor.
+B-01 must first demonstrate a public mutation primitive with an origin/ordering acknowledgement. Until then, this is a required spike design, not a Tier A implementation commitment.
 
-Keyboard navigation, pointer selection, target activation change, uncorrelated text/value notification, IME composition, spellcheck/autocorrect change, accessibility-server error, or observer failure invalidates the lease. A control that cannot reliably report those facts is not live capable.
+## Compatibility, protection, and UX constraints
 
-### Compatibility tiers
+| Tier | Current policy |
+| --- | --- |
+| A — verified AX replacement | Blocked pending B-01…B-05 and all UX approvals. A reference native control must satisfy every evidence/test gate. |
+| B — verified synthetic + AX observation | Blocked pending Tier A evidence plus per-control real-app certification. Tier B live synthesis is **disabled in hold mode** unless D-07 approval and LI-I24 prove zero modifier contamination. |
+| C — atomic final | Terminal/PTY, editors, rich text/IME, remote desktop, unknown/custom controls, and uncertified web/Electron. HUD updates; current atomic final path only. |
+| D — protected/unavailable | Missing Accessibility, no focus, read-only/password/secure role, secure input, or AX failure. No AX mutation, no synthetic event, no provisional clipboard write. Final copy/HUD recovery only. |
 
-| Tier | Targets | Live behavior | Stop/failure behavior |
-| --- | --- | --- | --- |
-| A — verified AX replacement | Native AppKit/Cocoa editable controls with stable focused-element, range, mutation acknowledgement, and notification ordering. | Prefix/tail revision allowed. | Settle tail or freeze/recover. |
-| B — verified event + AX observation | Browser textarea/contenteditable and Electron controls that pass a per-version suite with synthetic replacement plus acknowledgement. | Allowed only by capability certification, never name-based allowlist. | Same as A; any regression demotes to C. |
-| C — atomic final | Terminal/PTY, code editor, custom canvas, remote desktop, rich text/IME, unsupported browser/Electron, and unknown targets. | No live field mutation; HUD stays live. | Existing one-shot atomic paste/copy/HUD. |
-| D — protected/unavailable | Secure Event Input, missing Accessibility, no focus, read-only/password field, or AX failure. | No synthetic input or provisional clipboard write. | Existing final copy/HUD recovery. |
+Secure role includes AXSecureTextField/AXTextFieldSecure and any certified equivalent. IsSecureEventInputEnabled is not an AX-write permission grant: no AX write is allowed until B-04 empirically proves behavior. Existing final atomic paste retains its snapshot/change-count/delayed restore policy, but must skip restore when its snapshot carries org.nspasteboard.ConcealedType or org.nspasteboard.TransientType so Saymark never republishes such content.
 
-Capability is evaluated per lease. Bundle ID, target name, historical success, or apparent cursor never grants authority. Terminal is intentionally C even if it exposes a cursor-like range because atomic paste is the proven contract.
+Toggle HUD Stop must be demonstrably non-focus-stealing. If it cannot preserve the lease, it enters frozen-final, never a blind settle. This is tested through LI-I23. Native undo must be one session-level undo step; otherwise live insertion remains disabled for that target.
 
-### Secure input, clipboard, undo
+Diagnostics and PostHog are separate potential sinks. Existing remote analytics stays dormant/disabled under its existing gate. Any future live-insertion event in either sink uses a typed closed enum plus bucketed integer values; it cannot use target identity, free-form reason/state/source/outcome, exact text length, or bundle_id. No live-insertion call site may provide bundle_id.
 
-If secure input is active at start or turns on mid-session, invalidate the lease and send no more events. Never put provisional text on the general pasteboard. At final recovery, retain current behavior: final transcript may remain on the pasteboard for manual use, and secure input is never bypassed. Existing atomic final paste keeps its snapshot/change-count/delayed-restore guard and must preserve a newer user copy.
+## Test and evidence contract
 
-Live mutation should use a private replacement mechanism, not the general pasteboard. A mutator requiring pasteboard use remains Tier C pending an approved privacy/clipboard design and proof of no clipboard loss. Recommended undo is one native target undo step per settled Saymark session, not each update; without verified coalescing, live insertion stays disabled for that target.
+Fakes must model AX ranges, selected-tail read-back, notifications, focus, secure poll, timeout, mutation dispatch, and clocks. Real-target certification uses a named real-application harness, not the current in-process daily-driver fakes.
 
-### Concurrency and telemetry
+| IDs | Level | Required cases |
+| --- | --- | --- |
+| LI-U01…U05 | Unit | Token/diff/Unicode/punctuation and prefix/tail invariants. |
+| LI-U06…U09 | Unit | N=2/T=160 stability, acknowledgement-gated commit, tail retraction, and final delta. |
+| LI-U10…U16 | Unit | Focus/range/edit/notification/AX/stale-generation loss causes zero later writes. |
+| LI-U17…U21 | Unit | Capability classifier rejects read-only, noncollapsed, untrusted, unknown, terminal; accepts only fully evidenced tier capabilities. |
+| LI-U22…U25 | Unit | Ordered coalescing, one operation in flight, cancellation, idempotent cleanup. |
+| LI-U26…U29 | Unit | Secure start/mid-session means no synthetic event **and no AX mutation**; no provisional clipboard; newer-copy preservation; concealed/transient snapshot is not restored. |
+| LI-U30…U34 | Unit/property | Exact-once state accounting and randomized event schedules never rewrite released prefix or write after invalidation. |
+| LI-U35 | Unit | Same-length content substitution at identical offsets is detected by bounded selected-tail read-back. |
+| LI-U36 | Unit | frozen-final emits zero AX mutations and zero synthetic paste events. |
+| LI-U37 | Unit | AX write refused for secure role and IsSecureEventInputEnabled. |
+| LI-U38 | Unit | 25 ms secure poll detects activation within the 125 ms bound. |
+| LI-U39 | Unit | Logger/remote event values are rejected unless closed enum or bucket; no bundle_id at live call sites. |
+| LI-U40 | Unit | User undo and redo during a session invalidate the lease. |
+| LI-U41 | Unit | Target termination, closed document/window, and invalid AXUIElement fail closed. |
+| LI-U42 | Unit | Efficient, HUD-only, Tier C, and Tier D issue zero AX mutations and zero synthetic events. |
+| LI-I01…I08 | Integration | Reference Tier A, correction/punctuation/long utterance, focus/cursor/user-edit loss. Blocked until B gates. |
+| LI-I09…I11 | Real-app integration | Real Safari, Chrome, and a production Electron app via LiveInsertionRealTargetHarness: ten repetitions/version, exact final, ordered proof. Blocked until B gates. |
+| LI-I12 | Real-app integration | Real Terminal/PTY and code editor: zero live operations; existing atomic final exactly once over ten repetitions. |
+| LI-I13…I15 | Integration | Missing AX, secure/password/protected state, clipboard race: no protected AX/synthetic operation and recovery preserved. |
+| LI-I16…I21 | UI | Hold/toggle/restart/quit, VoiceOver, keyboard-only, Reduce Motion, localized recovery. |
+| LI-I22 | Integration | For a safe settled lease, live settled field string is byte-identical to atomic final transcript plus trailing space. |
+| LI-I23 | Integration | Toggle-mode Stop HUD click is non-focus-stealing or freezes per approved recovery; never blind-settles. |
+| LI-I24 | Integration | Hold-mode Tier B: zero modifier-contaminated synthetic events throughout a held chord. |
+| LI-I25 | Integration | Concealed/transient pasteboard snapshot is not republished by delayed restore. |
+| LI-P01…P05 | Performance | Authoritative latency/resource gates, no queue growth, 20 warmed runs/target. |
+| LI-P06 | Performance | N/T policy, max four-word revision depth, p95 revoked provisional words/s <= 2. |
+| LI-R01…R03 | Reliability | 10,000 AX/hypothesis schedules: no crash/deadlock/leak/post-cancel write. |
+| LI-S01…S06 | Security | Reordered AX, check/write race, secure/clipboard race, diagnostics scan, static privacy review. |
+| LI-S07 | Security | Deliberately hung target with 100 ms messaging timeout fails closed with no mutation. |
 
-DictationSession continues publishing on the capture queue. A LiveInsertionCoordinator owns lease, hypothesis sequence, pending work, generation, and AX observer on one serial actor/queue. UI remains MainActor; final ASR remains detached. It accepts monotonic sequence numbers, discards stale updates, executes one mutation at a time, and revalidates immediately before dispatch.
-
-Stop, restart, quit, focus loss, and observer failure synchronously bump generation before continuations may mutate. Cleanup is idempotent; no capture callback directly touches AX or UI.
-
-Diagnostics may contain randomized session ID, target tier/capability flags, bucketed numeric range/tail lengths, counts, outcome/reason category, latency, lag, and revision depth. They must not contain text/tokens, field/selected text, clipboard, window title, URL, app/bundle name, PID, AX description, or stable target fingerprint. Remote analytics remains disabled.
-
-## Performance gates
-
-All Tier A/B release runs use warmed Release builds and consented/versioned fixtures. They supplement the existing model, WER, memory, and lifecycle gates.
-
-| Metric | p50 | p95 | Hard limit |
-| --- | ---: | ---: | ---: |
-| Hotkey down → first visible listening feedback | <= 50 ms | <= 100 ms | 200 ms |
-| Reference-word end → first field appearance | <= 250 ms | <= 400 ms | 500 ms |
-| Hypothesis publication → completed field mutation | <= 50 ms | <= 100 ms | 150 ms |
-| Stop gesture → final settled text | <= 300 ms | <= 500 ms | 750 ms |
-| Continuous-speech visible freeze | — | — | <= 300 ms |
-
-Feed cadence remains 100–160 ms, currently 160 ms. Mutations must remain ordered with no insertion/inference backlog. A cadence change repeats the documented experiment. Measurements record content-free timing anchors, hypothesis sequence, mutation completion, and fixture word timestamps only.
-
-## Test pyramid and required cases
-
-Fakes model AX reads/notifications, target focus, mutation completion, clock, and input dispatch deterministically. Real-target tests cover the OS boundary.
-
-| IDs | Level | Requirement(s) | Required cases/assertions |
-| --- | --- | --- | --- |
-| LI-U01…U05 | Unit | LI-02 | Token diff; whitespace/punctuation; Unicode/emoji UTF-16 ranges; empty/short hypothesis; LCP changes never make committed text revisable. |
-| LI-U06…U09 | Unit | LI-02, LI-05 | Horizon commits only acknowledged words; retractions change tail only; final replaces tail exactly once; empty final uses recovery policy. |
-| LI-U10…U16 | Unit | LI-04, LI-08 | PID/element mismatch, cursor/selection move, user edit notification, missing/late ack, AX error, stale generation cause zero further operations. |
-| LI-U17…U21 | Unit | LI-01, LI-07 | Reject read-only, noncollapsed, unsupported role, untrusted/unknown/terminal; accept only complete A/B capabilities. |
-| LI-U22…U25 | Unit | LI-08 | Ordered coalescing; one operation in flight; stop/restart races cannot dispatch stale work; cleanup is idempotent. |
-| LI-U26…U29 | Unit | LI-06 | Secure input start/mid-session; no provisional clipboard write; atomic newer-copy preservation; telemetry schema rejects sensitive keys and values. |
-| LI-U30…U34 | Unit/property | LI-02, LI-04, LI-05 | Exact-once across no speech/focus loss/synthetic failure/finalization failure; randomized hypothesis/user-event interleavings never touch released prefix or mutate after invalidation. |
-| LI-I01…I04 | Integration | LI-02, LI-05 | Tier A native field: stable speech, correction, punctuation, and 30–120 s. Exact final once; committed words unchanged; tail ordered; undo follows approval. |
-| LI-I05…I08 | Integration | LI-04 | Switch app, move cursor/select, pointer edit, and target notification. Stop before overwrite; leave text/focus/selection untouched; show approved recovery. |
-| LI-I09…I11 | Integration | LI-07 | Browser textarea/contenteditable and Electron control: ten repetitions/version; exact final, no duplicate prefix, ordered acknowledgement. Failure demotes to C. |
-| LI-I12 | Integration | LI-07 | Terminal/PTY and code editor: zero live operations, HUD updates, existing atomic final exactly once over ten runs. |
-| LI-I13…I15 | Integration | LI-06 | Missing AX, secure input/password field, clipboard race: no protected synthetic event/provisional clipboard; final recovery and newer-copy policy preserved. |
-| LI-I16…I21 | UI | LI-08, LI-06 | Hold/toggle, rapid stop/start, quit, VoiceOver, keyboard-only, Reduce Motion, localizable recovery. No stale write or retained observers/tasks. |
-| LI-P01…P05 | Performance | LI-03, LI-08 | Twenty runs/target meet all gates; 30/60/90/120 s at 160 ms have no queue growth and meet existing CPU/memory/RTF. Report p50/p95/max/freeze/backlog/revision depth/fixture-hardware metadata. |
-| LI-R01…R03 | Reliability | LI-08 | Fuzz 10,000 hypothesis/AX schedules: no crash, deadlock, leak, or post-cancel operation; no per-session retained resource after stop. |
-| LI-S01…S06 | Security | LI-04, LI-06 | Delayed/reordered/lying AX; check/write race; secure-input and clipboard races; diagnostics sensitive-data scan; static review finds no AXValue read, keylogging, identity authority, or bypass. |
-
-Manual release validation additionally uses an unlocked interactive session, since macOS limits UI/HID automation while locked.
+Before Tier A is unblocked, commit: B-01 spike result, B-02 adversarial read-back result, B-04 secure matrix, B-05 hung-target result, and real application evidence for its target. The current compatibility matrix consists of in-process fakes and is insufficient evidence for Safari, Chrome, Electron, or Terminal.
 
 ## Implementation slices
 
-1. **Policy core, no writes:** pure tokenizer/stability, lease state, classifier, generations, telemetry schema, and LI-U tests. Gate: property/fuzz tests pass; production behavior unchanged.
-2. **Tier A coordinator:** AX adapter/observer and reference native control behind disabled feature flag. Gate: LI-I01…I08, LI-P01, LI-S01…S06 pass; recovery/undo UX approved.
-3. **Product integration:** DictationController, HUD, setting, accessibility copy, opt-in. Gate: hotkey/UI/accessibility/performance/fallback tests pass.
-4. **Tier B certification:** certify browser/Electron one control at a time. Gate: ten exact-once runs and performance gates; failures remain C.
-5. **Promotion:** default only after user testing, security review, and evidence. C/D retain atomic behavior indefinitely.
+1. **Policy core, no writes — permitted:** pure tokenizer/stability, lease/classifier/generation, typed telemetry schema, and LI-U tests. It must have no production AX write or synthetic event path.
+2. **Evidence spikes — not implementation:** produce B-01/B-02/B-04/B-05 artifacts. Failure retains Tier C/D; it does not weaken the safety contract.
+3. **Tier A coordinator — blocked:** only after all B evidence, security review, and D-01…D-06 approval.
+4. **Product integration — blocked:** only after Tier A is certified; opt-in first.
+5. **Tier B certification/promotion — blocked:** only after Tier A, real-app results, D-07 if hold mode is requested, user testing, and final review.
 
-## UI/design approvals needed
+## UI/design approvals required
 
-No UI is created by this specification. Approval is required before product behavior changes.
+No mockups or UI are created here. Every item is a prerequisite for a changed product surface.
 
-| Decision | Minimum mockup required |
+| Decision | Required decision/mockup |
 | --- | --- |
-| D-01 setting/default | Settings showing atomic-final versus live choices, opt-in/default, permission and privacy copy. |
-| D-02 revisable-text cue | HUD + focused-field storyboard distinguishing committed/provisional text, VoiceOver and Reduce Motion states. |
-| D-03 ownership-loss recovery | HUD states for live, frozen cursor move, secure/protected, and final fallback; exact actions and keyboard route. |
-| D-04 undo | Field storyboard showing one Undo/Redo for normal settle and ownership-loss case. |
-| D-05 compatibility disclosure | Compact status for “live here” versus “final on release,” including terminal. |
-
-## Open questions and risks
-
-1. **Public mutation primitive:** prototype a public macOS AX selected-range replacement with reliable acknowledgement before Tier A API/UI commitment.
-2. **AX TOCTOU:** notifications are not a lock; target-specific ordering may reject all but the reference control.
-3. **Final after lease loss:** choose copy-only, no automatic final change, or explicit user-confirmed replacement; never guess location.
-4. **Undo coalescing:** native/browser/Electron grouping differs; do not promote without verified user-level undo.
-5. **IME/rich text/autocorrect:** automatic target changes invalidate ownership; exclude initially until evidence exists.
-6. **Stability N/T:** tune against word latency and correction churn; low latency with visible churn fails product testing.
-7. **Privacy:** even ephemeral AX range/identity handling needs review; do not debug compatibility with target identifiers.
-8. **OS/version variance:** record versions in certification evidence but do not use identity/version as runtime authority.
+| D-01 setting/default | Atomic final versus live choice; consent explicitly says provisional text is written and may change. |
+| D-02 revisable-text cue | HUD/field storyboard, VoiceOver, and Reduce Motion treatment. |
+| D-03 ownership-loss recovery | Live/frozen/secure/fallback states; copy-only versus explicit confirmed replace; include HUD-click stop. |
+| D-04 undo | One Undo/Redo storyboard for safe settle and loss case. |
+| D-05 compatibility disclosure | “Live here” versus “final on release,” including terminal. |
+| D-06 residual provisional text | On loss, approve leave-as-is, one-step undo offer, or explicit replacement; no implicit modification. |
+| D-07 Tier B hold mode | Decide whether held-chord live synthesis is permitted. Default is disabled pending modifier-discipline proof. |
 
 ## Traceability
 
-| Requirement | Primary tests | Release evidence |
+| Requirement | Tests | Evidence/approval |
 | --- | --- | --- |
-| LI-01 | LI-U17…21, LI-I01, LI-I13 | Capability matrix and Tier A result |
-| LI-02 | LI-U01…09, LI-U34, LI-I01…04 | Correction/revision report |
-| LI-03 | LI-P01…05 | Twenty-run timing report |
-| LI-04 | LI-U10…16, LI-I05…08, LI-S01…05 | Adversarial AX + focus-loss result |
-| LI-05 | LI-U06…09, LI-U30…34, LI-I01…15 | Per-tier ten-run result |
-| LI-06 | LI-U26…29, LI-I13…15, LI-S03…06 | Security review + diagnostic scan |
-| LI-07 | LI-U17…21, LI-I09…15 | Certified-tier/fallback matrix |
-| LI-08 | LI-U22…25, LI-I16…21, LI-R01…03 | Fuzz/leak/UI results |
-
-## Claude independent-review package
-
-When Claude Opus 5 is authenticated, review this document before implementation with the current TextInjector.swift, DictationController.swift, DictationSession.swift, performance/privacy documentation, and existing TextInjector and daily-driver tests. The review is read-only.
-
-~~~text
-You are the independent SDD/TDD and security reviewer for Saymark live insertion.
-Review docs/live-insertion-sdd.md and the listed current files. Do not modify files.
-Identify every unsafe ownership assumption, TOCTOU or AX race, privacy/secure-input/
-clipboard violation, undo or recovery ambiguity, unsupported compatibility claim,
-missing test, and conflict with the atomic-final contract. Verify that requirements
-and tests prevent modification of user-owned text. Classify each finding as BLOCKER,
-HIGH, MEDIUM, or LOW; cite requirement/test IDs and concrete remedy. End with
-APPROVE / APPROVE-WITH-CHANGES / REJECT. Treat lack of a public acknowledged AX
-mutation primitive as a blocker for Tier A implementation.
-~~~
-
+| LI-01 | LI-U17…21, LI-I01, LI-I13 | B-01/B-05, capability record |
+| LI-02 | LI-U01…09, LI-U34, LI-U35, LI-I01…04 | B-02 and privacy review |
+| LI-03 | LI-P01…06 | Authoritative performance report |
+| LI-04 | LI-U10…16, LI-U35, LI-U40…41, LI-S01…07 | B-01/B-02/B-05 |
+| LI-05 | LI-U06…09, LI-U30…36, LI-I01…15, LI-I22…23 | B-03, D-03, D-06 |
+| LI-06 | LI-U26…29, LI-U37…39, LI-I13…15, LI-I25, LI-S03…06 | B-04, telemetry review |
+| LI-07 | LI-U17…21, LI-U42, LI-I09…12 | Real-app certification |
+| LI-08 | LI-U22…25, LI-U38, LI-U40…41, LI-R01…03, LI-S07 | B-05 |
