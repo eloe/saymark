@@ -192,6 +192,13 @@ cancellation-aware: cancellation abandons the caller's result, never
 half-applies a transaction. A pre-delivery cancellation must finish/rollback
 within the 100 ms deadline and then deliver normally.
 
+**Approved implementation detail (2026-07-26):** each pre-delivery write and
+private-window search receives a distinct cancellation token before it can
+queue on the store actor. A token may interrupt SQLite only after that same
+operation attaches its handle; cancelling a queued request is therefore unable
+to interrupt an unrelated active write. Search input is bounded to 1,024 UTF-8
+bytes and 12 literal tokens, and window close/replacement cancels its token.
+
 ### 3.2 Storage location and format
 
 For bundle id `B`, the preferred path is:

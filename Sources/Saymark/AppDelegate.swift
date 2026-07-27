@@ -36,8 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DiagnosticLogSetting.configure()
         // Session retention is deliberately process-scoped.  Clear any data a
         // previous crashed/terminated process left before it can be displayed.
-        RecentDictationsController.shared.clearPriorSessionAtLaunch()
         Task {
+            await RecentDictationsController.shared.clearPriorSessionAtLaunch()
             await RecentDictationsController.shared.prepareForDelivery()
             RecentDictationsController.shared.startRecurringIdleMaintenance()
         }

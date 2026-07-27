@@ -21,7 +21,9 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var previousApplication: NSRunningApplication?
     private var refreshGeneration: UInt64 = 0
+    private(set) var isHistoryAvailable = RecentDictationsRetention.current != .session
     @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private var searchCancellation: HistoryWriteCancellation?
     @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
 
     private override init() {}
@@ -115,9 +117,16 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     /// Session history is intentionally durable only for the current process.
     /// Calling this at launch clears a crash-left session before the menu or
     /// window can expose it.
-    func clearPriorSessionAtLaunch() {
-        guard RecentDictationsRetention.current == .session else { return }
-        Task { _ = await setRetention(.session) }
+    func clearPriorSessionAtLaunch() async {
+        guard RecentDictationsRetention.current == .session else {
+            isHistoryAvailable = RecentDictationsRetention.current != .off
+            return
+        }
+        // Do not expose the menu/window while a crash-left session might still
+        // be on disk. The defaults mirror is only a hint; the store transition
+        // is the privacy authority.
+        isHistoryAvailable = false
+        isHistoryAvailable = await setRetention(.session)
     }
 
     func clearSessionAtTermination() {
@@ -136,7 +145,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     }
 
     func present() {
-        guard RecentDictationsRetention.current != .off else { return }
+        guard RecentDictationsRetention.current != .off, isHistoryAvailable else { return }
         previousApplication = NSWorkspace.shared.frontmostApplication
         let window = self.window ?? makeWindow()
         self.window = window
@@ -165,7 +174,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         }
     }
 
-    func refresh(query: String? = nil) async {
+    func refresh(query: String? = nil, cancellation: HistoryWriteCancellation? = nil) async {
         if let query { self.query = query }
         refreshGeneration &+= 1
         let requestedGeneration = refreshGeneration
@@ -174,7 +183,11 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             if store == nil, RecentDictationsRetention.current != .off {
                 store = try makeStore(RecentDictationsRetention.current)
             }
-            let snapshot = try await store?.records(query: requestedQuery, limit: 20) ?? []
+            let snapshot = try await store?.records(
+                query: requestedQuery,
+                limit: 20,
+                cancellation: cancellation
+            ) ?? []
             // Search and closing the private window can race slow I/O. A stale
             // response must never repopulate a cleared/closed presentation.
             guard requestedGeneration == refreshGeneration, self.query == requestedQuery else { return }
@@ -191,15 +204,18 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     /// call, so closing the window can never repopulate it with a late result.
     func scheduleSearch(_ value: String) {
         searchTask?.cancel()
+        searchCancellation?.interrupt()
         query = value
         refreshGeneration &+= 1
         let requestedGeneration = refreshGeneration
+        let cancellation = HistoryWriteCancellation()
+        searchCancellation = cancellation
         searchTask = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 180_000_000) }
             catch { return }
             guard !Task.isCancelled else { return }
             guard let self, self.refreshGeneration == requestedGeneration else { return }
-            await self.refresh(query: value)
+            await self.refresh(query: value, cancellation: cancellation)
         }
     }
 
@@ -244,9 +260,17 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         Task { try? await store?.updateDeliveryState(id: record.id, to: state) }
     }
 
-    func copy(_ record: HistoryRecord) {
+    @discardableResult
+    func copy(_ record: HistoryRecord) -> Bool {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(record.text, forType: .string)
+        let didCopy = NSPasteboard.general.setString(record.text, forType: .string)
+        if didCopy {
+            announce("Dictation copied to the clipboard.")
+        } else {
+            errorMessage = "Couldn’t copy this dictation."
+            announce("Couldn’t copy this dictation.")
+        }
+        return didCopy
     }
 
     func delete(_ record: HistoryRecord) {
@@ -289,15 +313,13 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
               !target.isTerminated,
               target.processIdentifier > 0,
               target.processIdentifier != ProcessInfo.processInfo.processIdentifier
-        else { copy(record); errorMessage = "That app is no longer available. The text was copied instead."; return }
+        else { showReinsertFallback(record, message: "That app is no longer available. The text was copied instead."); return }
         guard Accessibility.isTrusted else {
-            copy(record)
-            errorMessage = "Accessibility is needed to reinsert. The text was copied."
+            showReinsertFallback(record, message: "Accessibility is needed to reinsert. The text was copied.")
             return
         }
         guard !TextInjector.secureInputActive else {
-            copy(record)
-            errorMessage = "The current field is protected. The text was copied."
+            showReinsertFallback(record, message: "The current field is protected. The text was copied.")
             return
         }
         let expectedPID = target.processIdentifier
@@ -308,18 +330,40 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                   !target.isTerminated,
                   target.processIdentifier == expectedPID,
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == expectedPID
-            else { self?.errorMessage = "That app is no longer active. Copy the text instead."; return }
+            else {
+                self?.showReinsertFallback(record, message: "That app is no longer active. The text was copied instead.")
+                return
+            }
             guard !TextInjector.secureInputActive else {
-                self.copy(record)
-                self.errorMessage = "The current field is protected. The text was copied."
+                self.showReinsertFallback(record, message: "The current field is protected. The text was copied.")
                 return
             }
             switch TextInjector.paste(record.text) {
-            case .pasted: errorMessage = "Reinserted into \(target.localizedName ?? "the selected app")."
-            case .copiedSecureInput: self.errorMessage = "Field is protected. The text was copied."
-            case .failed: self.errorMessage = "Couldn’t paste text. The text was copied."
+            case .pasted:
+                errorMessage = "Reinserted into \(target.localizedName ?? "the selected app")."
+                self.announce("Dictation reinserted.")
+            case .copiedSecureInput:
+                self.showReinsertFallback(record, message: "Field is protected. The text was copied.")
+            case .failed:
+                self.showReinsertFallback(record, message: "Couldn’t paste text. The text was copied.")
             }
         }
+    }
+
+    private func showReinsertFallback(_ record: HistoryRecord, message: String) {
+        let didCopy = copy(record)
+        errorMessage = didCopy ? message : "Couldn’t paste or copy this dictation."
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+        announce(errorMessage ?? message)
+    }
+
+    private func announce(_ message: String) {
+        NSAccessibility.post(
+            element: window ?? NSApp,
+            notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+        )
     }
 
     private func makeStore(_ retention: RecentDictationsRetention) throws -> SQLiteHistoryStore {
@@ -351,6 +395,8 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         refreshGeneration &+= 1
         searchTask?.cancel()
         searchTask = nil
+        searchCancellation?.interrupt()
+        searchCancellation = nil
         records = []
         resultSummary = "0 results"
         query = ""
@@ -372,10 +418,18 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         // this race merely returns control to final delivery on time.
         await withCheckedContinuation { continuation in
             let gate = RecordDeadlineGate()
+            // This token belongs to this one request, even while its actor
+            // turn is queued. Its deadline can therefore never interrupt an
+            // unrelated active history write.
+            let cancellation = HistoryWriteCancellation()
             Task.detached(priority: .userInitiated) { [weak self] in
                 let result: RecordAttempt
                 do {
-                    result = .record(try await store.recordFinal(finalization, deadlineUptimeNanoseconds: deadline))
+                    result = .record(try await store.recordFinal(
+                        finalization,
+                        deadlineUptimeNanoseconds: deadline,
+                        cancellation: cancellation
+                    ))
                 } catch {
                     result = .failure(error as? HistoryStoreError)
                 }
@@ -389,9 +443,9 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                 let result: RecordAttempt = .deadline
                 guard gate.resolve(continuation, with: result, beforeResume: {
                     // This is deliberately nonisolated: a synchronous SQLite
-                    // call occupies the history actor, so awaiting an actor
-                    // message here could permit a late commit.
-                    store.interruptActiveWrite()
+                    // call occupies the history actor. The per-operation
+                    // token interrupts only this write if it is already active.
+                    cancellation.interrupt()
                 }) else { return }
                 await self?.applyRecordAttempt(result)
             }
