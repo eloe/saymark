@@ -429,7 +429,8 @@ report, repository, CI artifact, video, or PR screenshot.
 
 ## 5. UI information architecture and approval required
 
-Proposed surfaces (not approved and not implemented):
+Approved product surfaces (approved 2026-07-26; implementation evidence is
+tracked separately):
 
 1. **Settings → Privacy → Recent Dictations.**  Shows Off/This session/7/30/90
    days/Until I delete, a concise local-text/no-audio disclosure, and an
@@ -450,9 +451,9 @@ Proposed surfaces (not approved and not implemented):
 
 ### Approved UI contract
 
-The user approved the following binding mockup package. The values below replace
-the earlier approval gate; implementation must not vary them without new UI
-approval.
+The user approved the following binding mockup package on 2026-07-26. The
+values below replace the earlier approval gate; implementation must not vary
+them without new UI approval.
 
 | Decision | Approved behavior | Product consequence |
 | --- | --- | --- |

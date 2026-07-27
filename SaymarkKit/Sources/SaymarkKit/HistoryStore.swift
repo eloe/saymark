@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import Darwin
 
 /// The only retention choices understood by the local recent-dictations store.
 /// Unknown persisted values must be decoded by the app as `.off`.
@@ -65,6 +66,13 @@ public enum HistoryStoreError: Error, Sendable, Equatable {
     case busy
     case ioFailed
     case unsupportedFilesystem
+    /// The pre-delivery persistence budget elapsed.  This is deliberately a
+    /// normal, fail-open outcome rather than a delivery failure.
+    case deadlineExceeded
+    /// The mutation committed, but SQLite could not prove that its WAL was
+    /// truncated.  Callers must not tell a person that removal is complete.
+    case cleanupIncomplete
+    case recordTooLarge
 }
 
 /// UI-independent persistence boundary.  The app owns start/final eligibility
@@ -101,6 +109,8 @@ public actor SQLiteHistoryStore: HistoryStore {
     private var policy: HistoryRetentionPolicy
     private var inMemoryHighWaterMark: Int64 = 0
     private var generation: UInt64 = 0
+    private var lockFileDescriptor: Int32 = -1
+    private var activeDeadlineBox: DeadlineBox?
 
     /// Passing `.off` is intentionally side-effect free: no directory, database,
     /// WAL, or metadata file is created until an explicit enabled policy arrives.
@@ -120,21 +130,43 @@ public actor SQLiteHistoryStore: HistoryStore {
 
     deinit {
         if let database { sqlite3_close_v2(database) }
+        if lockFileDescriptor >= 0 { close(lockFileDescriptor) }
     }
 
     public func recordFinal(_ finalization: HistoryFinalization) throws -> HistoryRecord? {
+        try recordFinal(finalization, deadlineUptimeNanoseconds: nil)
+    }
+
+    /// Stores a final only while the caller's pre-delivery budget remains.  The
+    /// deadline is checked before opening, before beginning the transaction and
+    /// immediately before commit.  SQLite's progress handler also interrupts a
+    /// queued/expensive statement at the same deadline, so a timed-out caller
+    /// cannot leave a late record behind.
+    public func recordFinal(
+        _ finalization: HistoryFinalization,
+        deadlineUptimeNanoseconds: UInt64?
+    ) throws -> HistoryRecord? {
         guard policy.isEnabled,
               !finalization.secureInputActive,
               !finalization.isHUDOnly,
-              !finalization.text.isEmpty,
-              finalization.text.lengthOfBytes(using: .utf8) <= Self.maximumFinalTextBytes
+              !finalization.text.isEmpty
         else { return nil }
+        guard finalization.text.lengthOfBytes(using: .utf8) <= Self.maximumFinalTextBytes else {
+            throw HistoryStoreError.recordTooLarge
+        }
+        try requireBeforeDeadline(deadlineUptimeNanoseconds)
+        activeDeadlineBox = deadlineUptimeNanoseconds.map(DeadlineBox.init)
+        defer {
+            activeDeadlineBox = nil
+            if let database { sqlite3_progress_handler(database, 0, nil, nil) }
+        }
         try openIfNeeded()
+        installDeadlineProgressHandler()
 
         let effectiveNow = try advanceHighWaterMarkForMutation()
         let id = UUID().uuidString.lowercased()
         let expiry = policy.durationMilliseconds.map { effectiveNow + $0 }
-        try transaction {
+        try transaction(deadlineUptimeNanoseconds) {
             let statement = try prepare("""
                 INSERT INTO records (id, created_at_ms, expires_at_ms, text, delivery_state, delivery_updated_at_ms)
                 VALUES (?, ?, ?, ?, 'pending', NULL)
@@ -289,8 +321,14 @@ public actor SQLiteHistoryStore: HistoryStore {
     private func openIfNeeded() throws {
         guard database == nil else { return }
         try createProtectedDirectory()
+        try acquireAdvisoryLock()
+        try validateExistingDatabaseFile()
         var handle: OpaquePointer?
-        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+        // SQLite opens the database itself, but the surrounding directory and
+        // file are verified before and after.  NOFOLLOW is used when the
+        // platform SQLite exposes it; this is intentionally fail-closed on
+        // platforms where protected local storage cannot be established.
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW
         guard sqlite3_open_v2(databaseURL.path, &handle, flags, nil) == SQLITE_OK, let handle else {
             if let handle { sqlite3_close_v2(handle) }
             throw HistoryStoreError.ioFailed
@@ -300,10 +338,13 @@ public actor SQLiteHistoryStore: HistoryStore {
             try execute("PRAGMA journal_mode = WAL")
             try execute("PRAGMA synchronous = FULL")
             try execute("PRAGMA secure_delete = ON")
+            try execute("PRAGMA journal_size_limit = 0")
             try execute("PRAGMA temp_store = MEMORY")
-            try execute("PRAGMA foreign_keys = ON")
             try verifySecureDelete()
+            try validateDatabaseIdentity()
             try createSchema()
+            try protectSQLiteArtifacts()
+            try verifyProtectedSQLiteArtifacts()
             inMemoryHighWaterMark = try storedHighWaterMark()
             try persistPolicyAndPurge(policy)
         } catch {
@@ -315,7 +356,12 @@ public actor SQLiteHistoryStore: HistoryStore {
     private func createProtectedDirectory() throws {
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        if !FileManager.default.fileExists(atPath: directoryURL.path) {
+            // Do not inherit broad permissions from Application Support.  The
+            // final directory is private and re-checked before every open.
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        try verifyDirectory(directoryURL)
         var directory = directoryURL
         try directory.setResourceValues(values)
         let marker = directoryURL.appendingPathComponent(".metadata_never_index")
@@ -346,6 +392,10 @@ public actor SQLiteHistoryStore: HistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS records_created_at ON records(created_at_ms DESC, id DESC)")
         try execute("CREATE INDEX IF NOT EXISTS records_expiry ON records(expires_at_ms)")
         try execute("CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(text, content='records', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2')")
+        // FTS has shadow tables with their own deleted-term retention.  Enabling
+        // its secure-delete mode is mandatory; if a supported SQLite build does
+        // not provide it, opening history fails rather than overstating erasure.
+        try execute("INSERT INTO records_fts(records_fts, rank) VALUES('secure-delete', 1)")
         try execute("""
             CREATE TRIGGER IF NOT EXISTS records_ai AFTER INSERT ON records BEGIN
                 INSERT INTO records_fts(rowid, text) VALUES (new.rowid, new.text);
@@ -420,7 +470,13 @@ public actor SQLiteHistoryStore: HistoryStore {
     }
 
     private func checkpointAfterDeletion() throws {
-        try execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        let statement = try prepare("PRAGMA wal_checkpoint(TRUNCATE)")
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw mapSQLiteError(sqlite3_errcode(database)) }
+        // SQLite reports (busy, log frames, checkpointed frames).  A busy result
+        // means plaintext may remain in the WAL; surface an honest incomplete
+        // cleanup state instead of claiming Clear/Off completed.
+        guard sqlite3_column_int(statement, 0) == 0 else { throw HistoryStoreError.cleanupIncomplete }
     }
 
     private func verifySecureDelete() throws {
@@ -431,10 +487,12 @@ public actor SQLiteHistoryStore: HistoryStore {
         }
     }
 
-    private func transaction<T>(_ body: () throws -> T) throws -> T {
+    private func transaction<T>(_ deadlineUptimeNanoseconds: UInt64? = nil, _ body: () throws -> T) throws -> T {
+        try requireBeforeDeadline(deadlineUptimeNanoseconds)
         try execute("BEGIN IMMEDIATE")
         do {
             let value = try body()
+            try requireBeforeDeadline(deadlineUptimeNanoseconds)
             try execute("COMMIT")
             return value
         } catch {
@@ -481,11 +539,16 @@ public actor SQLiteHistoryStore: HistoryStore {
     private func closeDatabase() {
         if let database { sqlite3_close_v2(database) }
         database = nil
+        if lockFileDescriptor >= 0 {
+            close(lockFileDescriptor)
+            lockFileDescriptor = -1
+        }
     }
 
     private func mapSQLiteError(_ code: Int32) -> HistoryStoreError {
         switch code {
         case SQLITE_BUSY, SQLITE_LOCKED: return .busy
+        case SQLITE_INTERRUPT: return .deadlineExceeded
         case SQLITE_PERM, SQLITE_AUTH: return .permissionDenied
         case SQLITE_CORRUPT, SQLITE_NOTADB: return .corrupt
         case SQLITE_IOERR, SQLITE_FULL, SQLITE_CANTOPEN: return .ioFailed
@@ -509,6 +572,88 @@ public actor SQLiteHistoryStore: HistoryStore {
         var seen = Set<String>()
         return parts.filter { seen.insert($0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)).inserted }
     }
+
+    private func requireBeforeDeadline(_ deadline: UInt64?) throws {
+        guard let deadline else { return }
+        guard DispatchTime.now().uptimeNanoseconds < deadline else {
+            throw HistoryStoreError.deadlineExceeded
+        }
+    }
+
+    private func installDeadlineProgressHandler() {
+        guard let database, let deadline = activeDeadlineBox else { return }
+        sqlite3_progress_handler(database, 100, { context in
+            let deadline = Unmanaged<DeadlineBox>.fromOpaque(context!).takeUnretainedValue()
+            return DispatchTime.now().uptimeNanoseconds >= deadline.nanoseconds ? 1 : 0
+        }, Unmanaged.passUnretained(deadline).toOpaque())
+    }
+
+    private func verifyDirectory(_ url: URL) throws {
+        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true, values.isSymbolicLink != true else { throw HistoryStoreError.unsupportedFilesystem }
+        let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
+        guard mode.map({ ($0 & 0o077) == 0 }) == true else { throw HistoryStoreError.permissionDenied }
+    }
+
+    private func validateExistingDatabaseFile() throws {
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else { return }
+        let values = try databaseURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else { throw HistoryStoreError.unsupportedFilesystem }
+        let mode = (try FileManager.default.attributesOfItem(atPath: databaseURL.path)[.posixPermissions] as? NSNumber)?.intValue
+        guard mode.map({ ($0 & 0o077) == 0 }) == true else { throw HistoryStoreError.permissionDenied }
+    }
+
+    private func acquireAdvisoryLock() throws {
+        guard lockFileDescriptor < 0 else { return }
+        let lockURL = directoryURL.appendingPathComponent(".history.lock", isDirectory: false)
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw HistoryStoreError.unsupportedFilesystem }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            throw HistoryStoreError.busy
+        }
+        lockFileDescriptor = descriptor
+    }
+
+    private func validateDatabaseIdentity() throws {
+        let applicationID = try pragmaInt("application_id")
+        guard applicationID == 0 || applicationID == 1_396_788_296 else { throw HistoryStoreError.corrupt }
+        let version = try pragmaInt("user_version")
+        guard version == 0 || version == 1 else { throw HistoryStoreError.migrationFailed }
+    }
+
+    private func pragmaInt(_ name: String) throws -> Int32 {
+        let statement = try prepare("PRAGMA \(name)")
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw mapSQLiteError(sqlite3_errcode(database)) }
+        return sqlite3_column_int(statement, 0)
+    }
+
+    private func verifyProtectedSQLiteArtifacts() throws {
+        for suffix in ["", "-wal", "-shm"] {
+            let url = URL(fileURLWithPath: databaseURL.path + suffix)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { throw HistoryStoreError.unsupportedFilesystem }
+            let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
+            guard mode.map({ ($0 & 0o077) == 0 }) == true else { throw HistoryStoreError.permissionDenied }
+        }
+    }
+
+    private func protectSQLiteArtifacts() throws {
+        for suffix in ["", "-wal", "-shm"] {
+            let path = databaseURL.path + suffix
+            guard FileManager.default.fileExists(atPath: path) else { continue }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        }
+    }
+}
+
+/// A tiny immutable object lets SQLite's C progress callback check a deadline
+/// without touching actor-isolated state.
+private final class DeadlineBox: @unchecked Sendable {
+    let nanoseconds: UInt64
+    init(_ nanoseconds: UInt64) { self.nanoseconds = nanoseconds }
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

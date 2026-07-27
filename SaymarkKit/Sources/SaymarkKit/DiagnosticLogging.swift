@@ -55,7 +55,8 @@ public struct SaymarkDiagnosticsConfiguration: Sendable {
 
 /// Privacy-safe, machine-readable diagnostics used by both the app and SaymarkKit.
 /// Callers must never put audio, transcript text, clipboard data, or selected text
-/// in `fields`. Character/word counts and timing measurements are safe.
+/// in `fields`. Transcript-derived exact counts are excluded because they can
+/// become content fingerprints; timing and resource measurements are safe.
 public enum SaymarkDiagnostics {
     private static let storage = DiagnosticStorage()
 
@@ -78,6 +79,27 @@ public enum SaymarkDiagnostics {
     ) {
         storage.log(level, event: event, sessionID: sessionID, fields: fields)
     }
+
+    /// The sole diagnostic route for Recent Dictations.  It accepts only closed
+    /// enums and deliberately has no text, record-id, path, search, destination
+    /// or raw-error parameter.
+    public static func logHistoryOperation(
+        _ operation: HistoryDiagnosticOperation,
+        outcome: HistoryDiagnosticOutcome
+    ) {
+        storage.log(.info, event: "history.operation", sessionID: nil, fields: [
+            "history_operation": operation.rawValue,
+            "history_outcome": outcome.rawValue,
+        ])
+    }
+}
+
+public enum HistoryDiagnosticOperation: String, Sendable {
+    case record, clear, delete, retention, reinsert
+}
+
+public enum HistoryDiagnosticOutcome: String, Sendable {
+    case committed, skipped, unavailable, deadlineExceeded, cleanupIncomplete
 }
 
 private final class DiagnosticStorage: @unchecked Sendable {
@@ -88,27 +110,27 @@ private final class DiagnosticStorage: @unchecked Sendable {
         "accessibility_granted", "accessibility_trusted", "asr_ms",
         "asr_step_max_ms", "asr_step_p50_ms", "asr_step_p95_ms",
         "asr_stream_compute_ms", "audio_seconds", "available", "behavior",
-        "build", "bundle_id", "character_count", "compute_rtf",
-        "configured_level", "confirmed_characters", "conversion_error_count",
-        "count", "cpu_percent", "destination", "draft_empty", "draft_word_count",
+        "build", "bundle_id", "compute_rtf",
+        "configured_level", "conversion_error_count",
+        "count", "cpu_percent", "destination", "draft_empty",
         "duration_ms", "duration_seconds", "error_type", "fallback", "fed",
         "fed_audio_seconds", "fed_chunks", "feed_interval_ms", "feed_samples",
-        "final_source", "final_word_count", "finish_compute_ms", "from_mode",
-        "gated_chunks", "granted", "input_buffer_count", "input_channels",
+        "final_source", "finish_compute_ms", "from_mode",
+        "gated_chunks", "granted", "history_operation", "history_outcome", "input_buffer_count", "input_channels",
         "input_chunks", "input_sample_rate", "insert_mode", "interval_seconds",
         "is_empty", "lane", "language", "latency_ms", "level", "log_level",
         "max_file_bytes", "mlx_active_bytes", "mlx_cache_bytes", "mlx_peak_bytes",
-        "mode", "model_mode", "nemotron_loaded", "normalized_word_distance",
-        "os_version", "outcome", "parakeet_empty", "parakeet_loaded", "partial_characters",
+        "mode", "model_mode", "nemotron_loaded",
+        "os_version", "outcome", "parakeet_empty", "parakeet_loaded",
         "peak_rms", "physical_footprint_bytes", "physical_memory_bytes",
         "queue_wait_max_ms", "queue_wait_ms", "queue_wait_p95_ms", "reason",
-        "recording_wall_ms", "repository", "resident_bytes", "result_characters",
-        "result_empty", "result_words", "reused", "revision", "sample_count",
+        "recording_wall_ms", "repository", "resident_bytes",
+        "result_empty", "reused", "revision", "sample_count",
         "samples", "source", "state", "step_index", "stop_to_complete_ms",
         "success", "system_cpu_seconds", "target_sample_rate", "to_mode",
         "total_gb", "trigger_mode", "ui_testing", "user_cpu_seconds",
         "vad_available", "vad_enabled", "vad_ms", "vad_p95_ms", "verification",
-        "version", "warmup_ms", "word_count", "word_edit_distance",
+        "version", "warmup_ms",
     ]
 
     private let queue = DispatchQueue(label: "saymark.diagnostics", qos: .utility)
@@ -144,6 +166,9 @@ private final class DiagnosticStorage: @unchecked Sendable {
         fields: [String: Any]
     ) {
         guard isEnabled(messageLevel) else { return }
+        // Do not permit a similarly named dynamic event to inherit the normal
+        // logger's broad metrics vocabulary.  History diagnostics are closed.
+        if event.hasPrefix("history") && !Self.isClosedHistoryEvent(event, fields: fields) { return }
 
         var object: [String: Any] = [
             "schema": 1,
@@ -174,6 +199,16 @@ private final class DiagnosticStorage: @unchecked Sendable {
 
         let data = encoded + Data([0x0A])
         queue.async { [weak self] in self?.append(data) }
+    }
+
+    private static func isClosedHistoryEvent(_ event: String, fields: [String: Any]) -> Bool {
+        guard event == "history.operation",
+              Set(fields.keys) == Set(["history_operation", "history_outcome"]),
+              let operation = fields["history_operation"] as? String,
+              let outcome = fields["history_outcome"] as? String
+        else { return false }
+        return HistoryDiagnosticOperation(rawValue: operation) != nil
+            && HistoryDiagnosticOutcome(rawValue: outcome) != nil
     }
 
     private func prepareFile(_ configuration: SaymarkDiagnosticsConfiguration) {

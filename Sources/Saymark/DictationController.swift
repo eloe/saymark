@@ -288,8 +288,6 @@ final class DictationController {
             }
         }
                 SaymarkDiagnostics.log(.info, "dictation.ui_completed", sessionID: diagnosticSessionID, fields: [
-                    "word_count": final.split(separator: " ").count,
-                    "character_count": final.count,
                     "is_empty": final.isEmpty,
                     "model_mode": modelModeAtStop,
                     "insert_mode": insertModeAtStop,
@@ -339,7 +337,6 @@ final class DictationController {
             if !promptedAccessibility { promptedAccessibility = true; Accessibility.prompt() }
             SaymarkDiagnostics.log(.warn, "dictation.insert_copied", sessionID: sessionID, fields: [
                 "reason": "accessibility_not_trusted",
-                "character_count": text.count,
             ])
             hud.error(
                 title: String(localized: "Copied to clipboard"),
@@ -354,7 +351,6 @@ final class DictationController {
             SaymarkDiagnostics.log(.info, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "pasted",
                 "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
-                "character_count": text.count,
             ])
             hud.finish(text)
             return .inserted
@@ -362,7 +358,6 @@ final class DictationController {
             SaymarkDiagnostics.log(.error, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "failed",
                 "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
-                "character_count": text.count,
             ])
             hud.error(
                 title: String(localized: "Couldn’t paste text"),
@@ -373,7 +368,6 @@ final class DictationController {
             SaymarkDiagnostics.log(.warn, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "copied_secure_input",
                 "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
-                "character_count": text.count,
             ])
             hud.error(
                 title: String(localized: "Field is protected"),

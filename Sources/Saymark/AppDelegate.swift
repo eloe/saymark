@@ -34,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DiagnosticLogSetting.configure()
+        // Session retention is deliberately process-scoped.  Clear any data a
+        // previous crashed/terminated process left before it can be displayed.
+        RecentDictationsController.shared.clearPriorSessionAtLaunch()
         SaymarkDiagnostics.log(.info, "app.launched", fields: [
             "bundle_id": Bundle.main.bundleIdentifier ?? "unknown",
             "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
@@ -151,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        RecentDictationsController.shared.clearSessionAtTermination()
         resourceMonitor.stop()
         SaymarkDiagnostics.log(.info, "app.terminating")
     }

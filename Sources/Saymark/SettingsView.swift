@@ -7,7 +7,10 @@ import SwiftUI
 /// shortcut and where the transcript goes on release.
 struct SettingsView: View {
     @AppStorage(InsertMode.defaultsKey) private var insertModeRaw = InsertMode.inField.rawValue
-    @AppStorage(RecentDictationsRetention.defaultsKey) private var historyRetentionRaw = RecentDictationsRetention.off.rawValue
+    @State private var historyRetentionRaw = RecentDictationsRetention.current.rawValue
+    @State private var pendingHistoryRetention: RecentDictationsRetention?
+    @State private var showingRetentionConfirmation = false
+    @State private var showingClearConfirmation = false
     @AppStorage(AnalyticsConsent.key) private var analyticsEnabled = false
     @AppStorage(DiagnosticLogSetting.key) private var logLevelRaw = DiagnosticLogSetting.defaultLevel.name
 
@@ -42,7 +45,7 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
 
                 Button("Clear Recent Dictations") {
-                    RecentDictationsController.shared.clearHistory()
+                    showingClearConfirmation = true
                 }
                 .disabled(RecentDictationsRetention.current == .off)
             } header: {
@@ -52,7 +55,7 @@ struct SettingsView: View {
             }
             .onChange(of: historyRetentionRaw) { _, rawValue in
                 let policy = RecentDictationsRetention(rawValue: rawValue) ?? .off
-                RecentDictationsController.shared.setRetention(policy)
+                chooseRetention(policy)
             }
 
             if AnalyticsConsent.isAvailable {
@@ -106,5 +109,72 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 420)
         .frame(minHeight: 430)
+        .confirmationDialog(
+            "Update Recent Dictations retention?",
+            isPresented: $showingRetentionConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Continue") {
+                if let pendingHistoryRetention { applyRetention(pendingHistoryRetention) }
+                pendingHistoryRetention = nil
+            }
+            Button("Keep Current Setting", role: .cancel) { pendingHistoryRetention = nil }
+        } message: {
+            Text(retentionConfirmationMessage)
+        }
+        .confirmationDialog(
+            "Clear Recent Dictations?",
+            isPresented: $showingClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear History", role: .destructive) { RecentDictationsController.shared.clearHistory() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes dictations from Saymark’s current local history store.")
+        }
+    }
+
+    private func chooseRetention(_ proposed: RecentDictationsRetention) {
+        let current = RecentDictationsRetention.current
+        guard proposed != current else { return }
+        if current == .off || proposed.deletesExistingHistory(comparedWith: current) {
+            pendingHistoryRetention = proposed
+            historyRetentionRaw = current.rawValue
+            showingRetentionConfirmation = true
+        } else {
+            applyRetention(proposed)
+        }
+    }
+
+    private func applyRetention(_ retention: RecentDictationsRetention) {
+        Task {
+            let didCommit = await RecentDictationsController.shared.setRetention(retention)
+            historyRetentionRaw = didCommit ? retention.rawValue : RecentDictationsRetention.current.rawValue
+        }
+    }
+
+    private var retentionConfirmationMessage: String {
+        if let pendingHistoryRetention,
+           pendingHistoryRetention.deletesExistingHistory(comparedWith: RecentDictationsRetention.current) {
+            return "Changing to this retention period immediately deletes dictations that no longer fit. This cannot erase backups or snapshots made outside Saymark."
+        }
+        return "Saymark will keep final dictation text only on this Mac. It never keeps audio, secure-input dictation, or HUD-only sessions."
+    }
+}
+
+private extension RecentDictationsRetention {
+    func deletesExistingHistory(comparedWith current: Self) -> Bool {
+        if self == .off || self == .session { return current != self }
+        func rank(_ value: Self) -> Int {
+            switch value {
+            case .session: return 0
+            case .days7: return 7
+            case .days30: return 30
+            case .days90: return 90
+            case .untilDeleted: return .max
+            case .off: return -1
+            }
+        }
+        return rank(self) < rank(current)
     }
 }

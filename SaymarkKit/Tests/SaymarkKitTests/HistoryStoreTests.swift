@@ -91,14 +91,53 @@ final class HistoryStoreTests: XCTestCase {
 
     func testRecordCapAndLimitClamp() async throws {
         let store = try makeStore()
-        XCTAssertNil(try await store.recordFinal(.init(text: String(repeating: "x", count: 100_001))))
+        await XCTAssertThrowsErrorAsync(try await store.recordFinal(.init(text: String(repeating: "x", count: 100_001)))) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .recordTooLarge)
+        }
         for index in 0..<26 { _ = try await store.recordFinal(.init(text: "row \(index)")) }
         XCTAssertEqual(try await store.records(limit: 0).count, 1)
         XCTAssertEqual(try await store.records(limit: -10).count, 1)
         XCTAssertEqual(try await store.records(limit: 1_000).count, 25)
     }
 
+    func testExpiredPreDeliveryDeadlineCreatesNoStoreOrLateRecord() async throws {
+        let store = try makeStore()
+        let expiredDeadline = DispatchTime.now().uptimeNanoseconds - 1
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.recordFinal(.init(text: "must not commit"), deadlineUptimeNanoseconds: expiredDeadline)
+        ) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .deadlineExceeded)
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    func testOffRemovesSentinelBearingStoreAfterTruncatingCleanup() async throws {
+        let store = try makeStore()
+        let sentinel = "RD-SENTINEL-\(UUID().uuidString)"
+        _ = try await store.recordFinal(.init(text: sentinel))
+
+        try await store.setRetentionPolicy(.off)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
     private func makeStore(policy: HistoryRetentionPolicy = .days30) throws -> SQLiteHistoryStore {
         try SQLiteHistoryStore(directoryURL: directory, policy: policy, now: { self.now })
+    }
+}
+
+private func XCTAssertThrowsErrorAsync<T>(
+    _ expression: @autoclosure () async throws -> T,
+    _ handler: (Error) -> Void = { _ in },
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("Expected an error", file: file, line: line)
+    } catch {
+        handler(error)
     }
 }

@@ -40,7 +40,7 @@ struct RecentDictationsView: View {
                             .foregroundStyle(.secondary)
                         HStack {
                             Button("Copy") { controller.copy(selected) }
-                            Button("Reinsert") { controller.reinsert(selected) }
+                            Button("Reinsert") { controller.requestReinsert(selected) }
                             Spacer()
                             Button("Delete", role: .destructive) { controller.delete(selected) }
                         }
@@ -56,6 +56,20 @@ struct RecentDictationsView: View {
             }
         }
         .onAppear { Task { await controller.refresh() } }
+        .confirmationDialog(
+            "Reinsert this exact dictation?",
+            isPresented: Binding(
+                get: { controller.pendingReinsert != nil },
+                set: { if !$0 { controller.cancelReinsert() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Reinsert") { controller.confirmReinsert() }
+            Button("Cancel", role: .cancel) { controller.cancelReinsert() }
+        } message: {
+            Text("Saymark will switch back to the app that was active before this window opened. If it is unavailable or protected, the exact text will be copied instead.")
+        }
+        .onDisappear { search = "" }
     }
 }
 

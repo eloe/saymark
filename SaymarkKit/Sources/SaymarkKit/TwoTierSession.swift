@@ -98,10 +98,6 @@ public final class TwoTierSession {
             let divergence = TranscriptDivergence(draft: draft, final: candidate)
             SaymarkDiagnostics.log(.info, "dictation.refinement_completed", fields: [
                 "final_source": candidateIsEmpty ? "nemotron_fallback" : "parakeet",
-                "draft_word_count": divergence.draftWordCount,
-                "final_word_count": divergence.finalWordCount,
-                "word_edit_distance": divergence.wordEditDistance,
-                "normalized_word_distance": divergence.normalizedWordDistance,
                 "draft_empty": divergence.draftWordCount == 0,
                 "parakeet_empty": candidateIsEmpty,
             ])
