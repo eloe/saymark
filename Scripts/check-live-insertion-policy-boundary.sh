@@ -20,11 +20,12 @@ fail() {
 # deliberately empty: `Swift` is implicit, so any explicit module import fails
 # closed. This excludes Foundation/CoreFoundation/XPC/IPC as well as UI and AX
 # frameworks. A future adapter must live outside this target after evidence.
-# A policy source has an empty import allowlist. Swift permits attributes before
-# imports, scoped conditional imports, semicolon-separated imports, and import
-# kind modifiers; match every one of those forms. `rg -P` supplies the
-# multiline attribute support that POSIX grep deliberately lacks.
-forbidden_import='(?ms)(?:^|[;{}])[[:space:]]*(?:@[A-Za-z_][A-Za-z0-9_]*(?:[[:space:]]*\([^)]*\))?[[:space:]]*)*\bimport[[:space:]]+(?:(?:func|class|struct|enum|protocol|var|let|typealias|operator)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*'
+# A policy source has an empty import allowlist. Swift permits attributes and
+# every import access level before `import`, including on separate lines. It
+# also permits scoped conditional imports, semicolon-separated imports, and
+# import kind modifiers; match every one of those forms. `rg -P` supplies the
+# multiline attribute/access-level support that POSIX grep deliberately lacks.
+forbidden_import='(?ms)(?:^|[;{}])[[:space:]]*(?:@[A-Za-z_][A-Za-z0-9_]*(?:[[:space:]]*\([^)]*\))?[[:space:]]*)*(?:(?:public|internal|package|private|fileprivate)[[:space:]]+)?\bimport[[:space:]]+(?:(?:func|class|struct|enum|protocol|var|let|typealias|operator)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*'
 forbidden_symbol='\b(AX[A-Za-z0-9_]*|CGEvent[A-Za-z0-9_]*|NSEvent|NSPasteboard|NSAppleScript|NSWorkspace|CFMessagePort|DistributedNotificationCenter|NSXPC|xpc_[A-Za-z0-9_]*|dlopen|dlsym|dladdr|NSClassFromString|objc_lookUpClass|unsafeBitCast|@_silgen_name|@_cdecl|@_expose|@_dynamicReplacement|Process|NSTask|URLSession|Socket)\b'
 
 check_source() {
@@ -52,6 +53,13 @@ fi
 # must be rejected, otherwise the policy check itself fails closed.
 [[ -d "$fixture_root" ]] || fail "missing boundary negative fixtures"
 while IFS= read -r -d '' fixture; do
+  # Fixtures must remain legal Swift 6 syntax. This demonstrates that a
+  # rejected form is a genuine compiler-accepted import route, rather than a
+  # synthetic string that could never enter the policy target.
+  if ! swiftc -swift-version 6 -parse "$fixture" >/dev/null 2>&1; then
+    fail "negative fixture is not valid Swift 6 syntax: ${fixture#$repo_root/}"
+  fi
+
   if check_source "$fixture"; then
     fail "negative fixture escaped boundary gate: ${fixture#$repo_root/}"
   fi
