@@ -1,8 +1,8 @@
 # Claude Opus 5 independent review — live insertion
 
-**Date:** 2026-07-26  
+**Date:** 2026-07-26
 **Reviewer model:** `claude-opus-5` (effort: High), read-only desktop review
-**Reviewed commit:** c175d25 on codex/live-insertion  
+**Reviewed commit:** c175d25 on codex/live-insertion
 **Verdict:** APPROVE-WITH-CHANGES, scoped. Slice 1 policy core may proceed; any cross-application field mutation is blocked.
 
 This record preserves the independent review and the disposition adopted in [live-insertion-sdd.md](../live-insertion-sdd.md). The original reviewer plan file was outside the repository and is not a source-controlled product artifact.
