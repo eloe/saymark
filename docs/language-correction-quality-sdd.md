@@ -641,8 +641,11 @@ PR/release evidence.
    documented hash review, deterministic generation, attribution, and macOS
    15/26 evidence procedure; the vocabulary document remains read-only when its
    pinned `unicodeVersion` is unsupported.
-3. **Raw-text retention UX:** Decide where raw ASR is exposed and for how long;
-   do not quietly create transcript history while implementing the fallback.
+3. **Raw-text retention UX:** Resolved for this slice. A corrected or failed
+   final exposes an interactive, memory-only disclosure and copy action for at
+   least eight seconds, including ordinary short Hold-mode results. Starting
+   the next HUD lifecycle clears the raw value; no transcript history is
+   created.
 4. **Import interoperability:** Decide whether the v1 JSON schema is public and
    stable at launch or marked preview. The answer controls compatibility and
    unknown-field preservation policy.
@@ -676,10 +679,16 @@ decisions:
 - a future schema is probed before current-model decoding, is opened read-only,
   and remains available for byte-for-byte user-initiated export even when its
   document layout has no fields from schema v2; and
-- the first edit after corrupt-primary or backup-only recovery installs a new
-  primary without rotating or deleting the known-good backup. Injected failures
+- a corrupt named primary produces an empty correction snapshot, remains
+  byte-for-byte retained and read-only, never silently activates backup rules,
+  and exposes a Finder recovery action. Backup-only recovery may install a new
+  primary without rotating or deleting the known-good backup; injected failures
   at temporary-file durability, before primary installation, and immediately
-  after primary installation are normative recovery tests.
+  after primary installation are normative recovery tests;
+- ordinary short corrected and failed-raw-fallback finals accept mouse input,
+  keep their disclosure available for at least eight seconds, and expose a
+  working raw-copy action. Listening remains click-through in Hold mode, while
+  Start/Stop mode retains only its approved Stop interaction.
 
 The feature video is evidence for the approved native settings surface and
 named hosted behavior checks only. It is not evidence for full end-to-end model

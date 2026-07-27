@@ -38,6 +38,7 @@ final class HUDModel {
         showingFinal && !rawTranscript.isEmpty &&
             (rawTranscript != confirmed || correctionStatus == "failedRawFallback")
     }
+    var allowsFinalInteraction: Bool { showingFinal && (showsCorrectionDetails || requiresExpandedFinal) }
     var correctionSummary: String {
         switch correctionStatus {
         case "failedRawFallback":
@@ -62,7 +63,13 @@ final class HUDModel {
         let words = transcriptAccessibilityLabel.split(whereSeparator: \.isWhitespace).count
         // A final result should read as a stable completion state, not a flash.
         // Long dictations linger longer, while the cap keeps the HUD temporary.
-        return min(12.0, max(3.2, 2.4 + Double(words) * 0.045))
+        let readingTime = min(12.0, max(3.2, 2.4 + Double(words) * 0.045))
+        return showsCorrectionDetails ? max(8.0, readingTime) : readingTime
+    }
+
+    func copyRawTranscript() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(rawTranscript, forType: .string)
     }
 }
 
@@ -171,10 +178,7 @@ private struct HUDView: View {
                     Text(model.correctionSummary)
                         .foregroundStyle(.secondary)
                     Text(model.rawTranscript).textSelection(.enabled)
-                    Button("Copy raw transcript") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(model.rawTranscript, forType: .string)
-                    }
+                    Button("Copy raw transcript") { model.copyRawTranscript() }
                 }
                 .accessibilityLabel("Raw transcript disclosure")
             }
@@ -498,10 +502,10 @@ final class HUDController {
             model.showRawTranscript = false
             model.showingFinal = true
             model.phase = .transcribing
+            panel?.ignoresMouseEvents = !model.allowsFinalInteraction
             if model.requiresExpandedFinal, let panel {
                 let size = model.presentation ? expandedPresentationFinalSize : expandedFinalSize
                 panel.setContentSize(size)
-                panel.ignoresMouseEvents = false
                 position(panel)
             }
         }

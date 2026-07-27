@@ -459,7 +459,7 @@ public final class TranscriptCorrectionPipeline: @unchecked Sendable {
 /// settings mutations.
 public final class VocabularyStore: @unchecked Sendable {
     enum PersistenceCheckpoint: Sendable, Equatable { case temporaryDurable, beforePrimaryInstall, primaryInstalled }
-    private enum RecoveryState: Equatable { case normal, backupOnly, corruptPrimaryBackup }
+    private enum RecoveryState: Equatable { case normal, backupOnly }
     private struct RawFile {
         let data: Data
         let token: String
@@ -477,6 +477,7 @@ public final class VocabularyStore: @unchecked Sendable {
     private var recoveryState: RecoveryState = .normal
     public private(set) var readOnlyReason: String?
     public private(set) var recoveryMessage: String?
+    public private(set) var recoveryFileURL: URL?
 
     public convenience init(directoryURL: URL, filename: String = defaultFilename) throws {
         try self.init(directoryURL: directoryURL, filename: filename, persistenceFaultInjector: { _ in })
@@ -589,24 +590,21 @@ public final class VocabularyStore: @unchecked Sendable {
                 readOnlyReason = VocabularyValidationError.unsupportedSchemaVersion(version).localizedDescription
                 return
             }
-            recoverFromBackupOrBecomeReadOnly(corruptPrimaryPresent: true)
+            preserveCorruptPrimaryForManualRecovery()
         }
         catch {
-            recoverFromBackupOrBecomeReadOnly(corruptPrimaryPresent: true)
+            preserveCorruptPrimaryForManualRecovery()
         }
     }
 
-    private func recoverFromBackupOrBecomeReadOnly(corruptPrimaryPresent: Bool) {
-        // A complete prior version is more useful than a blank vocabulary.
-        // Never overwrite the damaged primary while recovery is in effect.
-        if let backup = try? Self.readDocument(at: backupURL) {
-            document = backup
-            recoveryState = corruptPrimaryPresent ? .corruptPrimaryBackup : .backupOnly
-            recoveryMessage = "Vocabulary was restored from its last complete backup."
-        } else {
-            document = VocabularyDocument()
-            readOnlyReason = "Vocabulary could not be read. The original file was kept for recovery."
-        }
+    private func preserveCorruptPrimaryForManualRecovery() {
+        // A corrupt named primary is authoritative evidence that needs manual
+        // recovery. Never silently substitute backup rules for dictation and
+        // never allow an edit to replace the damaged bytes.
+        document = VocabularyDocument()
+        readOnlyReason = "Vocabulary could not be read. Dictation will use raw text until the retained file is recovered."
+        recoveryMessage = "Your vocabulary file could not be read. The original was retained for manual recovery."
+        recoveryFileURL = primaryURL
     }
 
     private func replaceLocked(_ proposed: VocabularyDocument) throws {
@@ -636,8 +634,8 @@ public final class VocabularyStore: @unchecked Sendable {
             // missing or partially-written backup name.
             try Self.renameReplacing(primaryURL, backupURL)
         }
-        // For corrupt-primary and backup-only recovery, keep the known-good
-        // backup untouched and atomically replace/install only the primary.
+        // For backup-only recovery, keep the known-good backup untouched and
+        // atomically install only the primary.
         try persistenceFaultInjector(.beforePrimaryInstall)
         try Self.renameReplacing(temporary, primaryURL)
         try persistenceFaultInjector(.primaryInstalled)

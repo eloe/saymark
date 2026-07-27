@@ -38,6 +38,38 @@ final class VocabularySettingsIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(host.fittingSize.height, 0)
     }
 
+    func testCorruptPrimarySettingsFailClosedAndExposeRetainedFileAction() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let seeded = try VocabularyStore(directoryURL: directory)
+        try seeded.upsert(VocabularyEntry(written: "Saymark", heard: ["say mark"]))
+        try seeded.upsert(VocabularyEntry(written: "Other", heard: ["other"]))
+        let primary = directory.appendingPathComponent(VocabularyStore.defaultFilename)
+        let corruptBytes = Data("retained-corrupt-vocabulary".utf8)
+        try corruptBytes.write(to: primary)
+
+        let opened = try VocabularyStore(directoryURL: directory)
+        let model = VocabularySettingsModel(store: opened)
+        let host = NSHostingView(rootView: Form { VocabularySettingsSection(model: model) })
+        host.frame = NSRect(x: 0, y: 0, width: 640, height: 720)
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(model.entries.isEmpty)
+        XCTAssertTrue(model.isReadOnly)
+        XCTAssertEqual(model.recoveryFileURL, primary)
+        XCTAssertEqual(try Data(contentsOf: primary), corruptBytes)
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Saymark/VocabularySettings.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("Show retained vocabulary file in Finder"))
+    }
+
     func testCorrectionReviewCarriesStatusAndVocabularyRevision() {
         let model = HUDModel()
         model.correctionStatus = "failedRawFallback"

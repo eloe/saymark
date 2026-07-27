@@ -13,6 +13,8 @@ final class VocabularySettingsModel {
     nonisolated private let store: VocabularyStore?
     private(set) var entries: [VocabularyEntry] = []
     private(set) var errorMessage: String?
+    private(set) var recoveryFileURL: URL?
+    private(set) var isReadOnly = false
     var search = ""
     var showEditor = false
     var editing: VocabularyEntry?
@@ -28,6 +30,8 @@ final class VocabularySettingsModel {
             let opened = try VocabularyStore(directoryURL: directory)
             store = opened
             errorMessage = opened.recoveryMessage
+            recoveryFileURL = opened.recoveryFileURL
+            isReadOnly = opened.readOnlyReason != nil
         }
         catch {
             // Never divert sensitive vocabulary to /tmp.  The store itself can
@@ -37,6 +41,14 @@ final class VocabularySettingsModel {
             store = nil
             errorMessage = "Vocabulary could not be opened. Dictation will use raw text until local storage is available."
         }
+        reload()
+    }
+
+    init(store: VocabularyStore) {
+        self.store = store
+        errorMessage = store.recoveryMessage
+        recoveryFileURL = store.recoveryFileURL
+        isReadOnly = store.readOnlyReason != nil
         reload()
     }
 
@@ -102,10 +114,19 @@ final class VocabularySettingsModel {
         do { try store.export(to: url); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
+
+    func revealRecoveryFile() {
+        guard let recoveryFileURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([recoveryFileURL])
+    }
 }
 
 struct VocabularySettingsSection: View {
-    @State private var model = VocabularySettingsModel.shared
+    @State private var model: VocabularySettingsModel
+
+    init(model: VocabularySettingsModel = .shared) {
+        _model = State(initialValue: model)
+    }
 
     var body: some View {
         Section {
@@ -113,6 +134,12 @@ struct VocabularySettingsSection: View {
                 .accessibilityLabel("Search Vocabulary")
             if let message = model.errorMessage {
                 Text(message).foregroundStyle(.red).accessibilityLabel("Vocabulary error: \(message)")
+            }
+            if model.recoveryFileURL != nil {
+                Button("Show retained vocabulary file in Finder") {
+                    model.revealRecoveryFile()
+                }
+                .accessibilityHint("Locates the original unreadable file for manual recovery")
             }
             if model.filteredEntries.isEmpty {
                 ContentUnavailableView("No vocabulary yet", systemImage: "text.book.closed",
@@ -136,8 +163,10 @@ struct VocabularySettingsSection: View {
             }
             Button("Add vocabulary") { model.beginAdd() }
                 .accessibilityHint("Add a written replacement and explicit heard-as phrases")
+                .disabled(model.isReadOnly)
             HStack {
                 Button("Import…") { model.chooseImport() }
+                    .disabled(model.isReadOnly)
                 Button("Export…") { model.export() }
             }
         } header: { Text("Vocabulary") }

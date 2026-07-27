@@ -125,10 +125,20 @@ final class VocabularyTests: XCTestCase {
         try store.upsert(VocabularyEntry(written: "First", heard: ["first"]))
         try store.upsert(VocabularyEntry(written: "Second", heard: ["second"]))
         let primary = directory.appendingPathComponent(VocabularyStore.defaultFilename)
+        let backup = directory.appendingPathComponent(VocabularyStore.defaultFilename + ".backup")
+        let backupBytes = try Data(contentsOf: backup)
         try Data("corrupt".utf8).write(to: primary)
         let recovered = try VocabularyStore(directoryURL: directory)
-        XCTAssertEqual(recovered.currentDocument().entries.map(\.written), ["First"])
+        XCTAssertTrue(recovered.currentDocument().entries.isEmpty)
+        XCTAssertEqual(recovered.snapshot().correct("first").renderedText, "first")
         XCTAssertNotNil(recovered.recoveryMessage)
+        XCTAssertNotNil(recovered.readOnlyReason)
+        XCTAssertEqual(recovered.recoveryFileURL, primary)
+        XCTAssertThrowsError(
+            try recovered.upsert(VocabularyEntry(written: "Must not save", heard: ["must not save"]))
+        )
+        XCTAssertEqual(try Data(contentsOf: primary), Data("corrupt".utf8))
+        XCTAssertEqual(try Data(contentsOf: backup), backupBytes)
 
         // Simulate a crash after primary->backup but before temp->primary.
         try FileManager.default.removeItem(at: primary)
@@ -136,7 +146,6 @@ final class VocabularyTests: XCTestCase {
         XCTAssertEqual(backupOnly.currentDocument().entries.map(\.written), ["First"])
         XCTAssertNotNil(backupOnly.recoveryMessage)
         try backupOnly.upsert(VocabularyEntry(written: "Recovered save", heard: ["recovered save"]))
-        let backup = directory.appendingPathComponent(VocabularyStore.defaultFilename + ".backup")
         XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path))
         // A crash immediately after the new primary disappears must still
         // leave the prior complete backup recoverable.
@@ -317,7 +326,7 @@ final class VocabularyTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: primary), futureData)
     }
 
-    func test_S10_recoverySaveNeverRotatesKnownGoodBackupAcrossInjectedCrashes() throws {
+    func test_S10_backupOnlyRecoverySaveNeverRotatesKnownGoodBackupAcrossInjectedCrashes() throws {
         for checkpoint in [
             VocabularyStore.PersistenceCheckpoint.temporaryDurable,
             .beforePrimaryInstall,
@@ -333,7 +342,7 @@ final class VocabularyTests: XCTestCase {
             let primary = directory.appendingPathComponent(VocabularyStore.defaultFilename)
             let backup = directory.appendingPathComponent(VocabularyStore.defaultFilename + ".backup")
             let knownGoodBackup = try Data(contentsOf: backup)
-            try Data("corrupt-primary".utf8).write(to: primary)
+            try FileManager.default.removeItem(at: primary)
 
             let recovered = try VocabularyStore(
                 directoryURL: directory,
