@@ -78,14 +78,20 @@ public final class DictationSession: @unchecked Sendable {
     public func start(mode: DictationMode = .hybrid) throws {
         // Freeze the explicit local rules before audio capture begins. Later
         // edits/imports apply to the next utterance only.
-        let sessionID = engine.begin(language: nil, mode: mode, correctionSnapshot: correctionSnapshotProvider())
+        let correctionHub = correctedUpdates
+        let sessionID = engine.begin(
+            language: nil,
+            mode: mode,
+            correctionSnapshot: correctionSnapshotProvider(),
+            onDraftCorrection: { confirmed, partial in
+                correctionHub.publish(confirmed: confirmed, partial: partial)
+            }
+        )
         activeSessionID = sessionID
         mic.onChunk = { [weak self] chunk in
             guard let self else { return }
             let (confirmed, partial) = self.engine.step(chunk)
             self.updates.publish(confirmed: confirmed, partial: partial)
-            let detailed = self.engine.latestCorrection()
-            self.correctedUpdates.publish(confirmed: detailed.confirmed, partial: detailed.partial)
         }
         do {
             try mic.start()

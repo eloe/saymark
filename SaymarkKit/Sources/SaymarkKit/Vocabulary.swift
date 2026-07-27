@@ -40,12 +40,14 @@ public struct VocabularyDocument: Codable, Equatable, Sendable {
 }
 
 public enum VocabularyValidationError: Error, Equatable, LocalizedError, Sendable {
-    case invalidSchema, unsupportedUnicodeVersion(String), invalidEntry(UUID, String)
+    case invalidSchema, unsupportedSchemaVersion(Int), unsupportedUnicodeVersion(String), invalidEntry(UUID, String)
     case duplicateID(UUID), duplicateEnabledTrigger(String), entryLimitExceeded, aliasLimitExceeded
 
     public var errorDescription: String? {
         switch self {
         case .invalidSchema: return "This vocabulary file uses an unsupported format."
+        case let .unsupportedSchemaVersion(version):
+            return "This vocabulary file uses newer format version \(version). Update Saymark before editing or exporting it."
         case let .unsupportedUnicodeVersion(version): return "Unicode \(version) is not supported by this Saymark version."
         case let .invalidEntry(_, reason): return reason
         case .duplicateID: return "Each vocabulary entry must have a unique identifier."
@@ -66,26 +68,52 @@ public enum VocabularyNormalization {
     fileprivate struct Token: Sendable {
         let scalarRange: Range<Int>
         let key: String
+        let startsSourceSegment: Bool
+        let endsSourceSegment: Bool
     }
 
     fileprivate static func tokens(in text: String) -> [Token] {
-        let scalars = Array(text.unicodeScalars)
-        guard !scalars.isEmpty else { return [] }
-        let boundaries = Unicode15_1.wordBoundaries(in: text)
+        let sourceScalars = Array(text.unicodeScalars)
+        guard !sourceScalars.isEmpty else { return [] }
+
+        // Run UAX #29 on the pinned normalized stream, while mapping every
+        // normalized scalar back to the complete source segment that produced
+        // it. This lets a full compatibility expansion match (㍿ -> 株式会社)
+        // without permitting a partial match to consume one source character.
+        let sourceBoundaries = Unicode15_1.wordBoundaries(in: text)
+        var normalizedScalars: [Unicode.Scalar] = []
+        var sourceRanges: [Range<Int>] = []
+        var sourceStart = 0
+        for sourceEnd in 1...sourceScalars.count where sourceBoundaries[sourceEnd] {
+            defer { sourceStart = sourceEnd }
+            let sourceRange = sourceStart..<sourceEnd
+            let raw = String(String.UnicodeScalarView(sourceScalars[sourceRange]))
+            for scalar in Unicode15_1.nfkcCaseFold(raw).unicodeScalars {
+                normalizedScalars.append(isWhitespace(scalar.value) ? Unicode.Scalar(0x20)! : scalar)
+                sourceRanges.append(sourceRange)
+            }
+        }
+        guard !normalizedScalars.isEmpty else { return [] }
+        let normalizedText = String(String.UnicodeScalarView(normalizedScalars))
+        let boundaries = Unicode15_1.wordBoundaries(in: normalizedText)
         var tokens: [Token] = []
         var start = 0
-        for end in 1...scalars.count where boundaries[end] {
+        for end in 1...normalizedScalars.count where boundaries[end] {
             defer { start = end }
             guard end > start else { continue }
-            let raw = String(String.UnicodeScalarView(scalars[start..<end]))
-            let key = Unicode15_1.nfkcCaseFold(raw)
-                .unicodeScalars.map { isWhitespace($0.value) ? " " : String($0) }
-                .joined().split(whereSeparator: { $0 == " " }).joined(separator: " ")
-            // UAX #29 segments punctuation and whitespace too. Keep only
-            // segments whose pinned NFKC/full-fold expansion contains a word
-            // scalar, while preserving the complete original source span.
+            let key = String(String.UnicodeScalarView(normalizedScalars[start..<end]))
+                .split(whereSeparator: { $0 == " " }).joined(separator: " ")
+            // UAX #29 segments punctuation and whitespace too. Keep only its
+            // word-bearing segments and preserve their original source span.
             guard key.unicodeScalars.contains(where: { isWord($0.value) }) else { continue }
-            if !key.isEmpty { tokens.append(Token(scalarRange: start..<end, key: key)) }
+            if !key.isEmpty {
+                tokens.append(Token(
+                    scalarRange: sourceRanges[start].lowerBound..<sourceRanges[end - 1].upperBound,
+                    key: key,
+                    startsSourceSegment: start == 0 || sourceRanges[start - 1] != sourceRanges[start],
+                    endsSourceSegment: end == normalizedScalars.count || sourceRanges[end] != sourceRanges[end - 1]
+                ))
+            }
         }
         return tokens
     }
@@ -180,7 +208,10 @@ private enum VocabularyMigration {
             var migrated = document
             migrated.schemaVersion = VocabularyDocument.schemaVersion
             return migrated
-        default: throw VocabularyValidationError.invalidSchema
+        case let version where version > VocabularyDocument.schemaVersion:
+            throw VocabularyValidationError.unsupportedSchemaVersion(version)
+        default:
+            throw VocabularyValidationError.invalidSchema
         }
     }
 }
@@ -216,7 +247,7 @@ public struct VocabularySnapshot: Sendable, Equatable {
         // Aho-Corasick finds every candidate in one token pass.  We retain
         // only the longest candidate per start, then emit leftmost-longest.
         // The compiled automaton is immutable and captured with the snapshot.
-        let winners = automaton.longestMatches(in: tokens.map(\.key))
+        let winners = automaton.longestMatches(in: tokens)
         var output = "", cursor = 0, tokenIndex = 0, applied = 0
         while tokenIndex < tokens.count {
             let token = tokens[tokenIndex]
@@ -278,16 +309,20 @@ private struct TokenAutomaton: Sendable, Equatable {
 
     func rule(at index: Int) -> VocabularySnapshot.Rule { rules[index] }
 
-    func longestMatches(in keys: [String]) -> [Int: Int] {
+    func longestMatches(in tokens: [VocabularyNormalization.Token]) -> [Int: Int] {
         var matches: [Int: Int] = [:]
         var state = 0
-        for (end, key) in keys.enumerated() {
+        for (end, token) in tokens.enumerated() {
+            let key = token.key
             while state != 0 && nodes[state].edges[key] == nil { state = nodes[state].failure }
             state = nodes[state].edges[key] ?? 0
             for ruleIndex in nodes[state].outputs {
                 let rule = rules[ruleIndex]
                 let start = end + 1 - rule.keys.count
                 guard start >= 0 else { continue }
+                guard tokens[start].startsSourceSegment, tokens[end].endsSourceSegment else {
+                    continue
+                }
                 if let old = matches[start], rules[old].keys.count >= rule.keys.count { continue }
                 matches[start] = ruleIndex
             }
@@ -321,7 +356,7 @@ public final class TranscriptCorrectionPipeline: @unchecked Sendable {
     }
     private let snapshot: VocabularySnapshot
     private let evaluator: @Sendable (String) throws -> CorrectedTranscript
-    private let lock = NSLock()
+    private let lock = NSRecursiveLock()
     private let worker = DispatchQueue(label: "saymark.correction", qos: .userInitiated)
     private var latest: Pending?
     private var draining = false
@@ -375,8 +410,14 @@ public final class TranscriptCorrectionPipeline: @unchecked Sendable {
                                              snapshotRevision: snapshot.revision, appliedRuleCount: 0,
                                              correctionStatus: .failedRawFallback)
             }
-            let stillCurrent = lock.withLock { latest == nil && pending.revision == nextRevision }
-            if stillCurrent { pending.completion(result) }
+            // Generation validation and delivery are one critical section.
+            // A newer submit can therefore occur either before this delivery
+            // (and suppress it) or after it, never in the gap between a stale
+            // check and publication.
+            lock.withLock {
+                guard latest == nil, pending.revision == nextRevision else { return }
+                pending.completion(result)
+            }
         }
     }
 }
@@ -432,7 +473,10 @@ public final class VocabularyStore: @unchecked Sendable {
     }
 
     public func export(to url: URL) throws {
-        let data = try encode(lock.withLock { document })
+        let data = try lock.withLock {
+            guard readOnlyReason == nil else { throw VocabularyValidationError.invalidSchema }
+            return try encode(document)
+        }
         try data.write(to: url, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
@@ -441,7 +485,6 @@ public final class VocabularyStore: @unchecked Sendable {
         let imported = try Self.readDocumentAndToken(at: url)
         return try lock.withLock {
             let result = try reconcile(local: document, imported: imported.document, strategy: strategy, sourceToken: imported.token)
-            try VocabularyValidator.validate(result.document)
             return result.preview
         }
     }
@@ -469,16 +512,31 @@ public final class VocabularyStore: @unchecked Sendable {
             return
         }
         do { document = try Self.readDocument(at: primaryURL) }
-        catch {
-            // A complete prior version is more useful than a blank vocabulary.
-            // Never overwrite the damaged primary while recovery is in effect.
-            if let backup = try? Self.readDocument(at: backupURL) {
-                document = backup
-                recoveryMessage = "Vocabulary was restored from its last complete backup."
-            } else {
+        catch let error as VocabularyValidationError {
+            if case let .unsupportedSchemaVersion(version) = error {
+                // A future schema is valid user data, not corruption. Never
+                // replace it with an older backup or permit writes/exports
+                // from a misleading fallback document.
                 document = VocabularyDocument()
-                readOnlyReason = "Vocabulary could not be read. The original file was kept for recovery."
+                readOnlyReason = VocabularyValidationError.unsupportedSchemaVersion(version).localizedDescription
+                return
             }
+            recoverFromBackupOrBecomeReadOnly()
+        }
+        catch {
+            recoverFromBackupOrBecomeReadOnly()
+        }
+    }
+
+    private func recoverFromBackupOrBecomeReadOnly() {
+        // A complete prior version is more useful than a blank vocabulary.
+        // Never overwrite the damaged primary while recovery is in effect.
+        if let backup = try? Self.readDocument(at: backupURL) {
+            document = backup
+            recoveryMessage = "Vocabulary was restored from its last complete backup."
+        } else {
+            document = VocabularyDocument()
+            readOnlyReason = "Vocabulary could not be read. The original file was kept for recovery."
         }
     }
 
@@ -497,8 +555,14 @@ public final class VocabularyStore: @unchecked Sendable {
         let temporary = directory.appendingPathComponent(".vocabulary-\(UUID().uuidString).tmp")
         FileManager.default.createFile(atPath: temporary.path, contents: data, attributes: [.posixPermissions: 0o600])
         let handle = try FileHandle(forWritingTo: temporary); try handle.synchronize(); try handle.close()
-        if FileManager.default.fileExists(atPath: backupURL.path) { try FileManager.default.removeItem(at: backupURL) }
-        if FileManager.default.fileExists(atPath: primaryURL.path) { try FileManager.default.moveItem(at: primaryURL, to: backupURL) }
+        if FileManager.default.fileExists(atPath: primaryURL.path) {
+            if FileManager.default.fileExists(atPath: backupURL.path) {
+                try FileManager.default.removeItem(at: backupURL)
+            }
+            try FileManager.default.moveItem(at: primaryURL, to: backupURL)
+        }
+        // When recovering from a backup-only crash point, leave that sole
+        // complete backup in place until the new primary is installed.
         try FileManager.default.moveItem(at: temporary, to: primaryURL)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: primaryURL.path)
         // `rename` alone does not survive a power loss.  Flush both the named
@@ -593,13 +657,15 @@ public final class VocabularyStore: @unchecked Sendable {
 
 public enum VocabularyImportStrategy: Sendable, Hashable { case mergeByID, replaceAll }
 public struct VocabularyImportPreview: Sendable, Equatable {
-    public let newCount: Int; public let unchangedCount: Int; public let updatedCount: Int; public let disabledCount: Int
+    public let newCount: Int; public let unchangedCount: Int; public let updatedCount: Int
+    public let disabledCount: Int; public let conflictCount: Int
     public let containsURL: Bool; public let sourceToken: String; public let diffs: [VocabularyEntryDiff]
 }
 public struct VocabularyEntryDiff: Sendable, Equatable {
     public let id: UUID; public let old: VocabularyEntry?; public let new: VocabularyEntry?
     public enum Change: Sendable, Equatable { case added, updated, deleted }
     public var change: Change { old == nil ? .added : new == nil ? .deleted : .updated }
+    public var containsURL: Bool { new.map { hasURLScheme($0.written) } ?? false }
 }
 private struct ImportResult { let document: VocabularyDocument; let preview: VocabularyImportPreview }
 
@@ -614,7 +680,6 @@ private func reconcile(local: VocabularyDocument, imported: VocabularyDocument, 
     }
     var result = VocabularyDocument(revision: local.revision, entries: base)
     result.unicodeVersion = imported.unicodeVersion
-    try VocabularyValidator.validate(result)
     let oldByID = Dictionary(uniqueKeysWithValues: local.entries.map { ($0.id, $0) })
     var diffs = base.compactMap { entry -> VocabularyEntryDiff? in
         oldByID[entry.id] == entry ? nil : VocabularyEntryDiff(id: entry.id, old: oldByID[entry.id], new: entry)
@@ -626,12 +691,33 @@ private func reconcile(local: VocabularyDocument, imported: VocabularyDocument, 
     let newCount = diffs.filter { $0.change == .added }.count
     let updatedCount = diffs.filter { $0.change == .updated }.count
     let disabledCount = base.filter { !$0.enabled }.count
-    let hasURL = diffs.contains { diff in
-        guard let value = diff.new?.written else { return false }
-        return value.range(of: #"\b[A-Za-z][A-Za-z0-9+.-]*:"#, options: .regularExpression) != nil
-    }
+    let hasURL = diffs.contains { $0.containsURL }
+    let conflictCount = enabledTriggerConflictCount(in: base)
     let retainedChanges = diffs.filter { $0.new != nil }.count
-    return ImportResult(document: result, preview: VocabularyImportPreview(newCount: newCount, unchangedCount: base.count - retainedChanges, updatedCount: updatedCount, disabledCount: disabledCount, containsURL: hasURL, sourceToken: sourceToken, diffs: diffs))
+    return ImportResult(document: result, preview: VocabularyImportPreview(
+        newCount: newCount,
+        unchangedCount: base.count - retainedChanges,
+        updatedCount: updatedCount,
+        disabledCount: disabledCount,
+        conflictCount: conflictCount,
+        containsURL: hasURL,
+        sourceToken: sourceToken,
+        diffs: diffs
+    ))
+}
+
+private func hasURLScheme(_ value: String) -> Bool {
+    value.range(of: #"\b[A-Za-z][A-Za-z0-9+.-]*:"#, options: .regularExpression) != nil
+}
+
+private func enabledTriggerConflictCount(in entries: [VocabularyEntry]) -> Int {
+    var seen = Set<String>(), conflicts = 0
+    for entry in entries where entry.enabled {
+        for heard in entry.heard {
+            if !seen.insert(VocabularyNormalization.matchKey(heard)).inserted { conflicts += 1 }
+        }
+    }
+    return conflicts
 }
 
 /// Separate, explicit consent for correction aggregates.  This is intentionally

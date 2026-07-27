@@ -32,7 +32,7 @@ final class VocabularyTests: XCTestCase {
         let stock = VocabularyEntry(written: "stock", heard: ["株"])
         XCTAssertEqual(try snapshot([stock]).correct("㈱").renderedText, "㈱")
         let company = VocabularyEntry(written: "company", heard: ["株式会社"])
-        XCTAssertEqual(try snapshot([company]).correct("㍿").renderedText, "㍿")
+        XCTAssertEqual(try snapshot([company]).correct("㍿").renderedText, "company")
         XCTAssertEqual(try snapshot([stock]).correct("㍿").renderedText, "㍿")
         let cafe = VocabularyEntry(written: "Café", heard: ["café"])
         XCTAssertEqual(try snapshot([cafe]).correct("cafe\u{301}").renderedText, "Café")
@@ -131,6 +131,14 @@ final class VocabularyTests: XCTestCase {
         let backupOnly = try VocabularyStore(directoryURL: directory)
         XCTAssertEqual(backupOnly.currentDocument().entries.map(\.written), ["First"])
         XCTAssertNotNil(backupOnly.recoveryMessage)
+        try backupOnly.upsert(VocabularyEntry(written: "Recovered save", heard: ["recovered save"]))
+        let backup = directory.appendingPathComponent(VocabularyStore.defaultFilename + ".backup")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path))
+        // A crash immediately after the new primary disappears must still
+        // leave the prior complete backup recoverable.
+        try FileManager.default.removeItem(at: primary)
+        let recoveredAgain = try VocabularyStore(directoryURL: directory)
+        XCTAssertEqual(recoveredAgain.currentDocument().entries.map(\.written), ["First"])
 
         let v1 = directory.appendingPathComponent("v1.json")
         let encoded = #"{"schemaVersion":1,"unicodeVersion":"15.1.0","revision":0,"entries":[]}"#
@@ -148,7 +156,32 @@ final class VocabularyTests: XCTestCase {
         try encoder.encode(VocabularyDocument(entries: [entry])).write(to: file)
         let preview = try store.importDocument(from: file, strategy: .mergeByID)
         XCTAssertTrue(preview.containsURL)
+        XCTAssertTrue(try XCTUnwrap(preview.diffs.first).containsURL)
         XCTAssertThrowsError(try store.applyImport(from: file, strategy: .mergeByID, acknowledgedURLs: false, previewToken: preview.sourceToken))
+    }
+
+    func test_U18_mergeConflictIsPreviewedBeforeApplyIsRejected() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try VocabularyStore(directoryURL: directory)
+        try store.upsert(VocabularyEntry(written: "Local", heard: ["say mark"]))
+
+        let imported = VocabularyEntry(written: "Imported", heard: ["Say Mark"])
+        let file = directory.appendingPathComponent("conflict.json")
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(VocabularyDocument(entries: [imported])).write(to: file)
+
+        let preview = try store.importDocument(from: file, strategy: .mergeByID)
+        XCTAssertEqual(preview.conflictCount, 1)
+        XCTAssertEqual(preview.newCount, 1)
+        XCTAssertThrowsError(
+            try store.applyImport(
+                from: file,
+                strategy: .mergeByID,
+                acknowledgedURLs: false,
+                previewToken: preview.sourceToken
+            )
+        )
     }
 
     func test_S09_importReaderRejectsMoreThanFiveMiB() throws {
@@ -221,13 +254,18 @@ final class VocabularyTests: XCTestCase {
 
     func test_I01_actualUtteranceRuntimeUsesAsyncWholeHypothesisPipeline() throws {
         let base = StubCorrectionSession()
-        let session = CorrectingUtteranceSession(base: base, snapshot: try snapshot([
-            VocabularyEntry(written: "Saymark", heard: ["say mark"])
-        ]))
+        let delivered = expectation(description: "completion-driven correction")
+        let session = CorrectingUtteranceSession(
+            base: base,
+            snapshot: try snapshot([VocabularyEntry(written: "Saymark", heard: ["say mark"])]),
+            onDraftCorrection: { _, partial in
+                XCTAssertEqual(partial.renderedText, "Saymark draft")
+                delivered.fulfill()
+            }
+        )
         let immediate = session.step([], shouldProcess: true)
         XCTAssertEqual(immediate.partial, "say mark draft") // STT queue returns without correcting.
-        let deadline = Date().addingTimeInterval(1)
-        while session.latestUpdate.partial.renderedText != "Saymark draft", Date() < deadline { usleep(1_000) }
+        wait(for: [delivered], timeout: 1)
         XCTAssertEqual(session.latestUpdate.partial.renderedText, "Saymark draft")
         XCTAssertEqual(session.latestUpdate.partial.rawText, "say mark draft")
         XCTAssertEqual(session.finishText(), "Saymark final")
@@ -246,5 +284,25 @@ final class VocabularyTests: XCTestCase {
         let exportMode = try FileManager.default.attributesOfItem(atPath: export.path)[.posixPermissions] as? NSNumber
         XCTAssertEqual((primaryMode?.intValue ?? 0) & 0o777, 0o600)
         XCTAssertEqual((exportMode?.intValue ?? 0) & 0o777, 0o600)
+    }
+
+    func test_S10_futureSchemaNeverFallsBackOrPermitsMutationAndExport() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try VocabularyStore(directoryURL: directory)
+        try original.upsert(VocabularyEntry(written: "Backup", heard: ["backup"]))
+        try original.upsert(VocabularyEntry(written: "Primary", heard: ["primary"]))
+
+        let primary = directory.appendingPathComponent(VocabularyStore.defaultFilename)
+        let future = #"{"schemaVersion":999,"unicodeVersion":"15.1.0","revision":99,"entries":[]}"#
+        let futureData = Data(future.utf8)
+        try futureData.write(to: primary)
+
+        let opened = try VocabularyStore(directoryURL: directory)
+        XCTAssertNotNil(opened.readOnlyReason)
+        XCTAssertTrue(opened.currentDocument().entries.isEmpty)
+        XCTAssertThrowsError(try opened.upsert(VocabularyEntry(written: "No", heard: ["no"])))
+        XCTAssertThrowsError(try opened.export(to: directory.appendingPathComponent("future-export.json")))
+        XCTAssertEqual(try Data(contentsOf: primary), futureData)
     }
 }

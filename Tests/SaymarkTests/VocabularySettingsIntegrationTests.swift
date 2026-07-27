@@ -19,9 +19,18 @@ final class VocabularySettingsIntegrationTests: XCTestCase {
         let model = HUDModel()
         model.correctionStatus = "failedRawFallback"
         model.correctionRevision = 42
+        model.showingFinal = true
+        model.confirmed = "raw final"
+        model.rawTranscript = "raw final"
 
         XCTAssertEqual(model.correctionStatus, "failedRawFallback")
         XCTAssertEqual(model.correctionRevision, 42)
+        XCTAssertTrue(model.showsCorrectionDetails)
+        XCTAssertEqual(
+            model.correctionSummary,
+            "Vocabulary correction was unavailable. Your raw transcript was kept. Vocabulary revision 42."
+        )
+        XCTAssertFalse(model.correctionSummary.contains("failedRawFallback"))
     }
 
     func testPostHogCompletionPayloadCannotDependOnCorrectedTextLength() throws {

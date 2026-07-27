@@ -161,10 +161,22 @@ private struct VocabularyImportPreviewView: View {
             }
             .pickerStyle(.segmented)
             if let preview = model.importPreview {
-                Text("\(preview.newCount) new, \(preview.updatedCount) updated, \(preview.unchangedCount) unchanged, \(preview.disabledCount) disabled")
+                Text("\(preview.newCount) new, \(preview.updatedCount) updated, \(preview.unchangedCount) unchanged, \(preview.disabledCount) disabled, \(preview.conflictCount) conflicts")
+                if preview.conflictCount > 0 {
+                    Label(
+                        "Resolve duplicate “When I say” phrases before importing.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .foregroundStyle(.red)
+                    .accessibilityLabel("\(preview.conflictCount) vocabulary conflicts. Resolve duplicate When I say phrases before importing.")
+                }
                 List(preview.diffs, id: \.id) { diff in
                     VStack(alignment: .leading) {
                         Text(diff.new?.written ?? diff.old?.written ?? "Vocabulary rule")
+                        if diff.containsURL {
+                            Label("Written value contains a URL", systemImage: "link")
+                                .foregroundStyle(.orange)
+                        }
                         switch diff.change {
                         case .added:
                             Text("New rule — When I say: \(diff.new?.heard.joined(separator: ", ") ?? "")").foregroundStyle(.secondary)
@@ -176,6 +188,7 @@ private struct VocabularyImportPreviewView: View {
                                 if old.heard != new.heard { Text("When I say: \(old.heard.joined(separator: ", ")) → \(new.heard.joined(separator: ", "))").foregroundStyle(.secondary) }
                                 if old.kind != new.kind { Text("Kind: \(old.kind.rawValue) → \(new.kind.rawValue)").foregroundStyle(.secondary) }
                                 if old.enabled != new.enabled { Text("Enabled setting will change").foregroundStyle(.secondary) }
+                                if old.createdAt != new.createdAt { Text("Created timestamp will change").foregroundStyle(.secondary) }
                                 if old.updatedAt != new.updatedAt { Text("Modified timestamp will change").foregroundStyle(.secondary) }
                             }
                         }
@@ -194,7 +207,11 @@ private struct VocabularyImportPreviewView: View {
                 Button("Cancel") { model.showImportPreview = false }
                 Spacer()
                 Button("Import") { model.applyImport() }
-                    .disabled((model.importPreview?.containsURL == true && !model.acknowledgedURLs) || (model.importStrategy == .replaceAll && !confirmReplace))
+                    .disabled(
+                        (model.importPreview?.conflictCount ?? 0) > 0
+                            || (model.importPreview?.containsURL == true && !model.acknowledgedURLs)
+                            || (model.importStrategy == .replaceAll && !confirmReplace)
+                    )
             }
         }.padding().frame(width: 540, height: 460)
         .dynamicTypeSize(...DynamicTypeSize.accessibility3)

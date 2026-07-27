@@ -34,6 +34,20 @@ final class HUDModel {
     /// expands and exposes the entire wrapped value in a native scroll view.
     var transcriptLineLimit: Int? { showingFinal ? nil : (presentation ? 6 : 3) }
     var usesScrollableTranscript: Bool { showingFinal }
+    var showsCorrectionDetails: Bool {
+        showingFinal && !rawTranscript.isEmpty &&
+            (rawTranscript != confirmed || correctionStatus == "failedRawFallback")
+    }
+    var correctionSummary: String {
+        switch correctionStatus {
+        case "failedRawFallback":
+            return "Vocabulary correction was unavailable. Your raw transcript was kept. Vocabulary revision \(correctionRevision)."
+        case "corrected":
+            return "Vocabulary correction was applied using revision \(correctionRevision)."
+        default:
+            return "No vocabulary correction was needed. Vocabulary revision \(correctionRevision)."
+        }
+    }
     var transcriptAccessibilityLabel: String {
         [confirmed, partial].filter { !$0.isEmpty }.joined(separator: " ")
     }
@@ -149,9 +163,12 @@ private struct HUDView: View {
         let big = model.presentation
         return VStack(alignment: .leading, spacing: big ? 12 : 9) {
             header
-            if model.showingFinal, !model.rawTranscript.isEmpty, model.rawTranscript != model.confirmed {
-                DisclosureGroup("Raw transcript", isExpanded: Bindable(model).showRawTranscript) {
-                    Text("Correction: \(model.correctionStatus). Vocabulary revision \(model.correctionRevision).")
+            if model.showsCorrectionDetails {
+                DisclosureGroup(
+                    model.correctionStatus == "failedRawFallback" ? "Correction details" : "Raw transcript",
+                    isExpanded: Bindable(model).showRawTranscript
+                ) {
+                    Text(model.correctionSummary)
                         .foregroundStyle(.secondary)
                     Text(model.rawTranscript).textSelection(.enabled)
                     Button("Copy raw transcript") {
@@ -390,6 +407,7 @@ final class HUDController {
         model.shortcutLabel = shortcutLabel
         model.phase = .listening
         model.confirmed = ""; model.partial = ""; model.rawTranscript = ""; model.showRawTranscript = false
+        model.correctionStatus = "unchanged"; model.correctionRevision = 0
         model.recording = true
         model.showingFinal = false
         model.showStop = interactive

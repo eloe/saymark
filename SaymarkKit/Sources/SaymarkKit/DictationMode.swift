@@ -24,12 +24,18 @@ final class CorrectingUtteranceSession: UtteranceSession {
     private let base: UtteranceSession
     private let snapshot: VocabularySnapshot
     private let pipeline: TranscriptCorrectionPipeline
+    private let onDraftCorrection: @Sendable (CorrectedTranscript, CorrectedTranscript) -> Void
     private let updateLock = NSLock()
     private var storedUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript)
     var latestUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript) { updateLock.withLock { storedUpdate } }
 
-    init(base: UtteranceSession, snapshot: VocabularySnapshot) {
-        self.base = base; self.snapshot = snapshot; pipeline = TranscriptCorrectionPipeline(snapshot: snapshot)
+    init(
+        base: UtteranceSession,
+        snapshot: VocabularySnapshot,
+        onDraftCorrection: @escaping @Sendable (CorrectedTranscript, CorrectedTranscript) -> Void = { _, _ in }
+    ) {
+        self.base = base; self.snapshot = snapshot; self.onDraftCorrection = onDraftCorrection
+        pipeline = TranscriptCorrectionPipeline(snapshot: snapshot)
         let empty = CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: snapshot.revision, appliedRuleCount: 0)
         storedUpdate = (empty, empty)
     }
@@ -43,6 +49,7 @@ final class CorrectingUtteranceSession: UtteranceSession {
             guard let self else { return }
             let empty = CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: corrected.snapshotRevision, appliedRuleCount: 0)
             self.updateLock.withLock { self.storedUpdate = (empty, corrected) }
+            self.onDraftCorrection(empty, corrected)
         }
         return raw
     }

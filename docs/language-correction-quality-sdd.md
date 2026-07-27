@@ -446,6 +446,20 @@ explicit per-import URL acknowledgement, and an export warning.  This approval
 authorizes implementation of the UI direction above; it does not authorize
 network learning, cloud sync, or telemetry of vocabulary values.
 
+**Final-review implementation record (2026-07-26):** corrected drafts are
+published from correction completion, not sampled at microphone-chunk
+boundaries. Generation validation and publication are atomic, so superseded
+hypotheses cannot race into the HUD. Normalization precedes pinned UAX #29 word
+breaking and every normalized token retains its complete source provenance;
+full expansions such as `㍿ → 株式会社` can match while partial expansion matches
+remain forbidden. Unknown future schemas keep the primary document untouched
+and make edit/export read-only rather than falling back to an older backup. A
+backup-only recovery remains in place until a replacement primary is durably
+installed. Raw-final correction failure is visible even when raw and rendered
+text are identical, using user-facing copy rather than an internal enum.
+Import review reports conflict count, per-entry URL flags, and created/modified
+timestamp changes; conflicts are previewable but block apply.
+
 | Decision needing approval | Minimum mockup |
 | --- | --- |
 | Vocabulary settings information architecture, list density, terminology, and one-section choice. | **Approved:** one Vocabulary section with native empty, populated/search, and add/edit states. |
@@ -560,7 +574,7 @@ PR/release evidence.
 | I-09 | Future selected-language adapter contract | Fails closed unless both draft/final support and fixture validation are declared. |
 | I-10 | Model-native bias adapter unavailable | Post-ASR rules still work; UI/API does not claim model biasing. |
 | I-11 | Nemotron fallback with `foo -> bar`, `bar -> baz` | `final_source == nemotron_fallback` corrects raw `foo` once to `bar`, never `baz`. |
-| I-12 | Draft arrival exceeds correction throughput | Latest draft supersedes pending work; no backlog or out-of-order publication. |
+| I-12 | Draft arrival exceeds correction throughput | Latest draft supersedes pending work; completion publishes without waiting for another audio chunk; generation check/publication is atomic; no backlog or out-of-order publication. |
 | I-13 | Final correction fails after corrected draft | Raw final is shown/inserted with content-free error signal. |
 
 ### UI and accessibility tests (after approval)
@@ -572,8 +586,8 @@ PR/release evidence.
 | UI-03 | Rule preview and conflict | Preview is deterministic; save is blocked with an accessible conflict message. |
 | UI-04 | Keyboard-only traversal | All list/editor/preview/import controls reachable, ordered, and operable. |
 | UI-05 | VoiceOver | Labels distinguish written output from heard-as aliases; errors announced once. |
-| UI-06 | Corrected final and raw fallback | User can identify/copy the intended text without ambiguity. |
-| UI-07 | Import preview/cancel/merge/replace | Counts, per-entry diffs, URL acknowledgement, and destructive confirmation match the approved mockup; cancel changes nothing. |
+| UI-06 | Corrected final and raw fallback | User can identify/copy the intended text without ambiguity; failed raw fallback remains visible when raw equals rendered and exposes no internal enum name. |
+| UI-07 | Import preview/cancel/merge/replace | New/updated/unchanged/disabled/conflict counts, created/modified/kind/value diffs, per-entry URL flags, URL acknowledgement, and destructive confirmation match the approved mockup; conflicts are reviewable but block apply; cancel changes nothing. |
 | UI-08 | Dynamic Type, contrast, reduced motion | No clipped values or color-only validation; no new distracting animation. |
 | UI-09 | Language truth | `AUTO` is absent; `EN` or no badge matches the approved mockup, no unsupported language appears selectable/detected, and no label comes from model output. |
 
