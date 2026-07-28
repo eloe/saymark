@@ -23,6 +23,6 @@ fi
 
 shellcheck "${bash_scripts[@]}"
 
-Scripts/check-codeql-classifier.sh
+Scripts/check-codeql-policy.sh
 
 printf 'ci-config: PASS (%d Bash scripts)\n' "${#bash_scripts[@]}"
