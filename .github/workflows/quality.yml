@@ -80,6 +80,9 @@ jobs:
       - name: Generated architecture agreement
         run: node Scripts/generate-architecture-map.mjs --check
 
+      - name: Live insertion policy boundary
+        run: Scripts/check-live-insertion-policy-boundary.sh
+
   swift:
     name: Swift core and app tests
     runs-on: macos-26

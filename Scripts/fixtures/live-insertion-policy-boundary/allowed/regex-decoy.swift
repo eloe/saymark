@@ -1,0 +1,1 @@
+let importPattern = { /import Foundation/ }
