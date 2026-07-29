@@ -214,3 +214,20 @@ their evidence gates pass.
 | LI-06 | LI-U26…29, LI-U37…39, LI-I13…15, LI-I25, LI-S03…06 | B-04, telemetry review |
 | LI-07 | LI-U17…21, LI-U42, LI-I09…12 | Real-app certification |
 | LI-08 | LI-U22…25, LI-U38, LI-U40…41, LI-U44, LI-R01…03, LI-S07 | B-05 and policy boundary gate |
+
+## Recording evidence
+
+The release evidence recording is
+[`videos/live-insertion-evidence.mp4`](videos/live-insertion-evidence.mp4).
+It shows the focused policy and clipboard-restoration tests passing, followed
+by the native DEBUG daily-driver integration host executing the production
+atomic final-delivery path: the complete final transcript is delivered exactly
+once and the original clipboard is restored. A recording-only on-screen trigger
+invoked the same deterministic key-down/key-up path because macOS rejected
+synthetic global keystrokes from the capture process; that trigger was removed
+before commit.
+
+This recording is intentionally **not** evidence that cross-application partial
+live insertion ships. Slice 1 remains fail-closed, external provisional
+mutation remains denied, and Slices 2–5 remain blocked by the evidence gates
+above.
