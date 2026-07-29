@@ -2,11 +2,13 @@ name: CodeQL
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "saymark-v*"
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   schedule:
     - cron: "31 14 * * 2"
   workflow_dispatch:
@@ -20,7 +22,7 @@ concurrency:
 
 jobs:
   classify:
-    name: Classify CodeQL scope
+    name: Select CodeQL policy
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -28,65 +30,28 @@ jobs:
       query_suite: ${{ steps.scope.outputs.query_suite }}
       run_codeql: ${{ steps.scope.outputs.run_codeql }}
     steps:
-      - name: Check out complete history
+      - name: Check out policy helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-      - name: Select scan depth from the event and changed paths
+      - name: Select scan from the event and pull-request policy
         id: scope
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CODEQL_REQUIRED: ${{ contains(github.event.pull_request.labels.*.name, 'codeql-required') }}
           EVENT_NAME: ${{ github.event_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GIT_REF: ${{ github.ref }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
-          if [[ "$EVENT_NAME" == "pull_request" && "$PR_DRAFT" == "true" ]]; then
-            {
-              echo "draft_deferred=true"
-              echo "run_codeql=false"
-              echo "query_suite=default"
-            } >> "$GITHUB_OUTPUT"
-            echo "Skipping traced Swift build while the pull request is a draft."
-            exit 0
-          fi
+          Scripts/select-codeql-policy.sh \
+            "$EVENT_NAME" "$GIT_REF" "$PR_DRAFT" "$CODEQL_REQUIRED" \
+            >> "$GITHUB_OUTPUT"
 
-          echo "draft_deferred=false" >> "$GITHUB_OUTPUT"
-
-          if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            {
-              echo "run_codeql=true"
-              echo "query_suite=security-extended"
-            } >> "$GITHUB_OUTPUT"
-            echo "Full extended scan required for $EVENT_NAME."
-            exit 0
-          fi
-
-          echo "query_suite=default" >> "$GITHUB_OUTPUT"
-          git cat-file -e "${BASE_SHA}^{commit}"
-          git cat-file -e "${HEAD_SHA}^{commit}"
-          git diff --name-only -z "$BASE_SHA...$HEAD_SHA" \
-            > "$RUNNER_TEMP/codeql-changed-paths"
-
-          run_codeql=false
-          while IFS= read -r -d '' path; do
-            if Scripts/codeql-path-is-relevant.sh "$path"; then
-              echo "CodeQL-relevant change: $path"
-              run_codeql=true
-            fi
-          done < "$RUNNER_TEMP/codeql-changed-paths"
-
-          echo "run_codeql=$run_codeql" >> "$GITHUB_OUTPUT"
-          if [[ "$run_codeql" == "false" ]]; then
-            echo "Skipping traced Swift build: no Swift or build inputs changed."
-          fi
-
-  analyze:
-    name: Swift security analysis
+  gate:
+    name: CodeQL policy gate
     needs: classify
-    if: needs.classify.outputs.run_codeql == 'true'
-    runs-on: macos-26
+    if: always()
+    runs-on: ${{ needs.classify.outputs.run_codeql == 'true' && 'macos-26' || 'ubuntu-24.04' }}
     timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
@@ -94,18 +59,39 @@ jobs:
       contents: read
       security-events: write
     steps:
+      - name: Require the fast pull-request policy
+        if: needs.classify.outputs.run_codeql != 'true'
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          DRAFT_DEFERRED: ${{ needs.classify.outputs.draft_deferred }}
+        run: |
+          [[ "$CLASSIFY_RESULT" == "success" ]] ||
+            { echo "CodeQL policy selection failed." >&2; exit 1; }
+
+          if [[ "$DRAFT_DEFERRED" == "true" ]]; then
+            echo "The codeql-required scan is deferred while this pull request is a draft." >&2
+            echo "Mark the pull request ready for review to run the required scan." >&2
+            exit 1
+          fi
+
+          echo "Pull-request CodeQL correctly deferred to the post-merge main scan."
+
       - name: Check out source
+        if: needs.classify.outputs.run_codeql == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install pinned tools
+        if: needs.classify.outputs.run_codeql == 'true'
         uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
 
       - name: Verify the pinned Apple toolchain
+        if: needs.classify.outputs.run_codeql == 'true'
         run: Scripts/check-xcode-version.sh 26.5 17F42
 
       - name: Generate the local project
+        if: needs.classify.outputs.run_codeql == 'true'
         env:
           TUIST_SAYMARK_LOCAL_BUILD: "1"
           TUIST_APP_VERSION: "0.1.1"
@@ -116,6 +102,7 @@ jobs:
       # MLX Swift dependency compiles Metal sources. Install it before CodeQL
       # enables its DYLD tracer so xcodebuild's component action is untraced.
       - name: Install the Metal toolchain
+        if: needs.classify.outputs.run_codeql == 'true'
         run: xcodebuild -downloadComponent MetalToolchain
 
       # Xcode 26 ships `metal` as a shim that discovers a separately mounted
@@ -124,6 +111,7 @@ jobs:
       # so discovery itself is not slowed by the tracer. The generated shim
       # still removes the tracer only from Metal; Swift remains traced.
       - name: Make the mounted Metal compiler available to the traced build
+        if: needs.classify.outputs.run_codeql == 'true'
         run: |
           real_metal="$(
             find /var/run/com.apple.security.cryptexd/mnt \
@@ -145,14 +133,14 @@ jobs:
       # input is only for additional suites, so omit it entirely on pull
       # requests instead of passing the unsupported string "default".
       - name: Initialize CodeQL with the default query suite
-        if: needs.classify.outputs.query_suite == 'default'
+        if: needs.classify.outputs.run_codeql == 'true' && needs.classify.outputs.query_suite == 'default'
         uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           languages: swift
           build-mode: manual
 
       - name: Initialize CodeQL with the extended query suite
-        if: needs.classify.outputs.query_suite == 'security-extended'
+        if: needs.classify.outputs.run_codeql == 'true' && needs.classify.outputs.query_suite == 'security-extended'
         uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           languages: swift
@@ -160,6 +148,7 @@ jobs:
           queries: security-extended
 
       - name: Build traced Swift
+        if: needs.classify.outputs.run_codeql == 'true'
         run: |
           xcodebuild build \
             -workspace Saymark.xcworkspace \
@@ -177,39 +166,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO
 
       - name: Analyze
+        if: needs.classify.outputs.run_codeql == 'true'
         uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           category: /language:swift
-
-  gate:
-    name: CodeQL policy gate
-    needs: [classify, analyze]
-    if: always()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Require the selected CodeQL policy
-        env:
-          ANALYZE_RESULT: ${{ needs.analyze.result }}
-          CLASSIFY_RESULT: ${{ needs.classify.result }}
-          DRAFT_DEFERRED: ${{ needs.classify.outputs.draft_deferred }}
-          RUN_CODEQL: ${{ needs.classify.outputs.run_codeql }}
-        run: |
-          [[ "$CLASSIFY_RESULT" == "success" ]] ||
-            { echo "CodeQL scope classification failed." >&2; exit 1; }
-
-          if [[ "$DRAFT_DEFERRED" == "true" ]]; then
-            echo "CodeQL analysis is deferred while this pull request is a draft." >&2
-            echo "Mark the pull request ready for review to run the required scan." >&2
-            exit 1
-          fi
-
-          if [[ "$RUN_CODEQL" == "true" ]]; then
-            [[ "$ANALYZE_RESULT" == "success" ]] ||
-              { echo "Required Swift CodeQL analysis did not succeed." >&2; exit 1; }
-            echo "Required Swift CodeQL analysis succeeded."
-          else
-            [[ "$ANALYZE_RESULT" == "skipped" ]] ||
-              { echo "Unexpected CodeQL result for a skipped scan: $ANALYZE_RESULT" >&2; exit 1; }
-            echo "Swift CodeQL correctly skipped: no Swift or build inputs changed."
-          fi
