@@ -55,7 +55,8 @@ public struct SaymarkDiagnosticsConfiguration: Sendable {
 
 /// Privacy-safe, machine-readable diagnostics used by both the app and SaymarkKit.
 /// Callers must never put audio, transcript text, clipboard data, or selected text
-/// in `fields`. Character/word counts and timing measurements are safe.
+/// in `fields`. Transcript-derived exact counts are excluded because they can
+/// become content fingerprints; timing and resource measurements are safe.
 public enum SaymarkDiagnostics {
     private static let storage = DiagnosticStorage()
 
@@ -78,6 +79,43 @@ public enum SaymarkDiagnostics {
     ) {
         storage.log(level, event: event, sessionID: sessionID, fields: fields)
     }
+
+    /// The sole diagnostic route for Recent Dictations.  It accepts only closed
+    /// enums and deliberately has no text, record-id, path, search, destination
+    /// or raw-error parameter.
+    public static func logHistoryOperation(
+        _ operation: HistoryDiagnosticOperation,
+        outcome: HistoryDiagnosticOutcome,
+        retention: HistoryRetentionPolicy? = nil,
+        resultCount: Int? = nil,
+        durationMilliseconds: Int? = nil
+    ) {
+        var fields: [String: Any] = [
+            "history_operation": operation.rawValue,
+            "history_outcome": outcome.rawValue,
+        ]
+        if let retention { fields["history_retention"] = retention.rawValue }
+        if let resultCount { fields["history_result_count"] = min(max(resultCount, 0), 25) }
+        if let durationMilliseconds { fields["history_duration_ms"] = min(max(durationMilliseconds, 0), 60_000) }
+        storage.log(.info, event: "history.operation", sessionID: nil, fields: fields)
+    }
+}
+
+public enum HistoryDiagnosticOperation: String, Sendable {
+    case insert, query, delete, clear, purge
+    case policyChange = "policy_change"
+}
+
+public enum HistoryDiagnosticOutcome: String, Sendable {
+    case success, unavailable, corrupt
+    case migrationFailed = "migration_failed"
+    case permissionDenied = "permission_denied"
+    case busy
+    case ioFailed = "io_failed"
+    case unsupportedFilesystem = "unsupported_filesystem"
+    case deadlineExceeded = "deadline_exceeded"
+    case cleanupIncomplete = "cleanup_incomplete"
+    case recordTooLarge = "record_too_large"
 }
 
 private final class DiagnosticStorage: @unchecked Sendable {
@@ -88,27 +126,29 @@ private final class DiagnosticStorage: @unchecked Sendable {
         "accessibility_granted", "accessibility_trusted", "asr_ms",
         "asr_step_max_ms", "asr_step_p50_ms", "asr_step_p95_ms",
         "asr_stream_compute_ms", "audio_seconds", "available", "behavior",
-        "build", "bundle_id", "character_count", "compute_rtf",
-        "configured_level", "confirmed_characters", "conversion_error_count",
-        "count", "cpu_percent", "destination", "draft_empty", "draft_word_count",
+        "build", "bundle_id", "compute_rtf",
+        "configured_level", "conversion_error_count",
+        "count", "cpu_percent", "destination", "draft_empty",
         "duration_ms", "duration_seconds", "error_type", "fallback", "fed",
         "fed_audio_seconds", "fed_chunks", "feed_interval_ms", "feed_samples",
-        "final_source", "final_word_count", "finish_compute_ms", "from_mode",
-        "gated_chunks", "granted", "input_buffer_count", "input_channels",
+        "final_source", "finish_compute_ms", "from_mode",
+        "gated_chunks", "granted", "history_duration_ms", "history_operation",
+        "history_outcome", "history_result_count", "history_retention",
+        "input_buffer_count", "input_channels",
         "input_chunks", "input_sample_rate", "insert_mode", "interval_seconds",
         "is_empty", "lane", "language", "latency_ms", "level", "log_level",
         "max_file_bytes", "mlx_active_bytes", "mlx_cache_bytes", "mlx_peak_bytes",
-        "mode", "model_mode", "nemotron_loaded", "normalized_word_distance",
-        "os_version", "outcome", "parakeet_empty", "parakeet_loaded", "partial_characters",
+        "mode", "model_mode", "nemotron_loaded",
+        "os_version", "outcome", "parakeet_empty", "parakeet_loaded",
         "peak_rms", "physical_footprint_bytes", "physical_memory_bytes",
         "queue_wait_max_ms", "queue_wait_ms", "queue_wait_p95_ms", "reason",
-        "recording_wall_ms", "repository", "resident_bytes", "result_characters",
-        "result_empty", "result_words", "reused", "revision", "sample_count",
+        "recording_wall_ms", "repository", "resident_bytes",
+        "result_empty", "reused", "revision", "sample_count",
         "samples", "source", "state", "step_index", "stop_to_complete_ms",
         "success", "system_cpu_seconds", "target_sample_rate", "to_mode",
         "total_gb", "trigger_mode", "ui_testing", "user_cpu_seconds",
         "vad_available", "vad_enabled", "vad_ms", "vad_p95_ms", "verification",
-        "version", "warmup_ms", "word_count", "word_edit_distance",
+        "version", "warmup_ms",
     ]
 
     private let queue = DispatchQueue(label: "saymark.diagnostics", qos: .utility)
@@ -144,6 +184,9 @@ private final class DiagnosticStorage: @unchecked Sendable {
         fields: [String: Any]
     ) {
         guard isEnabled(messageLevel) else { return }
+        // Do not permit a similarly named dynamic event to inherit the normal
+        // logger's broad metrics vocabulary.  History diagnostics are closed.
+        if event.hasPrefix("history") && !Self.isClosedHistoryEvent(event, fields: fields) { return }
 
         var object: [String: Any] = [
             "schema": 1,
@@ -153,9 +196,9 @@ private final class DiagnosticStorage: @unchecked Sendable {
             "event": event,
             "pid": ProcessInfo.processInfo.processIdentifier,
         ]
-        if let sessionID { object["session_id"] = sessionID }
+        if let sessionID, Self.isOpaqueSessionID(sessionID) { object["session_id"] = sessionID }
         for (key, value) in fields
-        where Self.allowedFieldNames.contains(key) && Self.isJSONScalar(value) {
+        where Self.allowedFieldNames.contains(key) && Self.isSafeFieldValue(value, for: key) {
             object[key] = value
         }
         guard JSONSerialization.isValidJSONObject(object),
@@ -174,6 +217,34 @@ private final class DiagnosticStorage: @unchecked Sendable {
 
         let data = encoded + Data([0x0A])
         queue.async { [weak self] in self?.append(data) }
+    }
+
+    private static func isClosedHistoryEvent(_ event: String, fields: [String: Any]) -> Bool {
+        guard event == "history.operation",
+              Set(fields.keys).isSubset(of: [
+                "history_operation", "history_outcome", "history_retention",
+                "history_result_count", "history_duration_ms",
+              ]),
+              fields["history_operation"] != nil,
+              fields["history_outcome"] != nil,
+              let operation = fields["history_operation"] as? String,
+              let outcome = fields["history_outcome"] as? String
+        else { return false }
+        guard HistoryDiagnosticOperation(rawValue: operation) != nil,
+              HistoryDiagnosticOutcome(rawValue: outcome) != nil
+        else { return false }
+        if let retention = fields["history_retention"] {
+            guard let retention = retention as? String,
+                  HistoryRetentionPolicy(rawValue: retention) != nil
+            else { return false }
+        }
+        if let resultCount = fields["history_result_count"] {
+            guard let resultCount = resultCount as? Int, (0...25).contains(resultCount) else { return false }
+        }
+        if let duration = fields["history_duration_ms"] {
+            guard let duration = duration as? Int, (0...60_000).contains(duration) else { return false }
+        }
+        return true
     }
 
     private func prepareFile(_ configuration: SaymarkDiagnosticsConfiguration) {
@@ -221,8 +292,69 @@ private final class DiagnosticStorage: @unchecked Sendable {
         manager.createFile(atPath: configuration.fileURL.path, contents: nil)
     }
 
-    private static func isJSONScalar(_ value: Any) -> Bool {
-        value is String || value is NSNumber || value is Bool || value is Int ||
-            value is Int64 || value is Double || value is Float
+    /// String-valued diagnostics are a separate privacy boundary. A field-name
+    /// allowlist alone still lets a caller put transcript-like data in `reason`,
+    /// `state`, or `destination`; these values are closed enums or bounded,
+    /// non-content identifiers. Numbers and booleans remain safe metrics.
+    private static func isSafeFieldValue(_ value: Any, for key: String) -> Bool {
+        guard let string = value as? String else {
+            return value is NSNumber || value is Bool || value is Int ||
+                value is Int64 || value is Double || value is Float
+        }
+        let closedValues: [String: Set<String>] = [
+            "reason": ["already_preparing", "dictation_disabled", "dictation_in_flight", "models_not_ready", "accessibility_not_trusted", "secure_input", "paste_failed"],
+            "state": ["idle", "recording", "transcribing", "transcribed", "error"],
+            "outcome": ["inserted", "copied_accessibility", "insertion_failed", "pending", "success", "failure"],
+            "destination": ["onboarding", "menu"],
+            "mode": ["accurate", "fast", "hybrid"],
+            "model_mode": ["accurate", "fast", "hybrid"],
+            "trigger_mode": ["hold", "toggle"],
+            "insert_mode": ["in_field", "hud_only"],
+            "lane": ["nemotron", "parakeet"],
+            "final_source": ["nemotron", "parakeet", "hybrid"],
+            "log_level": ["off", "error", "warn", "info", "debug", "trace"],
+            "configured_level": ["off", "error", "warn", "info", "debug", "trace"],
+            "language": ["auto", "en"],
+            "history_operation": Set(HistoryDiagnosticOperation.allRawValues),
+            "history_outcome": Set(HistoryDiagnosticOutcome.allRawValues),
+            "history_retention": Set(HistoryRetentionPolicy.allCases.map(\.rawValue)),
+        ]
+        if let values = closedValues[key] { return values.contains(string) }
+        switch key {
+        case "bundle_id":
+            return string == "com.eloe.saymark"
+        case "error_type":
+            // Stable category names only; localized errors and paths are never
+            // diagnostic values.
+            return ["Error", "NSError", "CancellationError", "HistoryStoreError"].contains(string)
+        case "repository":
+            return string.hasPrefix("mlx-community/") && string.count <= 120 && string.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "/" || $0 == "." }
+        case "version", "build":
+            return string.count <= 32 && string.allSatisfy { $0.isNumber || $0 == "." || $0 == "-" }
+        case "os_version":
+            return string.hasPrefix("Version ") && string.count <= 80 && string.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7F }
+        default:
+            return false
+        }
+    }
+
+    private static func isOpaqueSessionID(_ value: String) -> Bool {
+        UUID(uuidString: value) != nil
+    }
+}
+
+private extension HistoryDiagnosticOperation {
+    static var allRawValues: [String] {
+        [Self.insert, .query, .delete, .clear, .purge, .policyChange].map(\.rawValue)
+    }
+}
+
+private extension HistoryDiagnosticOutcome {
+    static var allRawValues: [String] {
+        [
+            Self.success, .unavailable, .corrupt, .migrationFailed,
+            .permissionDenied, .busy, .ioFailed, .unsupportedFilesystem,
+            .deadlineExceeded, .cleanupIncomplete, .recordTooLarge,
+        ].map(\.rawValue)
     }
 }

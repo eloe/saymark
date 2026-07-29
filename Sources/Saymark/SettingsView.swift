@@ -6,7 +6,12 @@ import SwiftUI
 /// Saymark's preferences window (a SwiftUI `Settings` scene): the push-to-talk
 /// shortcut and where the transcript goes on release.
 struct SettingsView: View {
+    private let historyController = RecentDictationsController.shared
     @AppStorage(InsertMode.defaultsKey) private var insertModeRaw = InsertMode.inField.rawValue
+    @State private var historyRetentionRaw = RecentDictationsRetention.off.rawValue
+    @State private var pendingHistoryRetention: RecentDictationsRetention?
+    @State private var showingRetentionConfirmation = false
+    @State private var showingClearConfirmation = false
     @AppStorage(AnalyticsConsent.key) private var analyticsEnabled = false
     @AppStorage(DiagnosticLogSetting.key) private var logLevelRaw = DiagnosticLogSetting.defaultLevel.name
 
@@ -30,6 +35,29 @@ struct SettingsView: View {
                 Text("Insert")
             } footer: {
                 Text("“HUD only” never types into other apps — it shows live subtitles in the HUD, handy for presentations and demos.")
+            }
+
+            Section {
+                Picker("Keep recent dictations", selection: $historyRetentionRaw) {
+                    ForEach(RecentDictationsRetention.allCases) { retention in
+                        Text(retention.label).tag(retention.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Button("Clear Recent Dictations") {
+                    showingClearConfirmation = true
+                }
+                .disabled(!historyController.isStartupComplete || historyController.activeRetention == .off)
+            } header: {
+                Text("Recent Dictations")
+            } footer: {
+                Text("Off is the default. When enabled, Saymark keeps final text only on this Mac—never audio, secure-input dictation, or HUD-only sessions. 30 days is recommended after you choose to enable history. Clearing removes Saymark’s current local store; it cannot erase earlier backups or snapshots.")
+            }
+            .disabled(!historyController.isStartupComplete)
+            .onChange(of: historyRetentionRaw) { _, rawValue in
+                let policy = RecentDictationsRetention(rawValue: rawValue) ?? .off
+                chooseRetention(policy)
             }
 
             if AnalyticsConsent.isAvailable {
@@ -82,8 +110,81 @@ struct SettingsView: View {
 
             VocabularySettingsSection()
         }
+        .onAppear {
+            historyRetentionRaw = historyController.activeRetention.rawValue
+        }
+        .onChange(of: historyController.activeRetention) { _, value in
+            historyRetentionRaw = value.rawValue
+        }
         .formStyle(.grouped)
         .frame(width: 420)
         .frame(minHeight: 430)
+        .confirmationDialog(
+            "Update Recent Dictations retention?",
+            isPresented: $showingRetentionConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Continue") {
+                if let pendingHistoryRetention { applyRetention(pendingHistoryRetention) }
+                pendingHistoryRetention = nil
+            }
+            Button("Keep Current Setting", role: .cancel) { pendingHistoryRetention = nil }
+        } message: {
+            Text(retentionConfirmationMessage)
+        }
+        .confirmationDialog(
+            "Clear Recent Dictations?",
+            isPresented: $showingClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear History", role: .destructive) { RecentDictationsController.shared.clearHistory() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes dictations from Saymark’s current local history store.")
+        }
+    }
+
+    private func chooseRetention(_ proposed: RecentDictationsRetention) {
+        let current = historyController.activeRetention
+        guard proposed != current else { return }
+        if current == .off || proposed.deletesExistingHistory(comparedWith: current) {
+            pendingHistoryRetention = proposed
+            historyRetentionRaw = current.rawValue
+            showingRetentionConfirmation = true
+        } else {
+            applyRetention(proposed)
+        }
+    }
+
+    private func applyRetention(_ retention: RecentDictationsRetention) {
+        Task {
+            let didCommit = await RecentDictationsController.shared.setRetention(retention)
+            historyRetentionRaw = didCommit ? retention.rawValue : historyController.activeRetention.rawValue
+        }
+    }
+
+    private var retentionConfirmationMessage: String {
+        if let pendingHistoryRetention,
+           pendingHistoryRetention.deletesExistingHistory(comparedWith: historyController.activeRetention) {
+            return "Changing to this retention period immediately deletes dictations that no longer fit. This cannot erase backups or snapshots made outside Saymark."
+        }
+        return "Saymark will keep final dictation text only on this Mac. It never keeps audio, secure-input dictation, or HUD-only sessions."
+    }
+}
+
+private extension RecentDictationsRetention {
+    func deletesExistingHistory(comparedWith current: Self) -> Bool {
+        if self == .off || self == .session { return current != self }
+        func rank(_ value: Self) -> Int {
+            switch value {
+            case .session: return 0
+            case .days7: return 7
+            case .days30: return 30
+            case .days90: return 90
+            case .untilDeleted: return .max
+            case .off: return -1
+            }
+        }
+        return rank(self) < rank(current)
     }
 }

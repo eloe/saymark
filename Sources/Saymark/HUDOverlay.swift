@@ -24,6 +24,8 @@ final class HUDModel {
     var shortcutLabel = "⌃⌥Space"
     var errorTitle = "No microphone access"
     var errorText = "Open Privacy in Settings →"
+    var recoveryActionTitle: String?
+    var onRecoveryAction: () -> Void = {}
     var presentation = false      // HUD-only / subtitles
     var recording = false
     var showingFinal = false
@@ -259,6 +261,13 @@ private struct HUDView: View {
                     .foregroundStyle(scheme == .dark ? Color.white.opacity(0.95) : SaymarkTheme.ink)
                 Text(model.errorText).font(.system(size: 11.5))
                     .foregroundStyle(scheme == .dark ? Color.white.opacity(0.55) : SaymarkTheme.ink.opacity(0.6))
+                if let title = model.recoveryActionTitle {
+                    Button(title, action: model.onRecoveryAction)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(SaymarkTheme.accent)
+                        .padding(.top, 4)
+                }
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
@@ -416,6 +425,8 @@ final class HUDController {
         model.showingFinal = false
         model.showStop = interactive
         model.onStop = onStop
+        model.recoveryActionTitle = nil
+        model.onRecoveryAction = {}
         panel.ignoresMouseEvents = !interactive
         position(panel)
         animator.show(panel)
@@ -479,12 +490,29 @@ final class HUDController {
         model.recording = false
         model.showingFinal = false
         model.showStop = false
+        model.recoveryActionTitle = nil
+        model.onRecoveryAction = {}
         halo.dismiss()
         isListeningHaloVisible = false
         completesWithHalo = false
         position(panel)
         animator.show(panel)
         scheduleHide(after: delay)
+    }
+
+    /// Failure recovery is opt-in and only offered after a final row committed.
+    /// The action contains no transcript text and is never used for protected
+    /// fields, HUD-only dictation, History Off, or a deadline miss.
+    func offerRecentDictationsRecovery(_ action: @escaping () -> Void) {
+        guard model.phase == .error, panel != nil else { return }
+        hideWork?.cancel()
+        model.recoveryActionTitle = "Open Recent Dictations"
+        model.onRecoveryAction = { [weak self] in
+            action()
+            self?.panel?.orderOut(nil)
+        }
+        panel?.ignoresMouseEvents = false
+        scheduleHide(after: 7.0)
     }
 
     /// Show the final text, then fade — lingering longer in presentation mode.

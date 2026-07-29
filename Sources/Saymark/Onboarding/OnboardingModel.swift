@@ -308,9 +308,7 @@ final class OnboardingModel {
                 let wasFirst = !self.flow.didTry
                 self.flow.didTry = self.flow.didTry || !final.isEmpty   // monotonic: one success is enough
                 if wasFirst && !final.isEmpty {
-                    PostHogSDK.shared.capture("try_it_completed", properties: [
-                        "word_count": final.split(separator: " ").count,
-                    ])
+                    PostHogSDK.shared.capture("try_it_completed")
                 }
                 if completesWithHalo, !final.isEmpty {
                     self.tryHalo.complete()
