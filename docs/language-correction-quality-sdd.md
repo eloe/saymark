@@ -690,6 +690,10 @@ decisions:
   working raw-copy action. Listening remains click-through in Hold mode, while
   Start/Stop mode retains only its approved Stop interaction.
 
-The feature video is evidence for the approved native settings surface and
-named hosted behavior checks only. It is not evidence for full end-to-end model
-accuracy, VoiceOver manual acceptance, or live field insertion.
+The feature video at
+[`videos/vocabulary-language-correction-evidence.mp4`](videos/vocabulary-language-correction-evidence.mp4)
+is a real screen recording of six passing focused integration tests followed by
+the native Saymark app adding and saving a “say mark” → “Saymark” vocabulary
+rule. It is evidence for the approved native settings surface and named hosted
+behavior checks only. It is not evidence for full end-to-end model accuracy,
+VoiceOver manual acceptance, or live field insertion.
