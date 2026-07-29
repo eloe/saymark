@@ -131,24 +131,22 @@ make architecture-check
 GitHub additionally runs the full-history Gitleaks scan and tiered CodeQL Swift
 analysis:
 
-- Ready-for-review pull requests that change shipped Swift sources,
-  entitlements, Xcode or Tuist build inputs, dependency manifests and lockfiles,
-  or the CodeQL workflow and query configuration run the high-precision default
-  CodeQL suite.
-- Draft pull requests defer the traced build until `ready_for_review` and fail
-  the required `CodeQL policy gate` quickly so a prior draft result cannot
-  satisfy branch protection after the pull request becomes ready. Test-only
-  Swift changes, documentation, visual assets, unrelated GitHub workflows and
-  actions, Dependabot and Gitleaks configuration, and non-Swift security
-  automation skip the traced build but still pass the required policy gate.
-  The fast repository-policy and secrets checks audit those DevOps changes.
+- Pull requests normally defer the traced Swift build and pass the required
+  `CodeQL policy gate` in seconds. The fast repository-policy, dependency-review,
+  test, and secrets checks remain blocking before merge.
+- Add the `codeql-required` label when a security-sensitive pull request must run
+  the default CodeQL suite before merge. Labeled drafts fail the policy gate
+  until they are marked ready for review.
+- Every merge to `main` runs the default CodeQL suite, so all merged Swift and
+  build changes are analyzed without adding an hour to normal pull-request
+  feedback.
 - Release tags, the weekly schedule, and manual dispatches run the
-  `security-extended` suite. Protected `main` receives only pull-request
-  changes, so it does not repeat the same traced build immediately after merge.
+  `security-extended` suite.
 
-The required branch-protection context is `CodeQL policy gate`, not the
-conditionally skipped `Swift security analysis` context. Keep compiled
-`DerivedData` out of caches so CodeQL observes every compiler invocation.
+The required branch-protection context is `CodeQL policy gate`. Pull requests
+receive that stable context from the fast policy job or, when labeled, from the
+full macOS analysis job. Keep compiled `DerivedData` out of caches so a selected
+CodeQL scan observes every compiler invocation.
 
 ## GitHub repository controls
 
