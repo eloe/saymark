@@ -755,10 +755,14 @@ developer-account tests:
 
 The release evidence walkthrough is
 [`videos/recent-dictations-evidence.mp4`](videos/recent-dictations-evidence.mp4).
-It uses synthetic text and is explicitly labeled as an approved-design and
-engineering-evidence walkthrough, not a live screen recording or private-data
-capture. Its claims are bounded to the 82 passing SaymarkKit tests, 43 passing
-hosted app tests, and Sol High approval recorded for `b037ffc`.
+It is a real screen recording of 17 passing focused integration tests followed
+by the native Saymark app loading three synthetic local records, selecting a
+detail, filtering to one result, and presenting the single-record Delete
+confirmation before safely cancelling. The production Recent Dictations window
+opts out of screen capture; recording used a DEBUG-only capture override that
+was removed before commit. No private dictation data appears in the recording.
+Its claims remain bounded to the recorded behavior and the independently
+reviewed test evidence; it is not proof of live insertion.
 
 ## 10. Claude Opus independent-review package
 
