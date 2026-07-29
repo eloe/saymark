@@ -16,6 +16,59 @@ protocol UtteranceSession {
     func finishText() -> String
 }
 
+/// Keeps correction outside the ASR engines. It owns one immutable snapshot for
+/// an utterance, so settings writes cannot change a visible draft or its final.
+/// The wrapped session always receives and returns raw model text; correction is
+/// applied once at the output boundary and never feeds back into ASR.
+final class CorrectingUtteranceSession: UtteranceSession {
+    private let base: UtteranceSession
+    private let snapshot: VocabularySnapshot
+    private let pipeline: TranscriptCorrectionPipeline
+    private let onDraftCorrection: @Sendable (CorrectedTranscript, CorrectedTranscript) -> Void
+    private let updateLock = NSLock()
+    private var storedUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript)
+    var latestUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript) { updateLock.withLock { storedUpdate } }
+
+    init(
+        base: UtteranceSession,
+        snapshot: VocabularySnapshot,
+        onDraftCorrection: @escaping @Sendable (CorrectedTranscript, CorrectedTranscript) -> Void = { _, _ in }
+    ) {
+        self.base = base; self.snapshot = snapshot; self.onDraftCorrection = onDraftCorrection
+        pipeline = TranscriptCorrectionPipeline(snapshot: snapshot)
+        let empty = CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: snapshot.revision, appliedRuleCount: 0)
+        storedUpdate = (empty, empty)
+    }
+
+    func step(_ samples: [Float], shouldProcess: Bool) -> (confirmed: String, partial: String) {
+        let raw = base.step(samples, shouldProcess: shouldProcess)
+        // Correct the complete current hypothesis on the dedicated latest-wins
+        // worker. No normalization/matching runs synchronously on the STT queue.
+        let whole = raw.confirmed + raw.partial
+        pipeline.submitDraft(whole) { [weak self] corrected in
+            guard let self else { return }
+            let empty = CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: corrected.snapshotRevision, appliedRuleCount: 0)
+            self.updateLock.withLock { self.storedUpdate = (empty, corrected) }
+            self.onDraftCorrection(empty, corrected)
+        }
+        return raw
+    }
+
+    var currentText: (confirmed: String, partial: String) {
+        base.currentText
+    }
+
+    func finishText() -> String {
+        // `base` returns its raw authoritative final. In the empty-Parakeet
+        // fallback this is the raw Nemotron draft, therefore this is exactly one
+        // correction pass and cannot cascade a previously rendered live draft.
+        let final = pipeline.correctFinal(base.finishText())
+        let empty = CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: snapshot.revision, appliedRuleCount: 0)
+        updateLock.withLock { storedUpdate = (final, empty) }
+        return final.renderedText
+    }
+}
+
 /// Two-tier (hybrid) lane: `step` already returns the confirmed/provisional split.
 extension TwoTierSession: UtteranceSession {
     func step(_ samples: [Float], shouldProcess: Bool) -> (confirmed: String, partial: String) {

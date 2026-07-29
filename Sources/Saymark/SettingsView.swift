@@ -107,6 +107,8 @@ struct SettingsView: View {
             } footer: {
                 Text("Machine-readable local logs contain timings, resource measurements, and counts—never audio or transcript text. Trace records each 160 ms processing step.")
             }
+
+            VocabularySettingsSection()
         }
         .onAppear {
             historyRetentionRaw = historyController.activeRetention.rawValue

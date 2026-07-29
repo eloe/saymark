@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Saymark
 
@@ -154,6 +155,48 @@ final class HUDControllerTests: XCTestCase {
         XCTAssertEqual(controller.panel?.frame.height, CGFloat(410))
         XCTAssertFalse(controller.panel?.ignoresMouseEvents ?? true)
         XCTAssertEqual(scheduler.entries.last?.delay, 12.0)
+    }
+
+    func testTypicalCorrectedHoldFinalMakesDisclosureInteractive() {
+        let (controller, scheduler, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        controller.begin(presentation: false, lang: "EN", interactive: false)
+        XCTAssertTrue(controller.panel?.ignoresMouseEvents ?? false)
+
+        controller.finish(
+            "Saymark is ready.",
+            rawText: "say mark is ready.",
+            correctionStatus: "corrected",
+            correctionRevision: 17
+        )
+
+        XCTAssertFalse(controller.model.requiresExpandedFinal)
+        XCTAssertTrue(controller.model.showsCorrectionDetails)
+        XCTAssertTrue(controller.model.allowsFinalInteraction)
+        XCTAssertFalse(controller.panel?.ignoresMouseEvents ?? true)
+        XCTAssertEqual(scheduler.entries.last?.delay, 8.0)
+    }
+
+    func testTypicalFailedRawFallbackHoldFinalMakesDisclosureAndCopyOperable() {
+        let (controller, scheduler, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        controller.begin(presentation: false, lang: "EN", interactive: false)
+        let raw = "say mark could not correct this"
+
+        controller.finish(
+            raw,
+            rawText: raw,
+            correctionStatus: "failedRawFallback",
+            correctionRevision: 18
+        )
+
+        XCTAssertFalse(controller.model.requiresExpandedFinal)
+        XCTAssertTrue(controller.model.showsCorrectionDetails)
+        XCTAssertTrue(controller.model.allowsFinalInteraction)
+        XCTAssertFalse(controller.panel?.ignoresMouseEvents ?? true)
+        XCTAssertEqual(scheduler.entries.last?.delay, 8.0)
+        controller.model.copyRawTranscript()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), raw)
     }
 
     func testNewUtteranceStopsFinalModeAndRestoresCompactNonInteractiveHUD() {
