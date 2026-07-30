@@ -93,6 +93,7 @@ final class DictationController {
     /// reuses it instead of spinning up a second `DictationSession`.
     var dictationSession: DictationSession { session }
     @ObservationIgnored private var promptedAccessibility = false
+    @ObservationIgnored private var insertionLease: FocusedInsertionLease?
     @ObservationIgnored private var isPreparing = false
     @ObservationIgnored private var deferredPreparation = DeferredModelPreparation()
     @ObservationIgnored private var historyEnabledAtStart = false
@@ -349,6 +350,9 @@ final class DictationController {
             return
         }
         let insert = InsertMode.current
+        insertionLease = insert == .inField && Accessibility.isTrusted
+            ? FocusedInsertionLease.capture()
+            : nil
         // History is explicit opt-in at the beginning of the utterance. A later
         // settings change must not retroactively retain speech that began Off.
         let history = RecentDictationsController.shared
@@ -382,6 +386,7 @@ final class DictationController {
                 "insert_mode": insert.rawValue,
             ])
         } catch {
+            insertionLease = nil
             SaymarkDiagnostics.log(.error, "dictation.ui_start_failed", sessionID: session.activeSessionID, fields: [
                 "model_mode": modelMode.rawValue,
                 "error_type": String(reflecting: type(of: error)),
@@ -440,6 +445,7 @@ final class DictationController {
         stopStarted: TimeInterval,
         historyWasEnabledAtStart: Bool
     ) async {
+        defer { insertionLease = nil }
         if final.isEmpty {
             hud.error(
                 title: String(localized: "No speech detected"),
@@ -558,8 +564,20 @@ final class DictationController {
             )
             return .copiedAccessibility
         }
+        guard let insertionLease else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            SaymarkDiagnostics.log(.warn, "dictation.insert_copied", sessionID: sessionID, fields: [
+                "reason": "target_lease_unavailable",
+            ])
+            hud.error(
+                title: String(localized: "Field unavailable"),
+                detail: String(localized: "The transcript was copied — press ⌘V")
+            )
+            return .insertionFailed
+        }
         let started = ProcessInfo.processInfo.systemUptime
-        switch TextInjector.paste(text + " ") {
+        switch TextInjector.paste(text + " ", targetLease: insertionLease) {
         case .pasted:
             SaymarkDiagnostics.log(.info, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "pasted",
@@ -584,6 +602,16 @@ final class DictationController {
             ])
             hud.error(
                 title: String(localized: "Field is protected"),
+                detail: String(localized: "The transcript was copied — press ⌘V")
+            )
+            return .insertionFailed
+        case .copiedTargetChanged:
+            SaymarkDiagnostics.log(.warn, "dictation.insert_completed", sessionID: sessionID, fields: [
+                "outcome": "copied_target_changed",
+                "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
+            ])
+            hud.error(
+                title: String(localized: "Focus changed"),
                 detail: String(localized: "The transcript was copied — press ⌘V")
             )
             return .insertionFailed

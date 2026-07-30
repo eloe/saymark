@@ -18,6 +18,7 @@ public enum TextInjector {
     public enum Result: Sendable, Equatable {
         case pasted              // ⌘V sent into the field; clipboard restored
         case copiedSecureInput   // secure input on → left on the clipboard for manual ⌘V
+        case copiedTargetChanged // intended field/selection no longer owns focus
         case failed              // couldn't synthesize the events
     }
 
@@ -38,12 +39,18 @@ public enum TextInjector {
     /// secure input the text is left on the clipboard (not pasted) so it isn't
     /// lost. Call on the main thread (pasteboard + a short async restore).
     @discardableResult
-    public static func paste(_ text: String) -> Result {
-        paste(
+    public static func paste(_ text: String, targetLease: FocusedInsertionLease? = nil) -> Result {
+        if let targetLease, !targetLease.isCurrent {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return .copiedTargetChanged
+        }
+        return paste(
             text,
             pasteboard: .general,
             secureInputActive: secureInputActive,
             postPaste: postPasteShortcut,
+            targetIsCurrent: { targetLease?.isCurrent ?? true },
             restoreDelay: 0.12,
             onRestore: nil
         )
@@ -61,6 +68,7 @@ public enum TextInjector {
         secureInputActive: Bool = false,
         restoreDelay: TimeInterval = 0.01,
         postPaste: @escaping () -> Bool,
+        targetIsCurrent: @escaping () -> Bool = { true },
         onRestore: @escaping (RestoreResult) -> Void = { _ in }
     ) -> Result {
         paste(
@@ -68,6 +76,7 @@ public enum TextInjector {
             pasteboard: pasteboard,
             secureInputActive: secureInputActive,
             postPaste: postPaste,
+            targetIsCurrent: targetIsCurrent,
             restoreDelay: restoreDelay,
             onRestore: { result in
                 switch result {
@@ -83,6 +92,7 @@ public enum TextInjector {
         pasteboard pb: NSPasteboard,
         secureInputActive: Bool,
         postPaste: () -> Bool,
+        targetIsCurrent: () -> Bool,
         restoreDelay: TimeInterval,
         onRestore: ((RestoreResultShim) -> Void)?
     ) -> Result {
@@ -99,6 +109,7 @@ public enum TextInjector {
         pb.clearContents()
         pb.setString(text, forType: .string)
         let mine = pb.changeCount
+        guard targetIsCurrent() else { return .copiedTargetChanged }
         guard postPaste() else { return .failed }
 
         // Restore once the target has read the pasteboard — but only if nothing
