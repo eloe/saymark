@@ -89,6 +89,39 @@ final class TextInjectorTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
     }
 
+    func testConcealedAndTransientItemsAreNeverRepublished() async {
+        for markerName in [
+            "org.nspasteboard.ConcealedType",
+            "org.nspasteboard.TransientType",
+        ] {
+            let pasteboard = makePasteboard()
+            let markedItem = NSPasteboardItem()
+            markedItem.setString("nonpersistent-fixture", forType: .string)
+            markedItem.setData(Data(), forType: .init(markerName))
+            let unmarkedSibling = NSPasteboardItem()
+            unmarkedSibling.setString("alternate-fixture", forType: .string)
+            XCTAssertTrue(pasteboard.writeObjects([markedItem, unmarkedSibling]))
+
+            let restored = expectation(description: "\(markerName) filtered")
+            let result = TextInjector.pasteForTesting(
+                "transcript ",
+                pasteboard: pasteboard,
+                restoreDelay: 0.001,
+                postPaste: { true },
+                onRestore: { outcome in
+                    XCTAssertEqual(outcome, .restoredOriginal)
+                    restored.fulfill()
+                }
+            )
+
+            XCTAssertEqual(result, .pasted)
+            await fulfillment(of: [restored], timeout: 1)
+            XCTAssertNil(pasteboard.string(forType: .string))
+            XCTAssertFalse(pasteboard.types?.contains(.init(markerName)) ?? false)
+            XCTAssertTrue(pasteboard.pasteboardItems?.isEmpty ?? true)
+        }
+    }
+
     private func makePasteboard() -> NSPasteboard {
         let pasteboard = NSPasteboard(name: .init("saymark-tests-\(UUID().uuidString)"))
         pasteboard.clearContents()
