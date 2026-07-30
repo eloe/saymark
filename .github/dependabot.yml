@@ -7,6 +7,14 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    groups:
+      swift-routine-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
     open-pull-requests-limit: 5
     labels:
       - dependencies
@@ -16,6 +24,14 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    groups:
+      actions-routine-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
     open-pull-requests-limit: 5
     labels:
       - dependencies
