@@ -14,10 +14,18 @@ final class HUDModel {
     var phase: Phase = .listening
     var confirmed = ""
     var partial = ""
-    var lang = "Auto"
+    var rawTranscript = "" // memory only; cleared at the next HUD lifecycle boundary
+    var correctionStatus = "unchanged"
+    var correctionRevision: UInt64 = 0
+    var showRawTranscript = false
+    /// Saymark currently supports English only; this is product truth, not
+    /// model language detection.
+    var lang = "EN"
     var shortcutLabel = "⌃⌥Space"
     var errorTitle = "No microphone access"
     var errorText = "Open Privacy in Settings →"
+    var recoveryActionTitle: String?
+    var onRecoveryAction: () -> Void = {}
     var presentation = false      // HUD-only / subtitles
     var recording = false
     var showingFinal = false
@@ -28,6 +36,21 @@ final class HUDModel {
     /// expands and exposes the entire wrapped value in a native scroll view.
     var transcriptLineLimit: Int? { showingFinal ? nil : (presentation ? 6 : 3) }
     var usesScrollableTranscript: Bool { showingFinal }
+    var showsCorrectionDetails: Bool {
+        showingFinal && !rawTranscript.isEmpty &&
+            (rawTranscript != confirmed || correctionStatus == "failedRawFallback")
+    }
+    var allowsFinalInteraction: Bool { showingFinal && (showsCorrectionDetails || requiresExpandedFinal) }
+    var correctionSummary: String {
+        switch correctionStatus {
+        case "failedRawFallback":
+            return "Vocabulary correction was unavailable. Your raw transcript was kept. Vocabulary revision \(correctionRevision)."
+        case "corrected":
+            return "Vocabulary correction was applied using revision \(correctionRevision)."
+        default:
+            return "No vocabulary correction was needed. Vocabulary revision \(correctionRevision)."
+        }
+    }
     var transcriptAccessibilityLabel: String {
         [confirmed, partial].filter { !$0.isEmpty }.joined(separator: " ")
     }
@@ -42,7 +65,13 @@ final class HUDModel {
         let words = transcriptAccessibilityLabel.split(whereSeparator: \.isWhitespace).count
         // A final result should read as a stable completion state, not a flash.
         // Long dictations linger longer, while the cap keeps the HUD temporary.
-        return min(12.0, max(3.2, 2.4 + Double(words) * 0.045))
+        let readingTime = min(12.0, max(3.2, 2.4 + Double(words) * 0.045))
+        return showsCorrectionDetails ? max(8.0, readingTime) : readingTime
+    }
+
+    func copyRawTranscript() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(rawTranscript, forType: .string)
     }
 }
 
@@ -143,6 +172,18 @@ private struct HUDView: View {
         let big = model.presentation
         return VStack(alignment: .leading, spacing: big ? 12 : 9) {
             header
+            if model.showsCorrectionDetails {
+                DisclosureGroup(
+                    model.correctionStatus == "failedRawFallback" ? "Correction details" : "Raw transcript",
+                    isExpanded: Bindable(model).showRawTranscript
+                ) {
+                    Text(model.correctionSummary)
+                        .foregroundStyle(.secondary)
+                    Text(model.rawTranscript).textSelection(.enabled)
+                    Button("Copy raw transcript") { model.copyRawTranscript() }
+                }
+                .accessibilityLabel("Raw transcript disclosure")
+            }
             if model.showingFinal {
                 ScrollView(.vertical) {
                     transcript
@@ -220,6 +261,13 @@ private struct HUDView: View {
                     .foregroundStyle(scheme == .dark ? Color.white.opacity(0.95) : SaymarkTheme.ink)
                 Text(model.errorText).font(.system(size: 11.5))
                     .foregroundStyle(scheme == .dark ? Color.white.opacity(0.55) : SaymarkTheme.ink.opacity(0.6))
+                if let title = model.recoveryActionTitle {
+                    Button(title, action: model.onRecoveryAction)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(SaymarkTheme.accent)
+                        .padding(.top, 4)
+                }
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
@@ -371,11 +419,14 @@ final class HUDController {
         model.lang = lang
         model.shortcutLabel = shortcutLabel
         model.phase = .listening
-        model.confirmed = ""; model.partial = ""
+        model.confirmed = ""; model.partial = ""; model.rawTranscript = ""; model.showRawTranscript = false
+        model.correctionStatus = "unchanged"; model.correctionRevision = 0
         model.recording = true
         model.showingFinal = false
         model.showStop = interactive
         model.onStop = onStop
+        model.recoveryActionTitle = nil
+        model.onRecoveryAction = {}
         panel.ignoresMouseEvents = !interactive
         position(panel)
         animator.show(panel)
@@ -392,10 +443,14 @@ final class HUDController {
     }
 
     /// Live two-tier update.
-    func update(confirmed: String, partial: String) {
+    func update(confirmed: String, partial: String, rawConfirmed: String? = nil, rawPartial: String? = nil,
+                correctionStatus: String? = nil, correctionRevision: UInt64? = nil) {
         model.showingFinal = false
         model.confirmed = confirmed
         model.partial = partial
+        if let rawConfirmed, let rawPartial { model.rawTranscript = rawConfirmed + rawPartial }
+        if let correctionStatus { model.correctionStatus = correctionStatus }
+        if let correctionRevision { model.correctionRevision = correctionRevision }
         if model.phase != .error {
             model.phase = (confirmed.isEmpty && partial.isEmpty) ? .listening : .transcribing
         }
@@ -408,6 +463,7 @@ final class HUDController {
         model.phase = .transcribing
         model.confirmed = ""
         model.partial = ""
+        model.rawTranscript = ""; model.showRawTranscript = false
         model.recording = false
         model.showingFinal = false
         model.showStop = false
@@ -434,6 +490,8 @@ final class HUDController {
         model.recording = false
         model.showingFinal = false
         model.showStop = false
+        model.recoveryActionTitle = nil
+        model.onRecoveryAction = {}
         halo.dismiss()
         isListeningHaloVisible = false
         completesWithHalo = false
@@ -442,20 +500,40 @@ final class HUDController {
         scheduleHide(after: delay)
     }
 
+    /// Failure recovery is opt-in and only offered after a final row committed.
+    /// The action contains no transcript text and is never used for protected
+    /// fields, HUD-only dictation, History Off, or a deadline miss.
+    func offerRecentDictationsRecovery(_ action: @escaping () -> Void) {
+        guard model.phase == .error, panel != nil else { return }
+        hideWork?.cancel()
+        model.recoveryActionTitle = "Open Recent Dictations"
+        model.onRecoveryAction = { [weak self] in
+            action()
+            self?.panel?.orderOut(nil)
+        }
+        panel?.ignoresMouseEvents = false
+        scheduleHide(after: 7.0)
+    }
+
     /// Show the final text, then fade — lingering longer in presentation mode.
-    func finish(_ finalText: String) {
+    func finish(_ finalText: String, rawText: String? = nil, correctionStatus: String? = nil,
+                correctionRevision: UInt64? = nil) {
         guard panel != nil else { return }
         model.recording = false
         model.showStop = false
         if !finalText.isEmpty {
             model.confirmed = finalText
             model.partial = ""
+            model.rawTranscript = rawText ?? finalText
+            if let correctionStatus { model.correctionStatus = correctionStatus }
+            if let correctionRevision { model.correctionRevision = correctionRevision }
+            model.showRawTranscript = false
             model.showingFinal = true
             model.phase = .transcribing
+            panel?.ignoresMouseEvents = !model.allowsFinalInteraction
             if model.requiresExpandedFinal, let panel {
                 let size = model.presentation ? expandedPresentationFinalSize : expandedFinalSize
                 panel.setContentSize(size)
-                panel.ignoresMouseEvents = false
                 position(panel)
             }
         }

@@ -68,6 +68,36 @@ enum InsertMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Explicit opt-in persistence for final dictation text. Unknown persisted
+/// values deliberately resolve to `.off`; text is never stored by default.
+enum RecentDictationsRetention: String, CaseIterable, Identifiable {
+    case off
+    case session
+    case days7
+    case days30
+    case days90
+    case untilDeleted
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: return "Off"
+        case .session: return "This session"
+        case .days7: return "7 days"
+        case .days30: return "30 days"
+        case .days90: return "90 days"
+        case .untilDeleted: return "Until I delete"
+        }
+    }
+
+    static let defaultsKey = "saymark.recentDictationsRetention"
+
+    static var current: RecentDictationsRetention {
+        RecentDictationsRetention(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .off
+    }
+}
+
 /// Anonymous usage & error analytics (PostHog). **Opt-in**: off until the user
 /// enables it on the onboarding Welcome step (or in Settings). While off,
 /// `PostHogSDK.shared.optOut()` makes every `capture(…)` a no-op — no audio or

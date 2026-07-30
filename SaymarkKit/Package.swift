@@ -15,6 +15,7 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "SaymarkKit", targets: ["SaymarkKit"]),
+        .library(name: "LiveInsertionPolicy", targets: ["LiveInsertionPolicy"]),
         .executable(name: "saymark-cli", targets: ["saymark-cli"]),
     ],
     dependencies: [
@@ -26,6 +27,7 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1")),
     ],
     targets: [
+        .target(name: "LiveInsertionPolicy"),
         .target(
             name: "SaymarkKit",
             dependencies: [
@@ -46,6 +48,10 @@ let package = Package(
         .testTarget(
             name: "SaymarkKitTests",
             dependencies: ["SaymarkKit"]
+        ),
+        .testTarget(
+            name: "LiveInsertionPolicyTests",
+            dependencies: ["LiveInsertionPolicy"]
         ),
     ],
     swiftLanguageModes: [.v5]

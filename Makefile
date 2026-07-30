@@ -12,7 +12,7 @@ XCB = tuist xcodebuild build -workspace $(WORKSPACE) -scheme $(SCHEME) \
 	-configuration Release -destination 'generic/platform=macOS' -allowProvisioningUpdates \
 	ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO
 
-.PHONY: legal-check security-check dependency-check ci-config-check zsh-syntax-check dependencies architecture architecture-check daily-driver-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
+.PHONY: legal-check security-check dependency-check ci-config-check zsh-syntax-check dependencies architecture architecture-check daily-driver-check live-insertion-policy-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
 	test-unit test-integration model-fixture prepare-model-tests test-model-efficient test-model-live \
 	test-model-parakeet-int8 test-model-live-parakeet-int8 prepare-corpus prepare-corpus-tests \
 	test-corpus-efficient test-corpus-live report-diagnostics
@@ -47,6 +47,10 @@ architecture:
 
 architecture-check:
 	node Scripts/generate-architecture-map.mjs --check
+
+live-insertion-policy-check:
+	Scripts/check-live-insertion-policy-boundary.sh
+	cd SaymarkKit && $(SWIFT) test -c release --filter LiveInsertionPolicyTests
 
 gen: legal-check dependency-check
 	tuist generate --no-open

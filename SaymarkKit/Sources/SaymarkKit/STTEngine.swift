@@ -30,6 +30,8 @@ final class STTEngine: @unchecked Sendable {
     private var vadLoaded = false
     private var gate: SpeechGate?
     private var metrics: SessionMetrics?
+    private let correctionLock = NSLock()
+    private var lastCorrectionUpdate: (confirmed: CorrectedTranscript, partial: CorrectedTranscript)?
 
     init(nemotronRepo: String, parakeetRepo: String) {
         self.nemotronRepo = nemotronRepo
@@ -111,10 +113,27 @@ final class STTEngine: @unchecked Sendable {
     }
 
     /// Open a clean session + gate for a new utterance, per the chosen model mode.
-    func begin(language: String?, mode: DictationMode) -> String {
+    func begin(
+        language: String?,
+        mode: DictationMode,
+        correctionSnapshot: VocabularySnapshot = .empty,
+        onDraftCorrection: @escaping @Sendable (CorrectedTranscript, CorrectedTranscript) -> Void = { _, _ in }
+    ) -> String {
         let id = UUID().uuidString.lowercased()
         queue.sync {
-            session = engine?.makeSession(for: mode, language: language)
+            session = engine?.makeSession(for: mode, language: language).map {
+                CorrectingUtteranceSession(
+                    base: $0,
+                    snapshot: correctionSnapshot,
+                    onDraftCorrection: { [weak self] confirmed, partial in
+                        self?.correctionLock.withLock {
+                            self?.lastCorrectionUpdate = (confirmed, partial)
+                        }
+                        onDraftCorrection(confirmed, partial)
+                    }
+                )
+            }
+            correctionLock.withLock { lastCorrectionUpdate = nil }
             gate = vad.flatMap { try? SpeechGate(vad: $0) }
             metrics = SessionMetrics(
                 id: id,
@@ -182,6 +201,9 @@ final class STTEngine: @unchecked Sendable {
         queue.sync {
             let finishStarted = ProcessInfo.processInfo.systemUptime
             let text = session?.finishText() ?? ""
+            if let correcting = session as? CorrectingUtteranceSession {
+                correctionLock.withLock { lastCorrectionUpdate = correcting.latestUpdate }
+            }
             let finishSeconds = ProcessInfo.processInfo.systemUptime - finishStarted
             if let metrics {
                 let audioSeconds = Double(metrics.inputSamples) / 16_000.0
@@ -204,8 +226,6 @@ final class STTEngine: @unchecked Sendable {
                     "asr_stream_compute_ms": asrCompute * 1_000,
                     "finish_compute_ms": finishSeconds * 1_000,
                     "compute_rtf": audioSeconds > 0 ? computeSeconds / audioSeconds : 0,
-                    "result_characters": text.count,
-                    "result_words": text.split(separator: " ").count,
                     "result_empty": text.isEmpty,
                     "mlx_active_bytes": Memory.activeMemory,
                     "mlx_cache_bytes": Memory.cacheMemory,
@@ -216,6 +236,15 @@ final class STTEngine: @unchecked Sendable {
             gate = nil
             metrics = nil
             return text
+        }
+    }
+
+    func latestCorrection() -> (confirmed: CorrectedTranscript, partial: CorrectedTranscript) {
+        correctionLock.withLock {
+            lastCorrectionUpdate ?? (
+                CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: 0, appliedRuleCount: 0),
+                CorrectedTranscript(rawText: "", renderedText: "", snapshotRevision: 0, appliedRuleCount: 0)
+            )
         }
     }
 

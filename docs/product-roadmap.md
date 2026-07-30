@@ -145,12 +145,14 @@ Deliverables:
 
 - local vocabulary management with import, export, search, enable/disable, and
   delete;
-- deterministic normalization for spoken URLs, emails, acronyms, and explicitly
-  configured replacements;
+- deterministic normalization for explicitly configured heard-to-write
+  replacements, including user-authored aliases for URLs, emails, and acronyms;
+  built-in parsing/normalization of those forms is deferred;
 - a documented adapter boundary for model-native prompting or biasing where a
   speech model supports it;
-- per-entry tests and an opt-in diagnostic that reports only aggregate match
-  counts, never vocabulary values.
+- per-entry tests and a separately consented, local-only diagnostic that reports
+  only privacy-bucketed aggregate match counts, never vocabulary values or remote
+  telemetry.
 
 Acceptance gates:
 
@@ -171,7 +173,10 @@ Deliverables:
 
 - a file transcription flow with progress, cancellation, and retry;
 - explicit handling for supported audio and video containers;
-- searchable local history with copy, export, and delete;
+- searchable local history with copy, export, and delete; the separately scoped
+  Recent Dictations recovery feature may ship copy/delete before export and must
+  not claim Slice 3 completion until the export design and its acceptance gate
+  are implemented;
 - retention choices including Off, session-only, and a bounded duration;
 - history disabled until the user makes an explicit choice, with audio retention
   separately controlled from transcript retention.
@@ -184,7 +189,8 @@ Acceptance gates:
 | One-hour file processing | completes without unbounded memory growth |
 | Cancellation | stops inference and releases per-job resources within 2 s |
 | History search, 10,000 records | p95 <= 100 ms on the reference Mac |
-| Delete/export behavior | integration-tested, with no orphaned audio or metadata |
+| Delete behavior | integration-tested, with no orphaned transcript/index metadata; byte-level removal from current store artifacts is verified |
+| Export behavior (when export scope is implemented) | integration-tested, with no orphaned audio or metadata |
 | Default data behavior | no retained audio and no cloud transfer |
 
 ## Slice 4 — Formatting modes and provider boundary

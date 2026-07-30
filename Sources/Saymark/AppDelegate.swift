@@ -34,6 +34,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DiagnosticLogSetting.configure()
+        Task {
+            // Durable store metadata is the sole policy authority. History
+            // remains unavailable until open, validation, and launch purge
+            // finish for every retained policy.
+            await RecentDictationsController.shared.initializeAtLaunch()
+            await RecentDictationsController.shared.prepareForDelivery()
+            RecentDictationsController.shared.configureIdleMaintenance { [weak self] in
+                self?.dictation.isActive ?? false
+            }
+            RecentDictationsController.shared.startRecurringIdleMaintenance()
+        }
         SaymarkDiagnostics.log(.info, "app.launched", fields: [
             "bundle_id": Bundle.main.bundleIdentifier ?? "unknown",
             "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
@@ -151,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        RecentDictationsController.shared.clearSessionAtTermination()
         resourceMonitor.stop()
         SaymarkDiagnostics.log(.info, "app.terminating")
     }

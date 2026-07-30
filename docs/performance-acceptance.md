@@ -53,6 +53,9 @@ real-time factor:
 During continuous speech:
 
 - The production audio/inference feed cadence must be between 100 and 160 ms.
+- A target eligible for live **field** insertion has a stricter maximum streaming
+  step of <= 300 ms. It may not rely on the general Live Preview 450 ms maximum:
+  one such step would itself violate the visible-freeze gate below.
 - No visible transcript freeze may exceed 300 ms while speech and hypotheses
   continue.
 - Field updates must remain ordered and must not build an inference or insertion
@@ -63,6 +66,13 @@ During continuous speech:
 - Focus, selection, cursor, or user-edit changes must stop revision safely rather
   than overwrite text Saymark no longer owns.
 - Atomic final insertion remains the required compatibility fallback.
+
+For live field insertion, word-appearance timing measures provisional text. The
+committed-prefix policy must also report and pass these stability limits: no
+committed word is revoked; provisional revision depth is at most four words; and
+p95 provisional revoked-word rate is <= 2 words/s. The initial policy values are
+documented in [`live-insertion-sdd.md`](live-insertion-sdd.md); changing them
+requires the same evidence review as changing feed cadence.
 
 These are initial product thresholds, not universal psychophysical constants.
 Validate them with observed user testing as well as automated measurement. A
@@ -87,6 +97,28 @@ Measure each boundary separately:
 Word-aligned latency requires versioned benchmark audio with reference word
 timestamps. Production diagnostics may record only content-free durations,
 counts, and outcome categories.
+
+### Slice 1 policy-core acceptance
+
+The pure policy core has deterministic resource limits independent of hardware
+model timing. Release validation records an arm64 Release result for the exact
+commit and toolchain, and fails the slice when any of the following is false:
+
+| Check | Acceptance requirement |
+| --- | --- |
+| Per-update work | A normal eligible hypothesis (committed prefix plus <=64 UTF-16 tail) completes in <=1 ms p95 and <=5 ms maximum across 10,000 warmed updates. An oversized tail throttles before fragment expansion. |
+| Retained policy state | <=128 UTF-16 code units for a no-tail live candidate; after tail overflow, no HUD-only recogniser content is retained. The external transcript/HUD owner is measured separately. |
+| Queue/backlog | Latest-wins capacity is exactly one; 100,000 replaces retain only the newest item and create no queue growth. |
+| Cancellation/invalidation | 10,000 deterministic and 500 task-scheduled interleavings of hypothesis, acknowledgement, throttle, secure-input, ownership loss, and Stop produce no post-terminal route or revived tracker. |
+| Counter retirement | Generation/serial exhaustion retires mutation issuance; it never wraps into a valid token. |
+| Memory | 20 repetitions of the 10,000-update schedule have <=1 MB settled RSS growth attributable to the policy harness after autorelease cleanup; record baseline, peak, and settled values. |
+
+The time and memory figures are measured by the opt-in local performance
+harness (`Scripts/benchmark-live-insertion-policy.sh`) on the recorded arm64
+release machine, not generic CI. CI executes deterministic bounded-state,
+overflow, boundary, and concurrency/invalidation schedules as correctness
+tests; it makes no wall-clock assertion. These Slice 1 limits do not relax the
+user-visible live-insertion gates above.
 
 ### Feed-cadence experiment
 
