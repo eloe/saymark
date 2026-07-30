@@ -22,6 +22,27 @@ enum FinalDeliveryCoordinator {
     }
 }
 
+/// Coalesces model-preparation requests without allowing model loading to take
+/// ownership of an active utterance's lifecycle state.
+struct DeferredModelPreparation {
+    private(set) var pendingMode: DictationMode?
+
+    mutating func request(_ mode: DictationMode, canStartNow: Bool) -> DictationMode? {
+        guard canStartNow else {
+            pendingMode = mode
+            return nil
+        }
+        pendingMode = nil
+        return mode
+    }
+
+    mutating func takePending(canStartNow: Bool) -> DictationMode? {
+        guard canStartNow, let pendingMode else { return nil }
+        self.pendingMode = nil
+        return pendingMode
+    }
+}
+
 /// The application HUD has exactly one live transcript source: ordered,
 /// correction-complete updates. Raw ASR updates remain available to onboarding
 /// and benchmarks through `DictationSession`, but cannot race the app HUD.
@@ -67,6 +88,7 @@ final class DictationController {
     var dictationSession: DictationSession { session }
     @ObservationIgnored private var promptedAccessibility = false
     @ObservationIgnored private var isPreparing = false
+    @ObservationIgnored private var deferredPreparation = DeferredModelPreparation()
     @ObservationIgnored private var historyEnabledAtStart = false
     #if DEBUG
     @ObservationIgnored private var dailyDriverUITestConfiguration: DailyDriverUITestConfiguration?
@@ -141,7 +163,7 @@ final class DictationController {
             promptedAccessibility = true
             Accessibility.prompt()
         }
-        prepare(mode: ModelSetting.current)              // load only the current mode's models
+        requestPreparation(mode: ModelSetting.current)   // load only the current mode's models
     }
 
     func requestAccessibility() { Accessibility.prompt() }
@@ -153,15 +175,28 @@ final class DictationController {
 
     /// Re-load when the Model setting changes (popover) — pulls in the newly
     /// selected mode's models so the next dictation starts instantly.
-    func prepareCurrentMode() { prepare(mode: ModelSetting.current) }
+    func prepareCurrentMode() { requestPreparation(mode: ModelSetting.current) }
 
     /// Lazily load (download on first run) only the models `mode` needs, surfacing
-    /// a loading state. A no-op when already ready or a load is in flight.
-    private func prepare(mode: DictationMode) {
-        guard !isPreparing else {
-            SaymarkDiagnostics.log(.debug, "models.ui_prepare_ignored", fields: ["reason": "already_preparing", "mode": mode.rawValue])
+    /// a loading state. Requests made during capture/finalization or another load
+    /// are coalesced to the newest mode and resumed after teardown.
+    private func requestPreparation(mode: DictationMode) {
+        let canStartNow = !isPreparing && !utteranceIsActive
+        guard let mode = deferredPreparation.request(mode, canStartNow: canStartNow) else {
+            SaymarkDiagnostics.log(.debug, "models.ui_prepare_deferred", fields: [
+                "reason": isPreparing ? "already_preparing" : "dictation_in_flight",
+                "mode": mode.rawValue,
+            ])
             return
         }
+        prepareImmediately(mode: mode)
+    }
+
+    private var utteranceIsActive: Bool {
+        state == .recording || state == .transcribing
+    }
+
+    private func prepareImmediately(mode: DictationMode) {
         guard !session.isReady(mode) else {
             // Already warmed (e.g. onboarding loaded the selected plan into the
             // shared session before bootstrap ran) — just go idle.
@@ -172,7 +207,6 @@ final class DictationController {
         isPreparing = true
         state = .loadingModels
         Task { @MainActor in
-            defer { isPreparing = false }
             do {
                 try await session.load(mode: mode)
                 if case .loadingModels = state { state = .idle }
@@ -182,9 +216,20 @@ final class DictationController {
                     "mode": mode.rawValue,
                     "error_type": String(reflecting: type(of: error)),
                 ])
-                state = .error("model load: \(error.localizedDescription)")
+                if case .loadingModels = state {
+                    state = .error("model load: \(error.localizedDescription)")
+                }
             }
+            isPreparing = false
+            resumeDeferredPreparationIfPossible()
         }
+    }
+
+    private func resumeDeferredPreparationIfPossible() {
+        guard let mode = deferredPreparation.takePending(
+            canStartNow: !isPreparing && !utteranceIsActive
+        ) else { return }
+        requestPreparation(mode: mode)
     }
 
     /// Hotkey press: hold-mode starts; toggle-mode flips start/stop. Gated by the
@@ -223,12 +268,16 @@ final class DictationController {
             SaymarkDiagnostics.log(.trace, "hotkey.ignored", fields: ["reason": "dictation_in_flight"])
             return
         }
+        guard !isPreparing else {
+            SaymarkDiagnostics.log(.debug, "dictation.start_deferred", fields: ["reason": "models_preparing"])
+            return
+        }
         let modelMode = ModelSetting.current
         // Models for this mode not loaded yet (e.g. just switched) — kick the load
         // and skip this press; the next one records once ready.
         guard session.isReady(modelMode) else {
             SaymarkDiagnostics.log(.debug, "dictation.start_deferred", fields: ["reason": "models_not_ready", "mode": modelMode.rawValue])
-            prepare(mode: modelMode)
+            requestPreparation(mode: modelMode)
             return
         }
         let insert = InsertMode.current
@@ -380,6 +429,7 @@ final class DictationController {
                     "insert_mode": insertModeAtStop,
                 ])
         state = .transcribed(final)
+        resumeDeferredPreparationIfPossible()
         // Release the controller's final-text-associated state after the HUD's
         // normal completion window. This prevents a completed dictation from
         // surviving indefinitely in the menu-bar controller.
