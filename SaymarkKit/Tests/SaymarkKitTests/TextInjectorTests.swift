@@ -89,6 +89,26 @@ final class TextInjectorTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
     }
 
+    func testFocusChangeAfterClipboardSnapshotDoesNotPostPaste() {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        var postCount = 0
+
+        let result = TextInjector.pasteForTesting(
+            "transcript ",
+            pasteboard: pasteboard,
+            postPaste: {
+                postCount += 1
+                return true
+            },
+            targetIsCurrent: { false }
+        )
+
+        XCTAssertEqual(result, .copiedTargetChanged)
+        XCTAssertEqual(postCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
+    }
+
     func testConcealedAndTransientItemsAreNeverRepublished() async {
         for markerName in [
             "org.nspasteboard.ConcealedType",
