@@ -1,4 +1,3 @@
-import KeyboardShortcuts
 import SwiftUI
 
 /// Exercises the configured global shortcut against the real warmed pipeline.
@@ -56,20 +55,6 @@ struct TryItScreen: View {
             status
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .task {
-            for await event in KeyboardShortcuts.events(for: .dictate) {
-                switch (TriggerMode.current, event) {
-                case (.hold, .keyDown):
-                    model.tryStart()
-                case (.hold, .keyUp):
-                    model.tryEnd()
-                case (.toggle, .keyDown):
-                    model.tryToggle()
-                case (.toggle, .keyUp):
-                    break
-                }
-            }
-        }
         .onDisappear { model.tryEnd() }
     }
 

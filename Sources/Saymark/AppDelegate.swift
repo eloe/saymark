@@ -71,13 +71,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // recovery). The live menu app (hotkey, mic prompt, model warm-up) boots —
         // and the app drops to a `.accessory` menu-bar agent — only when onboarding
         // finishes. A returning user goes straight to the menu app.
-        onboarding.onFinished = { [weak self] in self?.startMenuApp() }
+        onboarding.onFinished = { [weak self] in
+            self?.dictation.reclaimHotkeyFromOnboarding()
+            self?.startMenuApp()
+        }
         onboarding.onReactivate = { [weak self] in self?.presentOnboarding() }
+        dictation.onboardingHotkeyDown = { [weak self] in self?.onboarding.tryHotkeyDown() }
+        dictation.onboardingHotkeyUp = { [weak self] in self?.onboarding.tryHotkeyUp() }
+        dictation.installHotkeyRouting()
         if OnboardingModel.shouldShow {
             SaymarkDiagnostics.log(.info, "app.route", fields: ["destination": "onboarding"])
             NSApp.setActivationPolicy(.regular)
             PostHogSDK.shared.capture("onboarding_started")
-            presentOnboarding()
+            dictation.handOffHotkeyToOnboarding { [weak self] in self?.presentOnboarding() }
         } else {
             SaymarkDiagnostics.log(.info, "app.route", fields: ["destination": "menu"])
             startMenuApp()
@@ -128,8 +134,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// "Setup tour…" — reset to Welcome, then present.
     func replayOnboarding() {
-        onboarding.replay()
-        presentOnboarding()
+        dictation.handOffHotkeyToOnboarding { [weak self] in
+            guard let self else { return }
+            self.onboarding.stopTrying { [weak self] in
+                guard let self else { return }
+                self.onboarding.replay()
+                self.presentOnboarding()
+            }
+        }
     }
 
     private func makeOnboardingWindow() -> NSWindow {
@@ -158,7 +170,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// replay (menu app already running) just closes the window.
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === onboardingWindow else { return }
-        if !didStartMenuApp { NSApp.terminate(nil) }
+        if !didStartMenuApp {
+            NSApp.terminate(nil)
+        } else {
+            onboarding.stopTrying { [weak self] in
+                self?.dictation.reclaimHotkeyFromOnboarding()
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

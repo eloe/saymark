@@ -68,6 +68,12 @@ final class CorrectedHUDObserver {
 @MainActor
 @Observable
 final class DictationController {
+    enum HotkeyOwner: Equatable {
+        case runtime
+        case transitioningToOnboarding
+        case onboarding
+    }
+
     enum State: Equatable {
         case loadingModels
         case idle
@@ -157,7 +163,7 @@ final class DictationController {
                 self?.echoCorrected(confirmed, partial)
             }
         )
-        installHotkeyHandlers()
+        installHotkeyRouting()
         session.requestMicrophonePermission()            // surface the mic prompt early
         if InsertMode.current == .inField, !accessibilityTrusted {
             promptedAccessibility = true
@@ -168,9 +174,49 @@ final class DictationController {
 
     func requestAccessibility() { Accessibility.prompt() }
 
-    private func installHotkeyHandlers() {
+    private var didInstallHotkeyRouting = false
+    var onboardingHotkeyDown: (() -> Void)?
+    var onboardingHotkeyUp: (() -> Void)?
+
+    /// Install the single process-wide shortcut route. This is separate from
+    /// `bootstrap()` so first-run onboarding can exercise the shortcut without
+    /// starting the menu app's microphone/model work.
+    func installHotkeyRouting() {
+        guard !didInstallHotkeyRouting else { return }
+        didInstallHotkeyRouting = true
         KeyboardShortcuts.onKeyDown(for: .dictate) { [weak self] in self?.hotkeyDown() }
         KeyboardShortcuts.onKeyUp(for: .dictate) { [weak self] in self?.hotkeyUp() }
+    }
+
+    private(set) var hotkeyOwner: HotkeyOwner = .runtime
+    private var onboardingHandoffCallbacks: [@MainActor () -> Void] = []
+
+    /// The setup tour exercises the same registered shortcut against the shared
+    /// session. Give it exclusive ownership so the permanent runtime callbacks
+    /// cannot start or stop a second utterance in parallel.
+    func handOffHotkeyToOnboarding(then completion: @escaping @MainActor () -> Void) {
+        onboardingHandoffCallbacks.append(completion)
+        guard hotkeyOwner != .onboarding else {
+            finishHotkeyHandoffIfPossible()
+            return
+        }
+        hotkeyOwner = .transitioningToOnboarding
+        if state == .recording { endRecording() }
+        finishHotkeyHandoffIfPossible()
+    }
+
+    func reclaimHotkeyFromOnboarding() {
+        hotkeyOwner = .runtime
+        resumeDeferredPreparationIfPossible()
+    }
+
+    private func finishHotkeyHandoffIfPossible() {
+        guard hotkeyOwner == .transitioningToOnboarding || hotkeyOwner == .onboarding,
+              !utteranceIsActive, !isPreparing else { return }
+        hotkeyOwner = .onboarding
+        let callbacks = onboardingHandoffCallbacks
+        onboardingHandoffCallbacks.removeAll()
+        callbacks.forEach { $0() }
     }
 
     /// Re-load when the Model setting changes (popover) — pulls in the newly
@@ -181,10 +227,13 @@ final class DictationController {
     /// a loading state. Requests made during capture/finalization or another load
     /// are coalesced to the newest mode and resumed after teardown.
     private func requestPreparation(mode: DictationMode) {
-        let canStartNow = !isPreparing && !utteranceIsActive
+        let canStartNow = hotkeyOwner == .runtime && !isPreparing && !utteranceIsActive
         guard let mode = deferredPreparation.request(mode, canStartNow: canStartNow) else {
+            let reason = hotkeyOwner != .runtime
+                ? "session_owned_by_onboarding"
+                : (isPreparing ? "already_preparing" : "dictation_in_flight")
             SaymarkDiagnostics.log(.debug, "models.ui_prepare_deferred", fields: [
-                "reason": isPreparing ? "already_preparing" : "dictation_in_flight",
+                "reason": reason,
                 "mode": mode.rawValue,
             ])
             return
@@ -224,13 +273,16 @@ final class DictationController {
                 }
             }
             isPreparing = false
-            resumeDeferredPreparationIfPossible()
+            finishHotkeyHandoffIfPossible()
+            if hotkeyOwner == .runtime {
+                resumeDeferredPreparationIfPossible()
+            }
         }
     }
 
     private func resumeDeferredPreparationIfPossible() {
         guard let mode = deferredPreparation.takePending(
-            canStartNow: !isPreparing && !utteranceIsActive
+            canStartNow: hotkeyOwner == .runtime && !isPreparing && !utteranceIsActive
         ) else { return }
         requestPreparation(mode: mode)
     }
@@ -238,6 +290,14 @@ final class DictationController {
     /// Hotkey press: hold-mode starts; toggle-mode flips start/stop. Gated by the
     /// master enable.
     private func hotkeyDown() {
+        if hotkeyOwner == .onboarding {
+            onboardingHotkeyDown?()
+            return
+        }
+        guard hotkeyOwner == .runtime else {
+            SaymarkDiagnostics.log(.trace, "hotkey.ignored", fields: ["reason": "owned_by_onboarding"])
+            return
+        }
         #if DEBUG
         if RuntimeEnvironment.isDailyDriverUITesting {
             dailyDriverUITestHotkeyDown()
@@ -256,6 +316,11 @@ final class DictationController {
 
     /// Hotkey release only ends dictation in hold mode (toggle ignores release).
     private func hotkeyUp() {
+        if hotkeyOwner == .onboarding {
+            onboardingHotkeyUp?()
+            return
+        }
+        guard hotkeyOwner == .runtime else { return }
         #if DEBUG
         if RuntimeEnvironment.isDailyDriverUITesting {
             dailyDriverUITestHotkeyUp()
@@ -432,7 +497,10 @@ final class DictationController {
                     "insert_mode": insertModeAtStop,
                 ])
         state = .transcribed(final)
-        resumeDeferredPreparationIfPossible()
+        finishHotkeyHandoffIfPossible()
+        if hotkeyOwner == .runtime {
+            resumeDeferredPreparationIfPossible()
+        }
         // Release the controller's final-text-associated state after the HUD's
         // normal completion window. This prevents a completed dictation from
         // surviving indefinitely in the menu-bar controller.
@@ -531,7 +599,7 @@ final class DictationController {
         guard RuntimeEnvironment.isDailyDriverUITesting else { return }
         dailyDriverUITestConfiguration = configuration
         state = .idle
-        installHotkeyHandlers()
+        installHotkeyRouting()
         configuration.onStatus("READY")
     }
 
