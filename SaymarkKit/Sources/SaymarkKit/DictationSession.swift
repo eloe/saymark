@@ -104,6 +104,11 @@ public final class DictationSession: @unchecked Sendable {
             SaymarkDiagnostics.log(.error, "microphone.capture_failed", sessionID: sessionID, fields: [
                 "error_type": String(reflecting: type(of: error)),
             ])
+            mic.abort()
+            mic.onChunk = { _ in }
+            engine.abort()
+            activeSessionID = nil
+            mic = MicCapture()
             throw error
         }
     }

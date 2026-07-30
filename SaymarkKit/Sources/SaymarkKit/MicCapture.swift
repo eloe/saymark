@@ -1,6 +1,24 @@
 @preconcurrency import AVFoundation
 import Foundation
 
+/// Executes capture startup as a transaction: once installation succeeds, any
+/// failure starting the underlying engine must run rollback before escaping.
+struct CaptureStartTransaction {
+    static func run(
+        install: () -> Void,
+        start: () throws -> Void,
+        rollback: () -> Void
+    ) throws {
+        install()
+        do {
+            try start()
+        } catch {
+            rollback()
+            throw error
+        }
+    }
+}
+
 /// Captures the default input and resamples to 16 kHz mono Float, delivering
 /// fixed 160 ms chunks via `onChunk`. Ported from the mic-compare CLI's MicRunner.
 ///
@@ -31,9 +49,14 @@ final class MicCapture: @unchecked Sendable {
     static let speechHangoverChunks = 6
     private let chunkSize = feedSamples
     private let queue = DispatchQueue(label: "saymark.mic.capture")
+    private let callbackGroup = DispatchGroup()
     private let engine = AVAudioEngine()
+    private let lifecycleLock = NSLock()
     private var converter: AVAudioConverter?
     private var outFmt: AVAudioFormat?
+    private var tapInstalled = false
+    private var captureGeneration: UInt64 = 0
+    private var acceptingCallbacks = false
 
     private var pending: [Float] = []
     private var totalSamples = 0
@@ -61,25 +84,43 @@ final class MicCapture: @unchecked Sendable {
             throw NSError(domain: "Saymark.MicCapture", code: 1, userInfo:
                 [NSLocalizedDescriptionKey: "could not build a 16 kHz mono converter from \(inFmt)"])
         }
-        outFmt = out
-        converter = conv
+        let generation = lifecycleLock.withLock {
+            captureGeneration &+= 1
+            acceptingCallbacks = true
+            outFmt = out
+            converter = conv
+            return captureGeneration
+        }
         queue.sync {
             inputSampleRate = inFmt.sampleRate
             inputChannels = Int(inFmt.channelCount)
         }
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: inFmt) { [weak self] buffer, _ in
-            self?.ingest(buffer)
+        try CaptureStartTransaction.run {
+            input.installTap(onBus: 0, bufferSize: 4096, format: inFmt) { [weak self] buffer, _ in
+                guard let self else { return }
+                callbackGroup.enter()
+                defer { callbackGroup.leave() }
+                ingest(buffer, generation: generation)
+            }
+            tapInstalled = true
+            engine.prepare()
+        } start: {
+            try engine.start()
+        } rollback: {
+            abort()
         }
-        engine.prepare()
-        try engine.start()
     }
 
     /// Stop capture, flush the trailing partial chunk, and report what was heard.
     func stop() -> Result {
         engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        return queue.sync {
+        removeTapIfInstalled()
+        // Tap removal prevents new callbacks. Wait for callbacks already inside
+        // conversion to enqueue their work, then drain the serial capture queue
+        // before invalidating this generation.
+        callbackGroup.wait()
+        let result = queue.sync {
             if !pending.isEmpty {
                 onChunk(pending)
                 pending.removeAll(keepingCapacity: true)
@@ -92,10 +133,42 @@ final class MicCapture: @unchecked Sendable {
                           inputBufferCount: inputBufferCount,
                           conversionErrorCount: conversionErrorCount)
         }
+        invalidateCallbacks()
+        return result
     }
 
-    private func ingest(_ buffer: AVAudioPCMBuffer) {
-        guard let outFmt, let converter else { return }
+    /// Release partially or fully acquired capture resources without delivering
+    /// buffered audio. Safe to call from startup rollback.
+    func abort() {
+        engine.stop()
+        removeTapIfInstalled()
+        invalidateCallbacks()
+        queue.sync {
+            pending.removeAll(keepingCapacity: false)
+        }
+    }
+
+    private func removeTapIfInstalled() {
+        guard tapInstalled else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        tapInstalled = false
+    }
+
+    private func invalidateCallbacks() {
+        lifecycleLock.withLock {
+            acceptingCallbacks = false
+            converter = nil
+            outFmt = nil
+        }
+    }
+
+    private func ingest(_ buffer: AVAudioPCMBuffer, generation: UInt64) {
+        guard let (outFmt, converter) = lifecycleLock.withLock({ () -> (AVAudioFormat, AVAudioConverter)? in
+            guard acceptingCallbacks, captureGeneration == generation,
+                  let outFmt, let converter
+            else { return nil }
+            return (outFmt, converter)
+        }) else { return }
         let ratio = outFmt.sampleRate / buffer.format.sampleRate
         let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
         guard let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: cap) else { return }
@@ -120,6 +193,9 @@ final class MicCapture: @unchecked Sendable {
         let rms = (sum / Float(max(1, n))).squareRoot()
 
         queue.async { [self] in
+            guard lifecycleLock.withLock({
+                acceptingCallbacks && captureGeneration == generation
+            }) else { return }
             inputBufferCount += 1
             totalSamples += n
             if rms > peak { peak = rms }
