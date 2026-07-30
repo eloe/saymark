@@ -87,6 +87,7 @@ struct MenuPopover: View {
             label("Model")
             SaymarkSegment("Model", selection: $modelRaw,
                            options: [(DictationMode.accurate.rawValue, "Efficient"),
+                                     (DictationMode.contextual.rawValue, "Accurate+"),
                                      (DictationMode.hybrid.rawValue, "Live Preview")])
             label("Insert").padding(.top, 11)
             SaymarkSegment("Insert", selection: $insertRaw,

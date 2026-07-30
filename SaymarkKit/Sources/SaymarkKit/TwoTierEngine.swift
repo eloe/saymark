@@ -14,6 +14,7 @@ import MLXAudioSTT
 public final class TwoTierEngine {
     public static let defaultNemotronRepo = SaymarkModelCatalog.nemotron.repository
     public static let defaultParakeetRepo = SaymarkModelCatalog.parakeet.repository
+    public static let defaultQwen3Repo = SaymarkModelCatalog.qwen3.repository
 
     /// Fast-lane (Nemotron) chunk in ms — SSOT for both the hybrid fast lane and
     /// the fast-only mode. 160 ms (`[56,1]`, 1-chunk lookahead) beats 80 ms on
@@ -23,19 +24,23 @@ public final class TwoTierEngine {
 
     private let nemotronRepo: String
     private let parakeetRepo: String
+    private let qwen3Repo: String
     private var nemotron: NemotronASRModel?
     private var parakeet: ParakeetModel?
+    private var qwen3: Qwen3ASRModel?
 
     /// Caps Metal memory up front (an unbounded MLX run can OOM-reboot the Mac);
     /// models load lazily via `prepare`.
     public init(
         nemotronRepo: String = defaultNemotronRepo,
         parakeetRepo: String = defaultParakeetRepo,
+        qwen3Repo: String = defaultQwen3Repo,
         memoryLimitBytes: Int = 18 * 1024 * 1024 * 1024
     ) {
         Memory.memoryLimit = memoryLimitBytes
         self.nemotronRepo = nemotronRepo
         self.parakeetRepo = parakeetRepo
+        self.qwen3Repo = qwen3Repo
     }
 
     /// Download (first run) + load ONLY the models `mode` needs. Memoized — a model
@@ -47,18 +52,20 @@ public final class TwoTierEngine {
             "parakeet_loaded": parakeet != nil,
         ])
         switch mode {
-        case .fast:     _ = try await loadNemotron()
-        case .accurate: _ = try await loadParakeet()
-        case .hybrid:   _ = try await loadNemotron(); _ = try await loadParakeet()
+        case .fast:       _ = try await loadNemotron()
+        case .accurate:   _ = try await loadParakeet()
+        case .hybrid:     _ = try await loadNemotron(); _ = try await loadParakeet()
+        case .contextual: _ = try await loadQwen3()
         }
     }
 
     /// Whether the models `mode` needs are loaded (so a session can be made).
     public func isReady(_ mode: DictationMode) -> Bool {
         switch mode {
-        case .fast:     return nemotron != nil
-        case .accurate: return parakeet != nil
-        case .hybrid:   return nemotron != nil && parakeet != nil
+        case .fast:       return nemotron != nil
+        case .accurate:   return parakeet != nil
+        case .hybrid:     return nemotron != nil && parakeet != nil
+        case .contextual: return qwen3 != nil
         }
     }
 
@@ -88,6 +95,20 @@ public final class TwoTierEngine {
             }
             let model = try await ParakeetModel.fromPretrained(parakeetRepo)
             parakeet = model
+            return model
+        }
+    }
+
+    private func loadQwen3() async throws -> Qwen3ASRModel {
+        if let qwen3 {
+            SaymarkDiagnostics.log(.debug, "model.reused", fields: ["lane": "qwen3", "repository": qwen3Repo])
+            return qwen3
+        }
+        return try await loadModel(lane: "qwen3", repository: qwen3Repo) {
+            // Unpinned: `fromPretrained` downloads + caches via the library's HF
+            // client. No SHA pin yet, so there is no PinnedModelStore pre-check.
+            let model = try await Qwen3ASRModel.fromPretrained(qwen3Repo)
+            qwen3 = model
             return model
         }
     }
@@ -131,9 +152,10 @@ public final class TwoTierEngine {
     /// the warm-up pass and live dictation.
     func makeSession(for mode: DictationMode, language: String? = nil) -> UtteranceSession? {
         switch mode {
-        case .hybrid:   return makeHybridSession(language: language)
-        case .fast:     return makeFastSession(language: language)
-        case .accurate: return makeAccurateSession()
+        case .hybrid:     return makeHybridSession(language: language)
+        case .fast:       return makeFastSession(language: language)
+        case .accurate:   return makeAccurateSession()
+        case .contextual: return makeContextualSession()
         }
     }
 
@@ -159,5 +181,14 @@ public final class TwoTierEngine {
     func makeAccurateSession() -> UtteranceSession? {
         guard let parakeet else { return nil }
         return ParakeetOnlySession(parakeet)
+    }
+
+    /// Context-aware lane only: buffer the utterance, then run one Qwen3-ASR pass.
+    /// PROOF: hardcoded biasing context to see whether priming Qwen3 recovers
+    /// coined terms. If it works, this string is sourced from the user dictionary.
+    func makeContextualSession() -> UtteranceSession? {
+        guard let qwen3 else { return nil }
+        let context = "The audio may mention these proper nouns and terms: Saymark, Qwen3."
+        return Qwen3OnlySession(qwen3, context: context)
     }
 }

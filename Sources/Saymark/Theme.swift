@@ -49,6 +49,7 @@ enum ModelSetting {
     static var current: DictationMode {
         switch DictationMode(rawValue: UserDefaults.standard.string(forKey: key) ?? "") {
         case .hybrid: return .hybrid
+        case .contextual: return .contextual
         case .accurate, .fast, nil: return .accurate
         }
     }

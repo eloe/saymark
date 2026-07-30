@@ -7,6 +7,8 @@ public enum DictationMode: String, Sendable, CaseIterable {
     case fast       // Nemotron only — instant draft, lighter, lower accuracy
     case hybrid     // Nemotron live draft + Parakeet final refine (the default)
     case accurate   // Parakeet only — accurate final pass, no live draft
+    case contextual // Qwen3-ASR only — LLM-grounded final pass that resolves
+                    // homophones/names/punctuation from context, no live draft
 }
 
 /// The common surface STTEngine drives per utterance, regardless of mode.
@@ -56,6 +58,43 @@ final class ParakeetOnlySession: UtteranceSession {
     func finishText() -> String {
         guard let audio = finalAudio.takeIfSpeechDetected() else { return "" }
         text = model.generate(audio: MLXArray(audio)).text
+        Memory.clearCache()
+        return text
+    }
+}
+
+/// Context-aware lane only: buffer the utterance, then run one Qwen3-ASR pass at
+/// stop. Qwen3-ASR is an LLM-grounded ASR, so its final text resolves homophones,
+/// names, and punctuation from sentence context — no streaming draft.
+final class Qwen3OnlySession: UtteranceSession {
+    private let model: Qwen3ASRModel
+    private let context: String
+    private var finalAudio = FinalAudioBuffer()
+    private var text = ""
+
+    /// `context` primes Qwen3's system prompt to bias recognition toward coined
+    /// terms/names it wouldn't otherwise know (native ASR biasing — the correct
+    /// alternative to post-hoc string replacement).
+    init(_ model: Qwen3ASRModel, context: String = "") {
+        self.model = model
+        self.context = context
+    }
+    func step(_ samples: [Float], shouldProcess: Bool) -> (confirmed: String, partial: String) {
+        finalAudio.append(samples, speechDetected: shouldProcess)
+        return (text, "")
+    }
+    var currentText: (confirmed: String, partial: String) { (text, "") }
+    func finishText() -> String {
+        guard let audio = finalAudio.takeIfSpeechDetected() else { return "" }
+        text = model.generate(
+            audio: MLXArray(audio),
+            maxTokens: model.defaultGenerationParameters.maxTokens,
+            temperature: model.defaultGenerationParameters.temperature,
+            context: context,
+            language: model.defaultGenerationParameters.language,
+            chunkDuration: model.defaultGenerationParameters.chunkDuration,
+            minChunkDuration: model.defaultGenerationParameters.minChunkDuration
+        ).text
         Memory.clearCache()
         return text
     }

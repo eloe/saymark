@@ -184,6 +184,12 @@ final class DictationController {
         }
         let insert = InsertMode.current
         let toggle = TriggerMode.current == .toggle
+        // Claim the recording state synchronously BEFORE any work: a global hotkey
+        // can fire twice in the same instant (key-repeat / duplicate delivery), and
+        // if both calls pass the `state != .recording` guard above before either
+        // starts, two sessions run and the transcript is inserted twice. Flipping
+        // state here closes that window — the second call bails at the guard.
+        state = .recording
         // Give visual feedback before AVAudioEngine setup. Capture startup takes
         // around 100 ms on this Mac; the HUD should never wait behind it.
         hud.begin(presentation: insert == .hudOnly, lang: "Auto",
@@ -202,7 +208,6 @@ final class DictationController {
                 "trigger_mode": TriggerMode.current.rawValue,
                 "insert_mode": insert.rawValue,
             ])
-            state = .recording
             PostHogSDK.shared.capture("dictation_started", properties: [
                 "model_mode": modelMode.rawValue,
                 "trigger_mode": TriggerMode.current.rawValue,

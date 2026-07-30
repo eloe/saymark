@@ -19,9 +19,10 @@ public final class DictationSession: @unchecked Sendable {
 
     public init(
         nemotronRepo: String = TwoTierEngine.defaultNemotronRepo,
-        parakeetRepo: String = TwoTierEngine.defaultParakeetRepo
+        parakeetRepo: String = TwoTierEngine.defaultParakeetRepo,
+        qwen3Repo: String = TwoTierEngine.defaultQwen3Repo
     ) {
-        engine = STTEngine(nemotronRepo: nemotronRepo, parakeetRepo: parakeetRepo)
+        engine = STTEngine(nemotronRepo: nemotronRepo, parakeetRepo: parakeetRepo, qwen3Repo: qwen3Repo)
     }
 
     /// Observe live `(confirmed, provisional)` updates. Retain the returned

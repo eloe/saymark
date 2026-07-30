@@ -24,6 +24,7 @@ final class STTEngine: @unchecked Sendable {
     private let queue = DispatchQueue(label: "saymark.stt")
     private let nemotronRepo: String
     private let parakeetRepo: String
+    private let qwen3Repo: String
     private var engine: TwoTierEngine?
     private var session: UtteranceSession?   // hybrid, Nemotron-only, or Parakeet-only per mode
     private var vad: SileroVAD?              // shared model; a fresh SpeechGate wraps it per utterance
@@ -31,9 +32,10 @@ final class STTEngine: @unchecked Sendable {
     private var gate: SpeechGate?
     private var metrics: SessionMetrics?
 
-    init(nemotronRepo: String, parakeetRepo: String) {
+    init(nemotronRepo: String, parakeetRepo: String, qwen3Repo: String) {
         self.nemotronRepo = nemotronRepo
         self.parakeetRepo = parakeetRepo
+        self.qwen3Repo = qwen3Repo
     }
 
     /// Ready to record in `mode` — its models are loaded and warmed.
@@ -50,7 +52,8 @@ final class STTEngine: @unchecked Sendable {
             if let existing = self.engine { return existing }
             let made = TwoTierEngine(                    // caps Metal memory in init
                 nemotronRepo: nemotronRepo,
-                parakeetRepo: parakeetRepo
+                parakeetRepo: parakeetRepo,
+                qwen3Repo: qwen3Repo
             )
             self.engine = made
             return made

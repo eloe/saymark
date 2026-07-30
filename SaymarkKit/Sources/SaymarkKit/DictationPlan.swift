@@ -5,6 +5,7 @@ import Foundation
 public enum SaymarkModelID: String, CaseIterable, Hashable, Sendable {
     case nemotron
     case parakeet
+    case qwen3
 }
 
 public enum SaymarkModelRole: String, Sendable {
@@ -90,6 +91,20 @@ public enum SaymarkModelCatalog {
         role: .offlineFinal
     )
 
+    /// Qwen3-ASR: an LLM-grounded ASR (built on Qwen3) that resolves context,
+    /// homophones, names, and punctuation far better than the CTC/TDT models.
+    /// Unpinned (empty artifacts) — loaded lazily via `fromPretrained`, which
+    /// downloads + caches through the library's Hugging Face client; it is never
+    /// the onboarding default, so `PinnedModelStore` never pre-checks it.
+    public static let qwen3 = SaymarkModelDescriptor(
+        id: .qwen3,
+        repository: "mlx-community/Qwen3-ASR-0.6B-4bit",
+        revision: "main",
+        artifacts: [],
+        estimatedDownloadGB: 0.7,
+        role: .offlineFinal
+    )
+
     public static let silero = PinnedModelArtifactSet(
         repository: "mlx-community/silero-vad",
         revision: "7bc17f22d3c0451bd3a6cd71e759b009271ff49a",
@@ -159,6 +174,13 @@ public struct DictationPlan: Equatable, Sendable {
                 mode: mode,
                 models: [SaymarkModelCatalog.parakeet],
                 finalModelID: .parakeet,
+                providesLivePreview: false
+            )
+        case .contextual:
+            return Self(
+                mode: mode,
+                models: [SaymarkModelCatalog.qwen3],
+                finalModelID: .qwen3,
                 providesLivePreview: false
             )
         }
