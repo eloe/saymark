@@ -171,10 +171,16 @@ private struct HUDView: View {
                     Button { model.onBeginFix() } label: {
                         Label("Fix", systemImage: "pencil")
                             .labelStyle(.titleAndIcon)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(SaymarkTheme.accent)
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(
+                                SaymarkTheme.accent.opacity(scheme == .dark ? 0.20 : 0.12),
+                                in: Capsule(style: .continuous)
+                            )
+                            .contentShape(Capsule(style: .continuous))
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(scheme == .dark ? Color.white.opacity(0.7) : SaymarkTheme.ink.opacity(0.6))
                 }
             } else {
                 LevelBars(color: SaymarkTheme.accent, count: 4, barHeight: 13)
