@@ -57,8 +57,7 @@ final class OnboardingModel {
         guard canContinue else { return }
         if flow.step == .permissions { stopAccessibilityPolling() }
         if flow.step == .tryIt {
-            tryEnd()
-            finish()
+            stopTrying { [weak self] in self?.finish() }
             return
         }
         if flow.step == .done { finish(); return }
@@ -237,6 +236,7 @@ final class OnboardingModel {
     /// rapid re-press from starting a new utterance before teardown finishes —
     /// otherwise it would overlap start()/stop() on the shared session.
     @ObservationIgnored private var tryBusy = false
+    @ObservationIgnored private var tryIdleCallbacks: [@MainActor () -> Void] = []
     @ObservationIgnored private let tryHalo: any ListeningHaloControlling =
         ActiveDisplayHaloController()
 
@@ -292,6 +292,7 @@ final class OnboardingModel {
             if completesWithHalo {
                 tryHalo.complete()
             }
+            runTryIdleCallbacks()
             return
         }
         tryBusy = true
@@ -316,8 +317,26 @@ final class OnboardingModel {
                     self.tryHalo.dismiss()
                 }
                 self.tryBusy = false
+                self.runTryIdleCallbacks()
             }
         }
+    }
+
+    /// Stop any onboarding utterance and run `completion` only after the shared
+    /// session has fully drained. Runtime hotkey ownership must not resume sooner.
+    func stopTrying(then completion: @escaping @MainActor () -> Void) {
+        tryIdleCallbacks.append(completion)
+        tryEnd()
+        if !tryListening && !tryBusy {
+            runTryIdleCallbacks()
+        }
+    }
+
+    private func runTryIdleCallbacks() {
+        guard !tryListening, !tryBusy else { return }
+        let callbacks = tryIdleCallbacks
+        tryIdleCallbacks.removeAll()
+        callbacks.forEach { $0() }
     }
 
     /// Clear the try-it field for another attempt ("Try again"). Leaves `didTry`
@@ -331,6 +350,19 @@ final class OnboardingModel {
     /// VoiceOver can't hold a key — double-tap toggles the utterance instead.
     func tryToggle() {
         if tryListening { tryEnd() } else { tryStart() }
+    }
+
+    func tryHotkeyDown() {
+        guard flow.step == .tryIt, !finished else { return }
+        switch TriggerMode.current {
+        case .hold: tryStart()
+        case .toggle: tryToggle()
+        }
+    }
+
+    func tryHotkeyUp() {
+        guard flow.step == .tryIt, !finished else { return }
+        if TriggerMode.current == .hold { tryEnd() }
     }
 
     private func beginTryHaloIfNeeded() {
