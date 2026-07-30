@@ -239,6 +239,21 @@ final class STTEngine: @unchecked Sendable {
         }
     }
 
+    /// Abandon an utterance after startup failure or cancellation without
+    /// running final inference or publishing transcript content.
+    func abort() {
+        queue.sync {
+            session = nil
+            gate = nil
+            metrics = nil
+        }
+        correctionLock.withLock { lastCorrectionUpdate = nil }
+    }
+
+    var hasActiveUtteranceForTesting: Bool {
+        queue.sync { session != nil || gate != nil || metrics != nil }
+    }
+
     func latestCorrection() -> (confirmed: CorrectedTranscript, partial: CorrectedTranscript) {
         correctionLock.withLock {
             lastCorrectionUpdate ?? (
