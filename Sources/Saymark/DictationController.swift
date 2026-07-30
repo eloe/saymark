@@ -248,7 +248,12 @@ final class DictationController {
         // Drain off the main thread so a slow finish never freezes the UI, then
         // paste the final on the main thread (pasteboard + ⌘V).
         Task.detached(priority: .userInitiated) { [session] in
-            let final = session.stop()
+            let rawFinal = session.stop()
+            // Rewrite coined terms the ASR mangles (e.g. "cmarc" → "Saymark") via
+            // the user's dictionary before insertion. Snapshot is read off the main
+            // actor; transcript text itself is never logged.
+            let final = VocabularyStore.currentCorrector().correct(rawFinal)
+            let vocabularyChanged = final != rawFinal
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 if final.isEmpty {
@@ -267,6 +272,7 @@ final class DictationController {
                     "is_empty": final.isEmpty,
                     "model_mode": modelModeAtStop,
                     "insert_mode": insertModeAtStop,
+                    "vocabulary_changed": vocabularyChanged,
                     "stop_to_complete_ms": (ProcessInfo.processInfo.systemUptime - stopStarted) * 1_000,
                 ])
                 PostHogSDK.shared.capture("dictation_completed", properties: [
