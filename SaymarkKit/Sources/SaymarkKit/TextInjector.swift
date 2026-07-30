@@ -123,9 +123,22 @@ public enum TextInjector {
         case preservedNewerClipboard
     }
 
+    private static let nonPersistentPasteboardTypes: Set<NSPasteboard.PasteboardType> = [
+        .init("org.nspasteboard.ConcealedType"),
+        .init("org.nspasteboard.TransientType"),
+    ]
+
     /// Deep-copy the current pasteboard items so we can put them back after paste.
+    /// A pasteboard carrying a concealed or transient marker belongs to its
+    /// producer. Suppress the complete snapshot because sibling items may be
+    /// alternate representations of the same non-persistent copy operation.
     private static func snapshot(_ pb: NSPasteboard) -> [NSPasteboardItem]? {
-        pb.pasteboardItems?.compactMap { item in
+        guard let items = pb.pasteboardItems,
+              items.allSatisfy({
+                  nonPersistentPasteboardTypes.isDisjoint(with: $0.types)
+              })
+        else { return nil }
+        return items.compactMap { item in
             let copy = NSPasteboardItem()
             var any = false
             for type in item.types {
