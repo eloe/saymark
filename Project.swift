@@ -55,6 +55,15 @@ let project = Project(
                     "Saymark transcribes your speech on-device while you hold the dictation hotkey.",
                 // Future Saymark-owned analytics key. Empty in source/local builds → no network telemetry.
                 "PostHogAPIKey": .string(posthogAPIKey),
+                // Workaround for KeyboardShortcuts 3.0.1 (latest): its Carbon hotkey
+                // callback calls MainActor.assumeIsolated after a Thread.isMainThread
+                // guard. Under the macOS 26 / Swift 6.2 runtime, being on the main
+                // thread no longer implies the main-actor executor, so assumeIsolated
+                // traps (EXC_BREAKPOINT) on every hotkey press. Restoring the legacy
+                // isCurrentExecutor behavior avoids the trap until the dep is fixed.
+                "LSEnvironment": .dictionary([
+                    "SWIFT_IS_CURRENT_EXECUTOR_LEGACY_MODE_OVERRIDE": .string("legacy"),
+                ]),
             ]),
             sources: ["Sources/Saymark/**/*.swift"],
             resources: [
