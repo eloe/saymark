@@ -403,7 +403,10 @@ final class HUDController {
 
     /// Invoked when the user commits an inline correction: (heard, corrected).
     var onLearn: @MainActor (_ heard: String, _ corrected: String) -> Void = { _, _ in }
+    /// Replace already-inserted text in the target field after an inline correction.
+    var onReplaceInField: @MainActor (_ deleteCount: Int, _ replacement: String) -> Void = { _, _ in }
     private var learnHeard = ""
+    private var previousApp: NSRunningApplication?
 
     convenience init() {
         self.init(
@@ -439,6 +442,9 @@ final class HUDController {
     func beginEditing() {
         guard model.showingFinal, !model.confirmed.isEmpty, !model.editing else { return }
         hideWork?.cancel(); hideWork = nil
+        // Remember who had focus (the field we typed into) BEFORE we activate for
+        // editing, so a committed correction can be pasted back into it.
+        previousApp = NSWorkspace.shared.frontmostApplication
         model.editText = model.confirmed
         model.editing = true
         if let panel {
@@ -453,12 +459,20 @@ final class HUDController {
     func commitEditing() {
         guard model.editing else { return }
         let corrected = model.editText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let heard = learnHeard
         model.editing = false
-        if !corrected.isEmpty, corrected != learnHeard {
-            onLearn(learnHeard, corrected)
-            model.confirmed = corrected
-        }
         panel?.resignKey()
+        if !corrected.isEmpty, corrected != heard {
+            onLearn(heard, corrected)
+            model.confirmed = corrected
+            // Hand focus back to the field we interrupted, then replace the text it
+            // already holds (heard + trailing space) with the correction.
+            previousApp?.activate()
+            let deleteCount = heard.count + 1
+            _ = scheduler.schedule(after: 0.18) { [weak self] in
+                self?.onReplaceInField(deleteCount, corrected + " ")
+            }
+        }
         scheduleHide(after: 1.6)
     }
 

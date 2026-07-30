@@ -150,6 +150,37 @@ public enum TextInjector {
         return true
     }
 
+    /// Correct text already in the field: delete the last `count` characters, then
+    /// paste `replacement`. The caller must have restored focus to the target app
+    /// first (e.g. after an inline HUD edit stole key focus). Secure input → the
+    /// replacement is left on the clipboard instead.
+    @discardableResult
+    public static func replaceLast(_ count: Int, with replacement: String) -> Result {
+        guard !secureInputActive else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(replacement, forType: .string)
+            return .copiedSecureInput
+        }
+        backspace(count)
+        return paste(replacement)
+    }
+
+    /// Synthesize `count` backspaces via the private event source.
+    private static func backspace(_ count: Int) {
+        guard count > 0 else { return }
+        let key = CGKeyCode(kVK_Delete)
+        let source = CGEventSource(stateID: .privateState)
+        for _ in 0 ..< count {
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
+            else { continue }
+            down.flags = []
+            up.flags = []
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+        }
+    }
+
     /// Per-character Unicode typing — the fragile fallback, kept for an opt-in
     /// "Type" insert mode. Carries the Unicode payload directly (no keycode
     /// mapping), but some apps drop fast synthetic key events. Blocked by secure

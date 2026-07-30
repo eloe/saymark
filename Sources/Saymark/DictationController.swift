@@ -91,6 +91,12 @@ final class DictationController {
         hud.onLearn = { heard, corrected in
             VocabularyStore.shared.learn(heard: heard, corrected: corrected)
         }
+        // Apply the correction in place: replace the text already pasted into the
+        // focused field (only when we actually pasted — In-field mode + trusted).
+        hud.onReplaceInField = { deleteCount, replacement in
+            guard InsertMode.current == .inField, Accessibility.isTrusted else { return }
+            TextInjector.replaceLast(deleteCount, with: replacement)
+        }
         installHotkeyHandlers()
         session.requestMicrophonePermission()            // surface the mic prompt early
         if InsertMode.current == .inField, !accessibilityTrusted {
