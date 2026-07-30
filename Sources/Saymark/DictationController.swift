@@ -216,7 +216,10 @@ final class DictationController {
                     "mode": mode.rawValue,
                     "error_type": String(reflecting: type(of: error)),
                 ])
-                if case .loadingModels = state {
+                let failedModeIsStillDesired =
+                    ModelSetting.current == mode &&
+                    deferredPreparation.pendingMode == nil
+                if case .loadingModels = state, failedModeIsStillDesired {
                     state = .error("model load: \(error.localizedDescription)")
                 }
             }
