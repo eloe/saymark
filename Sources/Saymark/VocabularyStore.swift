@@ -12,7 +12,7 @@ import SaymarkKit
 @Observable
 final class VocabularyStore {
     static let shared = VocabularyStore()
-    static let defaultsKey = "saymark.vocabulary"
+    nonisolated static let defaultsKey = "saymark.vocabulary"
 
     /// Edited by the Settings UI; every mutation is persisted immediately.
     var entries: [VocabularyEntry] {
@@ -32,6 +32,29 @@ final class VocabularyStore {
 
     func addEntry() {
         entries.append(VocabularyEntry(term: "", aliases: []))
+    }
+
+    /// Teach corrections from an edited transcript: diff heard-vs-corrected and,
+    /// for each replaced span, add the corrected text as a term with the heard text
+    /// as an alias (creating or extending the matching entry). Returns how many
+    /// corrections were learned. Idempotent — re-teaching the same fix is a no-op.
+    @discardableResult
+    func learn(heard: String, corrected: String) -> Int {
+        let corrections = VocabularyLearning.corrections(heard: heard, corrected: corrected)
+        for (heardSpan, term) in corrections {
+            if let idx = entries.firstIndex(where: {
+                $0.term.caseInsensitiveCompare(term) == .orderedSame
+            }) {
+                if !entries[idx].aliases.contains(where: {
+                    $0.caseInsensitiveCompare(heardSpan) == .orderedSame
+                }) {
+                    entries[idx].aliases.append(heardSpan)
+                }
+            } else {
+                entries.append(VocabularyEntry(term: term, aliases: [heardSpan]))
+            }
+        }
+        return corrections.count
     }
 
     func remove(_ entry: VocabularyEntry) {
@@ -59,6 +82,21 @@ final class VocabularyStore {
     /// A thread-safe snapshot for use off the main actor (final-transcript rewrite).
     nonisolated static func currentCorrector() -> VocabularyCorrector {
         VocabularyCorrector(entries: load() ?? seed)
+    }
+
+    /// System-prompt string that primes Qwen3-ASR (Accurate+) to recognize the
+    /// user's coined terms — native biasing, far better than post-hoc replacement.
+    /// Empty when there are no terms (no biasing).
+    nonisolated static func currentBiasingContext() -> String {
+        let terms = (load() ?? seed)
+            .map { $0.term.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !terms.isEmpty else { return "" }
+        // Keep this MINIMAL and declarative. Imperative/instructional wording gets
+        // echoed by Qwen3-ASR into the transcript, and long lists over-anchor. A
+        // short noun phrase biases without leaking. Over-anchoring is best reduced
+        // by listing the user's real terms, not by prompt wording.
+        return "Possible names: \(terms.joined(separator: ", "))."
     }
 
     nonisolated static func load() -> [VocabularyEntry]? {

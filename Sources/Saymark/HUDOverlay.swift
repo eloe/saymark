@@ -24,6 +24,16 @@ final class HUDModel {
     var showStop = false          // toggle-mode: HUD shows a clickable Stop
     var onStop: () -> Void = {}
 
+    // Correct-and-learn: after a final transcript, the user can fix a word inline
+    // and Saymark learns it into the dictionary.
+    var editing = false
+    var editText = ""
+    var onBeginFix: () -> Void = {}
+    var onCommitFix: () -> Void = {}
+    var onCancelFix: () -> Void = {}
+    /// The pencil affordance shows only on a non-empty final result, not while editing.
+    var canFix: Bool { showingFinal && !confirmed.isEmpty && !editing }
+
     /// Live captions stay compact. Final text is never line-truncated: the HUD
     /// expands and exposes the entire wrapped value in a native scroll view.
     var transcriptLineLimit: Int? { showingFinal ? nil : (presentation ? 6 : 3) }
@@ -88,20 +98,65 @@ private func brandIcon(_ size: CGFloat) -> some View {
 // MARK: - HUD view
 
 private struct HUDView: View {
-    let model: HUDModel
+    @Bindable var model: HUDModel
     @Environment(\.colorScheme) private var scheme
+    @FocusState private var editorFocused: Bool
 
     var body: some View {
         Group {
-            switch model.phase {
-            case .error:        errorPill
-            case .listening:    listeningPill
-            case .transcribing: transcribePill
+            if model.editing {
+                editorPill
+            } else {
+                switch model.phase {
+                case .error:        errorPill
+                case .listening:    listeningPill
+                case .transcribing: transcribePill
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .padding(.bottom, 30)
         .padding(.horizontal, 40)
+    }
+
+    // Inline correction editor: fix a word, press Learn (or ⏎), and Saymark adds it
+    // to the dictionary. Focus is requested on appear so you can type immediately.
+    private var editorPill: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                brandIcon(18)
+                Text("Fix & teach").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SaymarkTheme.accent)
+                Spacer()
+            }
+            TextField("", text: $model.editText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 19))
+                .lineLimit(1 ... 6)
+                .focused($editorFocused)
+                .onSubmit { model.onCommitFix() }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(fieldBG, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            HStack(spacing: 10) {
+                Text("Correct a word — Saymark remembers it")
+                    .font(.system(size: 11))
+                    .foregroundStyle(scheme == .dark ? Color.white.opacity(0.5) : SaymarkTheme.ink.opacity(0.55))
+                Spacer()
+                Button("Cancel") { model.onCancelFix() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(scheme == .dark ? Color.white.opacity(0.7) : SaymarkTheme.ink.opacity(0.6))
+                Button("Learn") { model.onCommitFix() }
+                    .buttonStyle(.borderedProminent).tint(SaymarkTheme.accent)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 13)
+        .frame(maxWidth: 460, alignment: .leading)
+        .saymarkPill(scheme, radius: 16, border: borderColor)
+        .onAppear { editorFocused = true }
+    }
+
+    private var fieldBG: Color {
+        scheme == .dark ? Color.white.opacity(0.1) : SaymarkTheme.ink.opacity(0.06)
     }
 
     // Header: Saymark glyph + animated bars + language badge.
@@ -112,6 +167,15 @@ private struct HUDView: View {
                 Label("Transcribed", systemImage: "checkmark.circle.fill")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(SaymarkTheme.accent)
+                if model.canFix {
+                    Button { model.onBeginFix() } label: {
+                        Label("Fix", systemImage: "pencil")
+                            .labelStyle(.titleAndIcon)
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(scheme == .dark ? Color.white.opacity(0.7) : SaymarkTheme.ink.opacity(0.6))
+                }
             } else {
                 LevelBars(color: SaymarkTheme.accent, count: 4, barHeight: 13)
             }
@@ -312,6 +376,14 @@ final class AppKitHUDAnimator: HUDAnimating {
     }
 }
 
+/// A borderless panel that CAN become key — needed so the inline correction editor
+/// receives keystrokes. It only becomes key when we explicitly `makeKeyAndOrderFront`
+/// (during editing); normal dictation uses `orderFrontRegardless`, so the HUD still
+/// never steals focus while you dictate into another app.
+final class KeyableHUDPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
 @MainActor
 final class HUDController {
     private(set) var model = HUDModel()
@@ -328,6 +400,10 @@ final class HUDController {
     private let expandedFinalSize = NSSize(width: 940, height: 410)
     private let expandedPresentationFinalSize = NSSize(width: 940, height: 510)
     var hasAttachedViewTree: Bool { panel?.contentView != nil }
+
+    /// Invoked when the user commits an inline correction: (heard, corrected).
+    var onLearn: @MainActor (_ heard: String, _ corrected: String) -> Void = { _, _ in }
+    private var learnHeard = ""
 
     convenience init() {
         self.init(
@@ -351,6 +427,46 @@ final class HUDController {
         self.scheduler = scheduler
         self.animator = animator
         self.halo = halo
+        model.onBeginFix = { [weak self] in self?.beginEditing() }
+        model.onCommitFix = { [weak self] in self?.commitEditing() }
+        model.onCancelFix = { [weak self] in self?.cancelEditing() }
+    }
+
+    // MARK: correct-and-learn
+
+    /// Enter inline edit mode on the current final transcript: cancel the auto-hide,
+    /// make the panel interactive + key so the text field can take keystrokes.
+    func beginEditing() {
+        guard model.showingFinal, !model.confirmed.isEmpty, !model.editing else { return }
+        hideWork?.cancel(); hideWork = nil
+        model.editText = model.confirmed
+        model.editing = true
+        if let panel {
+            panel.ignoresMouseEvents = false
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// Commit the correction: learn (heard → corrected), reflect it in the HUD, then
+    /// let it fade. A no-op learn when nothing changed.
+    func commitEditing() {
+        guard model.editing else { return }
+        let corrected = model.editText.trimmingCharacters(in: .whitespacesAndNewlines)
+        model.editing = false
+        if !corrected.isEmpty, corrected != learnHeard {
+            onLearn(learnHeard, corrected)
+            model.confirmed = corrected
+        }
+        panel?.resignKey()
+        scheduleHide(after: 1.6)
+    }
+
+    func cancelEditing() {
+        guard model.editing else { return }
+        model.editing = false
+        panel?.resignKey()
+        scheduleHide(after: model.finalDisplayDuration)
     }
 
     /// Reveal the HUD for a new utterance. `interactive` (toggle mode) makes the
@@ -452,10 +568,13 @@ final class HUDController {
             model.partial = ""
             model.showingFinal = true
             model.phase = .transcribing
+            learnHeard = finalText
+            // Let the "Fix" affordance receive clicks (the final HUD is done typing
+            // elsewhere, so it no longer needs to be click-through).
+            panel?.ignoresMouseEvents = false
             if model.requiresExpandedFinal, let panel {
                 let size = model.presentation ? expandedPresentationFinalSize : expandedFinalSize
                 panel.setContentSize(size)
-                panel.ignoresMouseEvents = false
                 position(panel)
             }
         }
@@ -498,9 +617,9 @@ final class HUDController {
 
     private func ensurePanel(size: NSSize) -> NSPanel {
         if let panel { return panel }
-        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
-                            styleMask: [.nonactivatingPanel, .borderless],
-                            backing: .buffered, defer: false)
+        let panel = KeyableHUDPanel(contentRect: NSRect(origin: .zero, size: size),
+                                    styleMask: [.nonactivatingPanel, .borderless],
+                                    backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false

@@ -62,8 +62,8 @@ public final class DictationSession: @unchecked Sendable {
     }
 
     /// Begin a fresh utterance and start capturing, with the chosen model mode.
-    public func start(mode: DictationMode = .hybrid) throws {
-        let sessionID = engine.begin(language: nil, mode: mode)
+    public func start(mode: DictationMode = .hybrid, context: String = "") throws {
+        let sessionID = engine.begin(language: nil, mode: mode, context: context)
         activeSessionID = sessionID
         mic.onChunk = { [weak self] chunk in
             guard let self else { return }

@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     lazy var onboarding = OnboardingModel(session: dictation.dictationSession)
 
     private var onboardingWindow: NSWindow?
+    private var dictionaryWindow: NSWindow?
     private var didStartMenuApp = false
     #if DEBUG
     private var dailyDriverUITestHarness: DailyDriverUITestHarness?
@@ -119,6 +120,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func replayOnboarding() {
         onboarding.replay()
         presentOnboarding()
+    }
+
+    /// "Dictionary…" — open (or re-show) the standalone dictionary editor window,
+    /// so terms can be managed without opening Settings. AppKit-owned for the same
+    /// reason as onboarding (reliable from a menu-bar `.accessory` app).
+    func presentDictionary() {
+        let window = dictionaryWindow ?? makeDictionaryWindow()
+        dictionaryWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func makeDictionaryWindow() -> NSWindow {
+        let host = NSHostingController(rootView: DictionaryWindowView())
+        let window = NSWindow(contentViewController: host)
+        window.title = "Saymark Dictionary"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 460, height: 460))
+        window.contentMinSize = NSSize(width: 460, height: 260)
+        window.center()
+        return window
     }
 
     private func makeOnboardingWindow() -> NSWindow {

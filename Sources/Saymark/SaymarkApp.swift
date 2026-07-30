@@ -16,7 +16,8 @@ struct SaymarkApp: App {
         // finishes (AppDelegate router) even though the icon is always present.
         MenuBarExtra {
             MenuPopover(dictation: appDelegate.dictation,
-                        onSetupTour: { appDelegate.replayOnboarding() })
+                        onSetupTour: { appDelegate.replayOnboarding() },
+                        onOpenDictionary: { appDelegate.presentDictionary() })
         } label: {
             Image(nsImage: Self.menuIcon)
         }

@@ -86,6 +86,11 @@ final class DictationController {
         updateSubscription = session.observeUpdates { [weak self] confirmed, partial in
             self?.echo(confirmed, partial)
         }
+        // Correct-and-learn: an inline HUD edit teaches the dictionary (which then
+        // string-replaces future occurrences and biases Qwen3 in Accurate+).
+        hud.onLearn = { heard, corrected in
+            VocabularyStore.shared.learn(heard: heard, corrected: corrected)
+        }
         installHotkeyHandlers()
         session.requestMicrophonePermission()            // surface the mic prompt early
         if InsertMode.current == .inField, !accessibilityTrusted {
@@ -202,7 +207,9 @@ final class DictationController {
         do {
             // The live two-tier view stays in the HUD; the field receives one paste
             // on release (Variant B — paste is atomic, so no live-into-field typing).
-            try session.start(mode: modelMode)
+            // Accurate+ (Qwen3) uses the dictionary terms as a biasing context; the
+            // other modes ignore it and rely on post-transcription correction.
+            try session.start(mode: modelMode, context: VocabularyStore.currentBiasingContext())
             SaymarkDiagnostics.log(.info, "dictation.ui_started", sessionID: session.activeSessionID, fields: [
                 "model_mode": modelMode.rawValue,
                 "trigger_mode": TriggerMode.current.rawValue,

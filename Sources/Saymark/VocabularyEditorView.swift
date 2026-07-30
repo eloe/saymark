@@ -1,6 +1,25 @@
 import SaymarkKit
 import SwiftUI
 
+/// Standalone Dictionary window opened from the menu bar (so managing terms
+/// doesn't require digging through Settings).
+struct DictionaryWindowView: View {
+    var body: some View {
+        Form {
+            Section {
+                VocabularyEditorView(store: VocabularyStore.shared)
+            } header: {
+                Text("Dictionary")
+            } footer: {
+                Text("Rewrites mishearings to the exact term after transcription, and — in Accurate+ — primes the model to recognize your coined names. Whole-word, case-insensitive.")
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 460)
+        .frame(minHeight: 300)
+    }
+}
+
 /// Editor for the custom dictionary: each row is a canonical term plus the
 /// comma-separated mishearings that get rewritten to it. Edits persist immediately
 /// via `VocabularyStore` and take effect on the next dictation.

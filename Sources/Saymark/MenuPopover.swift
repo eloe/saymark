@@ -10,6 +10,8 @@ struct MenuPopover: View {
     let dictation: DictationController
     /// Re-open the onboarding window (resets to Welcome + presents it).
     let onSetupTour: () -> Void
+    /// Open the standalone dictionary editor window.
+    let onOpenDictionary: () -> Void
     @Environment(\.openSettings) private var openSettings
     @Environment(\.colorScheme) private var scheme
 
@@ -124,6 +126,7 @@ struct MenuPopover: View {
 
     private var footer: some View {
         VStack(spacing: 0) {
+            footerRow("Dictionary…", "") { onOpenDictionary() }
             footerRow("Settings…", "⌘ ,") {
                 PostHogSDK.shared.capture("settings_opened")
                 NSApp.activate(ignoringOtherApps: true)

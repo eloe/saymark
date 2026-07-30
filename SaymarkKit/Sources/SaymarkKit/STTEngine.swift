@@ -114,10 +114,10 @@ final class STTEngine: @unchecked Sendable {
     }
 
     /// Open a clean session + gate for a new utterance, per the chosen model mode.
-    func begin(language: String?, mode: DictationMode) -> String {
+    func begin(language: String?, mode: DictationMode, context: String = "") -> String {
         let id = UUID().uuidString.lowercased()
         queue.sync {
-            session = engine?.makeSession(for: mode, language: language)
+            session = engine?.makeSession(for: mode, language: language, context: context)
             gate = vad.flatMap { try? SpeechGate(vad: $0) }
             metrics = SessionMetrics(
                 id: id,

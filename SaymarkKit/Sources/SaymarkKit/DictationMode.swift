@@ -86,16 +86,31 @@ final class Qwen3OnlySession: UtteranceSession {
     var currentText: (confirmed: String, partial: String) { (text, "") }
     func finishText() -> String {
         guard let audio = finalAudio.takeIfSpeechDetected() else { return "" }
-        text = model.generate(
+        let p = model.defaultGenerationParameters
+        // Biasing is only safe on longer clips. On very short audio the context
+        // prompt leaks into / over-anchors the output, so skip it there.
+        let audioSeconds = Double(audio.count) / 16_000.0
+        let effectiveContext = audioSeconds >= 1.2 ? context : ""
+        let raw = model.generate(
             audio: MLXArray(audio),
-            maxTokens: model.defaultGenerationParameters.maxTokens,
-            temperature: model.defaultGenerationParameters.temperature,
-            context: context,
-            language: model.defaultGenerationParameters.language,
-            chunkDuration: model.defaultGenerationParameters.chunkDuration,
-            minChunkDuration: model.defaultGenerationParameters.minChunkDuration
+            maxTokens: p.maxTokens,
+            temperature: p.temperature,
+            context: effectiveContext,
+            language: "en",            // force English — auto-detect hallucinates on short clips
+            chunkDuration: p.chunkDuration,
+            minChunkDuration: p.minChunkDuration
         ).text
+        text = Qwen3OnlySession.stripLeak(raw, context: effectiveContext)
         Memory.clearCache()
         return text
+    }
+
+    /// Backstop: if the biasing context echoed into the transcript, strip it.
+    static func stripLeak(_ text: String, context: String) -> String {
+        guard !context.isEmpty else { return text }
+        let cleaned = text
+            .replacingOccurrences(of: context, with: "", options: [.caseInsensitive])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? text : cleaned
     }
 }

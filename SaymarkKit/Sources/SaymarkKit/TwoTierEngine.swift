@@ -150,12 +150,12 @@ public final class TwoTierEngine {
     /// The session for `mode`, or nil if its models aren't loaded yet (call
     /// `prepare(mode)` first). Single dispatch point — STTEngine uses it for both
     /// the warm-up pass and live dictation.
-    func makeSession(for mode: DictationMode, language: String? = nil) -> UtteranceSession? {
+    func makeSession(for mode: DictationMode, language: String? = nil, context: String = "") -> UtteranceSession? {
         switch mode {
         case .hybrid:     return makeHybridSession(language: language)
         case .fast:       return makeFastSession(language: language)
         case .accurate:   return makeAccurateSession()
-        case .contextual: return makeContextualSession()
+        case .contextual: return makeContextualSession(context: context)
         }
     }
 
@@ -184,11 +184,10 @@ public final class TwoTierEngine {
     }
 
     /// Context-aware lane only: buffer the utterance, then run one Qwen3-ASR pass.
-    /// PROOF: hardcoded biasing context to see whether priming Qwen3 recovers
-    /// coined terms. If it works, this string is sourced from the user dictionary.
-    func makeContextualSession() -> UtteranceSession? {
+    /// `context` (built from the user's dictionary terms) primes Qwen3's system
+    /// prompt so it recognizes coined names — native ASR biasing.
+    func makeContextualSession(context: String = "") -> UtteranceSession? {
         guard let qwen3 else { return nil }
-        let context = "The audio may mention these proper nouns and terms: Saymark, Qwen3."
         return Qwen3OnlySession(qwen3, context: context)
     }
 }
