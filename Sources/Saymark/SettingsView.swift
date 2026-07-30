@@ -32,6 +32,14 @@ struct SettingsView: View {
                 Text("“HUD only” never types into other apps — it shows live subtitles in the HUD, handy for presentations and demos.")
             }
 
+            Section {
+                VocabularyEditorView(store: VocabularyStore.shared)
+            } header: {
+                Text("Dictionary")
+            } footer: {
+                Text("Rewrites mishearings to the exact term after transcription — the on-device model can’t recognize coined names on its own. Example: “Saymark” is often heard as “cmarc” or “say mark”. Matching is whole-word and case-insensitive.")
+            }
+
             if AnalyticsConsent.isAvailable {
                 Section {
                     Toggle("Share anonymous usage & crash reports", isOn: $analyticsEnabled)
