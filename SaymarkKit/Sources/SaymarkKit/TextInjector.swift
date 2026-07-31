@@ -15,6 +15,8 @@ import Foundation
 /// are blocked by **secure input** (password fields / secure-keyboard terminals).
 /// We detect that and refuse gracefully rather than silently dropping text.
 public enum TextInjector {
+    private static let axProbeTimeout: TimeInterval = 0.15
+
     public enum Result: Sendable, Equatable {
         case pasted              // ⌘V sent into the field; clipboard restored
         case copiedSecureInput   // secure input on → left on the clipboard for manual ⌘V
@@ -75,7 +77,8 @@ public enum TextInjector {
             targetStillPresent: { targetLease.stillTargetsOriginalElement },
             deliveryStillAllowed: { !secureInputActive },
             targetAcknowledged: { targetLease.acknowledgesInsertion(text) },
-            timeout: timeout
+            timeout: timeout,
+            probeTimeout: axProbeTimeout
         )
     }
 
@@ -90,7 +93,8 @@ public enum TextInjector {
         targetIsCurrent: @escaping () -> Bool,
         targetStillPresent: @escaping () -> Bool,
         deliveryStillAllowed: @escaping () -> Bool = { true },
-        targetAcknowledged: @escaping () -> Bool
+        targetAcknowledged: @escaping () -> Bool,
+        probeTimeout: TimeInterval = 0.15
     ) async -> Result {
         await pasteAcknowledged(
             text,
@@ -101,7 +105,8 @@ public enum TextInjector {
             targetStillPresent: targetStillPresent,
             deliveryStillAllowed: deliveryStillAllowed,
             targetAcknowledged: targetAcknowledged,
-            timeout: timeout
+            timeout: timeout,
+            probeTimeout: probeTimeout
         )
     }
 
@@ -110,12 +115,13 @@ public enum TextInjector {
         _ text: String,
         pasteboard pb: NSPasteboard,
         secureInputActive: Bool,
-        postPaste: () -> Bool,
-        targetIsCurrent: () -> Bool,
-        targetStillPresent: () -> Bool,
-        deliveryStillAllowed: () -> Bool,
-        targetAcknowledged: () -> Bool,
-        timeout: TimeInterval
+        postPaste: @escaping () -> Bool,
+        targetIsCurrent: @escaping () -> Bool,
+        targetStillPresent: @escaping () -> Bool,
+        deliveryStillAllowed: @escaping () -> Bool,
+        targetAcknowledged: @escaping () -> Bool,
+        timeout: TimeInterval,
+        probeTimeout: TimeInterval
     ) async -> Result {
         guard !text.isEmpty else { return .failed }
         if secureInputActive {
@@ -128,8 +134,23 @@ public enum TextInjector {
         pb.clearContents()
         pb.setString(text, forType: .string)
         let mine = pb.changeCount
-        guard targetIsCurrent() else { return .copiedTargetChanged }
-        guard postPaste() else { return .failed }
+        // Validate and post as one off-main transaction. The deadline closes the
+        // dispatch gate, so a hung AX validation can never wake later and paste
+        // into whatever field happens to own focus by then.
+        let dispatchOutcome: PasteDispatchOutcome? = await validatedPasteDispatch(
+            timeout: probeTimeout,
+            targetIsCurrent: targetIsCurrent,
+            dispatchIsAllowed: {
+                pb.changeCount == mine && deliveryStillAllowed()
+            },
+            postPaste: postPaste
+        )
+        switch dispatchOutcome {
+        case .some(.posted): break
+        case .some(.failed): return .failed
+        case .some(.targetChanged), .none: return .copiedTargetChanged
+        case .some(.deliveryDisallowed): return .deliveryUnconfirmed
+        }
 
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
         while ProcessInfo.processInfo.systemUptime < deadline {
@@ -137,13 +158,20 @@ public enum TextInjector {
             guard pb.changeCount == mine, deliveryStillAllowed() else {
                 return .deliveryUnconfirmed
             }
-            if targetAcknowledged() {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0,
+                  let probe = await offMainProbe(timeout: min(probeTimeout, remaining), {
+                      if targetAcknowledged() { return AXReceiptProbe.acknowledged }
+                      return targetStillPresent() ? .present : .lost
+                  })
+            else { return .deliveryUnconfirmed }
+            if probe == .acknowledged {
                 guard pb.changeCount == mine else { return .deliveryUnconfirmed }
                 pb.clearContents()
                 if let saved, !saved.isEmpty { pb.writeObjects(saved) }
                 return .pasted
             }
-            guard targetStillPresent() else { return .deliveryUnconfirmed }
+            guard probe == .present else { return .deliveryUnconfirmed }
             do {
                 try await Task.sleep(nanoseconds: 20_000_000)
             } catch {
@@ -151,6 +179,59 @@ public enum TextInjector {
             }
         }
         return .deliveryUnconfirmed
+    }
+
+    private enum AXReceiptProbe { case acknowledged, present, lost }
+    private enum PasteDispatchOutcome { case posted, failed, targetChanged, deliveryDisallowed }
+
+    private static func validatedPasteDispatch(
+        timeout: TimeInterval,
+        targetIsCurrent: @escaping () -> Bool,
+        dispatchIsAllowed: @escaping () -> Bool,
+        postPaste: @escaping () -> Bool
+    ) async -> PasteDispatchOutcome? {
+        await withCheckedContinuation { continuation in
+            let gate = ValidatedPasteDispatchGate(continuation)
+            let validation = UncheckedProbeWork(targetIsCurrent)
+            let allowance = UncheckedProbeWork(dispatchIsAllowed)
+            let post = UncheckedProbeWork(postPaste)
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard validation.body() else {
+                    gate.resolveWithoutDispatch(.targetChanged)
+                    return
+                }
+                gate.dispatchIfOpen { () -> PasteDispatchOutcome in
+                    guard allowance.body() else { return .deliveryDisallowed }
+                    return post.body() ? PasteDispatchOutcome.posted : PasteDispatchOutcome.failed
+                }
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                deadline: .now() + max(0, timeout)
+            ) {
+                gate.expire()
+            }
+        }
+    }
+
+    /// Races one off-main AX probe against a hard coordinator deadline. A hung
+    /// AX call may finish later, but it cannot hold MainActor or authorize a
+    /// second in-flight probe after the caller has failed closed.
+    private static func offMainProbe<Value>(
+        timeout: TimeInterval,
+        _ body: @escaping () -> Value
+    ) async -> Value? {
+        await withCheckedContinuation { continuation in
+            let gate = ProbeContinuationGate(continuation)
+            let work = UncheckedProbeWork(body)
+            DispatchQueue.global(qos: .userInitiated).async {
+                gate.resolve(work.body())
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                deadline: .now() + max(0, timeout)
+            ) {
+                gate.resolve(nil)
+            }
+        }
     }
 
     /// Deterministic seam for UI and policy tests. It runs the exact production
@@ -298,5 +379,81 @@ public enum TextInjector {
         }
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+    }
+}
+
+private final class UncheckedProbeWork<Value>: @unchecked Sendable {
+    private let operation: () -> Value
+    init(_ operation: @escaping () -> Value) { self.operation = operation }
+    func body() -> Value { operation() }
+}
+
+private final class ProbeContinuationGate<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value?, Never>?
+
+    init(_ continuation: CheckedContinuation<Value?, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ value: Value?) {
+        let continuation = lock.withLock { () -> CheckedContinuation<Value?, Never>? in
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: value)
+    }
+}
+
+private final class ValidatedPasteDispatchGate<Outcome>: @unchecked Sendable {
+    private enum State { case open, dispatching, resolved }
+    private let lock = NSLock()
+    private var state = State.open
+    private var continuation: CheckedContinuation<Outcome?, Never>?
+
+    init(_ continuation: CheckedContinuation<Outcome?, Never>) {
+        self.continuation = continuation
+    }
+
+    /// Once dispatch begins, the nonblocking CGEvent post is allowed to finish;
+    /// expiry can close only a still-validating operation.
+    func dispatchIfOpen(_ body: () -> Outcome) {
+        let shouldDispatch = lock.withLock { () -> Bool in
+            guard state == .open else { return false }
+            state = .dispatching
+            return true
+        }
+        guard shouldDispatch else { return }
+        resolveDispatched(body())
+    }
+
+    func resolveWithoutDispatch(_ outcome: Outcome) {
+        let continuation = lock.withLock { () -> CheckedContinuation<Outcome?, Never>? in
+            guard state == .open else { return nil }
+            state = .resolved
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: outcome)
+    }
+
+    func expire() {
+        let continuation = lock.withLock { () -> CheckedContinuation<Outcome?, Never>? in
+            guard state == .open else { return nil }
+            state = .resolved
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: nil)
+    }
+
+    private func resolveDispatched(_ outcome: Outcome) {
+        let continuation = lock.withLock { () -> CheckedContinuation<Outcome?, Never>? in
+            guard state == .dispatching else { return nil }
+            state = .resolved
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: outcome)
     }
 }

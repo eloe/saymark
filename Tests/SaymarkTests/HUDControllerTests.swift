@@ -76,6 +76,27 @@ final class HUDControllerTests: XCTestCase {
         XCTAssertEqual(announcements.last, "Dictation complete. Visible subtitle text")
     }
 
+    func testDurationLimitKeepsHUDOnlyTranscriptVisibleAndUsesOneAnnouncement() {
+        let (controller, _, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        var announcements: [String] = []
+        controller.announcementSink = { announcements.append($0) }
+
+        controller.begin(presentation: true, lang: "Auto")
+        controller.finish(
+            "Visible finalized text",
+            completionNotice: "Maximum dictation length reached. Your text was finalized"
+        )
+
+        XCTAssertTrue(controller.model.showingFinal)
+        XCTAssertEqual(controller.model.confirmed, "Visible finalized text")
+        XCTAssertEqual(controller.model.phase, .transcribing)
+        XCTAssertEqual(controller.model.completionNotice,
+                       "Maximum dictation length reached. Your text was finalized")
+        XCTAssertEqual(announcements.last,
+                       "Dictation complete. Visible finalized text. Maximum dictation length reached. Your text was finalized")
+    }
+
     func testBeginResetsModelAndConfiguresInteractivePanel() {
         let (controller, _, animator) = makeHUDController()
         defer { tearDownHUD(controller) }

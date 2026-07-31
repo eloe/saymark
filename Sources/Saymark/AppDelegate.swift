@@ -78,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         onboarding.onReactivate = { [weak self] in self?.presentOnboarding() }
         dictation.onboardingHotkeyDown = { [weak self] in self?.onboarding.tryHotkeyDown() }
         dictation.onboardingHotkeyUp = { [weak self] in self?.onboarding.tryHotkeyUp() }
+        DictationShortcutDefaults.migrateLegacyVoiceOverConflict()
         dictation.installHotkeyRouting()
         if OnboardingModel.shouldShow {
             SaymarkDiagnostics.log(.info, "app.route", fields: ["destination": "onboarding"])
