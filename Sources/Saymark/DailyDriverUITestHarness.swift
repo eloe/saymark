@@ -337,7 +337,7 @@ private struct DailyDriverUITestView: View {
             Text("Daily-driver integration")
                 .font(.title2.weight(.semibold))
                 .accessibilityIdentifier("daily-driver.title")
-            Text("Press ⌃⌥Space. The test drives Saymark’s registered global shortcut.")
+            Text("Press ⌃⇧Space. The test drives Saymark’s registered global shortcut.")
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("daily-driver.shortcut-instruction")
             Text("Scenario: \(model.scenario)")

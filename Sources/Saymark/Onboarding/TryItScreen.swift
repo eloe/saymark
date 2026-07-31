@@ -53,6 +53,15 @@ struct TryItScreen: View {
             .accessibilityIdentifier("onboarding.try-transcript")
 
             status
+
+            Button(model.tryListening ? "Stop Dictation" : "Start Dictation") {
+                model.tryToggle()
+            }
+            .disabled(!model.canToggleTry)
+            .accessibilityIdentifier("onboarding.try-toggle")
+            .accessibilityHint(model.tryListening
+                ? "Stops the current practice dictation"
+                : "Starts practice dictation without holding the global shortcut")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onDisappear { model.tryEnd() }

@@ -119,7 +119,7 @@ final class DictationController {
     }
 
     var shortcutLabel: String {
-        KeyboardShortcuts.getShortcut(for: .dictate)?.description ?? "⌃⌥Space"
+        KeyboardShortcuts.getShortcut(for: .dictate)?.description ?? "⌃⇧Space"
     }
 
     /// Typing into other apps needs Accessibility (the hotkey itself does not).
