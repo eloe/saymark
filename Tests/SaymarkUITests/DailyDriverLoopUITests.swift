@@ -127,7 +127,7 @@ final class DailyDriverLoopUITests: XCTestCase {
     /// CGEvents from a test-runner process are intentionally rejected by macOS
     /// unless that runner has separate Accessibility trust.
     private func triggerShortcut() {
-        app.typeKey(.space, modifierFlags: [.control, .option])
+        app.typeKey(.space, modifierFlags: [.control, .shift])
         let status = element("daily-driver.status")
         let receivedShortcut = XCTNSPredicateExpectation(
             predicate: NSPredicate(

@@ -60,12 +60,12 @@ final class OnboardingUITests: XCTestCase {
         )
         XCTAssertFalse(app.buttons["Try with Button"].exists)
 
-        app.typeKey(.space, modifierFlags: [.control, .option])
+        app.typeKey(.space, modifierFlags: [.control, .shift])
         XCTAssertTrue(
             app.descendants(matching: .any)["onboarding.try-listening"]
                 .waitForExistence(timeout: 2)
         )
-        app.typeKey(.space, modifierFlags: [.control, .option])
+        app.typeKey(.space, modifierFlags: [.control, .shift])
         XCTAssertTrue(app.staticTexts["Shortcut works."].waitForExistence(timeout: 5))
 
         clickContinue("Finish")

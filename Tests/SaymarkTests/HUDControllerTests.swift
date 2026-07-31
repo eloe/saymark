@@ -4,6 +4,78 @@ import XCTest
 
 @MainActor
 final class HUDControllerTests: XCTestCase {
+    func testDefaultShortcutAvoidsVoiceOverModifierChord() {
+        XCTAssertEqual(HUDModel().shortcutLabel, "⌃⇧Space")
+    }
+
+    func testPlacementCentersAboveSelectedDisplaysVisibleBottomEdge() {
+        let frame = HUDController.frame(
+            panelSize: NSSize(width: 940, height: 260),
+            visibleFrame: NSRect(x: 1_440, y: 25, width: 1_920, height: 1_055)
+        )
+
+        XCTAssertEqual(frame, NSRect(x: 1_930, y: 49, width: 940, height: 260))
+    }
+
+    func testBeginUsesOneActiveDisplayForHUDAndHalo() throws {
+        let scheduler = ManualHUDScheduler()
+        let animator = ManualHUDAnimator()
+        let halo = ManualListeningHalo()
+        var selections = 0
+        let controller = HUDController(
+            scheduler: scheduler,
+            animator: animator,
+            halo: halo,
+            activeScreenProvider: {
+                selections += 1
+                return NSScreen.main
+            }
+        )
+        defer { tearDownHUD(controller) }
+
+        controller.begin(presentation: false, lang: "Auto", interactive: true)
+
+        let screen = try XCTUnwrap(NSScreen.main)
+        XCTAssertEqual(selections, 1)
+        XCTAssertEqual(controller.panel?.frame,
+                       HUDController.frame(panelSize: NSSize(width: 940, height: 260),
+                                           visibleFrame: screen.visibleFrame))
+        XCTAssertEqual(halo.beginCount, 1)
+    }
+
+    func testHUDAnnouncesStateChangesWithoutSpeakingInFieldTranscript() {
+        let (controller, _, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        var announcements: [String] = []
+        controller.announcementSink = { announcements.append($0) }
+
+        controller.begin(presentation: false, lang: "Auto")
+        controller.processing()
+        controller.finish("private dictated content")
+        controller.error(title: "Paste unconfirmed", detail: "Text remains on the clipboard")
+        controller.offerRecentDictationsRecovery {}
+
+        XCTAssertEqual(announcements, [
+            "Listening",
+            "Processing dictation",
+            "Dictation complete",
+            "Paste unconfirmed. Text remains on the clipboard",
+            "Open Recent Dictations is available",
+        ])
+    }
+
+    func testHUDOnlyCompletionAnnouncesTheVisibleTranscript() {
+        let (controller, _, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        var announcements: [String] = []
+        controller.announcementSink = { announcements.append($0) }
+
+        controller.begin(presentation: true, lang: "Auto")
+        controller.finish("Visible subtitle text")
+
+        XCTAssertEqual(announcements.last, "Dictation complete. Visible subtitle text")
+    }
+
     func testBeginResetsModelAndConfiguresInteractivePanel() {
         let (controller, _, animator) = makeHUDController()
         defer { tearDownHUD(controller) }

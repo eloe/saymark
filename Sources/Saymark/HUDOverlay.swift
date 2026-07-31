@@ -21,7 +21,7 @@ final class HUDModel {
     /// Saymark currently supports English only; this is product truth, not
     /// model language detection.
     var lang = "EN"
-    var shortcutLabel = "⌃⌥Space"
+    var shortcutLabel = "⌃⇧Space"
     var errorTitle = "No microphone access"
     var errorText = "Open Privacy in Settings →"
     var recoveryActionTitle: String?
@@ -95,6 +95,7 @@ private struct LevelBars: View {
             }
         }
         .onAppear { up = true }
+        .accessibilityHidden(true)
     }
 }
 
@@ -165,6 +166,8 @@ private struct HUDView: View {
                 .background(Circle().fill(scheme == .dark ? Color.white.opacity(0.12) : SaymarkTheme.ink.opacity(0.08)))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Stop dictation")
+        .accessibilityHint("Stops recording and finalizes the transcript")
     }
 
     // Two-tier coloured transcript + blinking accent caret.
@@ -280,6 +283,7 @@ private struct HUDView: View {
             .padding(.horizontal, 6).padding(.vertical, 3)
             .background(scheme == .dark ? Color.white.opacity(0.09) : SaymarkTheme.ink.opacity(0.07),
                         in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .accessibilityLabel("Dictation shortcut \(model.shortcutLabel)")
     }
 
     private var borderColor: Color {
@@ -369,6 +373,15 @@ final class HUDController {
     private let scheduler: any HUDHideScheduling
     private let animator: any HUDAnimating
     private let halo: any ListeningHaloControlling
+    private let activeScreenProvider: @MainActor () -> NSScreen?
+    private weak var activeScreen: NSScreen?
+    var announcementSink: (String) -> Void = { message in
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+        )
+    }
     private(set) var isListeningHaloVisible = false
     private var completesWithHalo = false
     private let normalSize = NSSize(width: 940, height: 260)
@@ -395,10 +408,12 @@ final class HUDController {
 
     init(scheduler: any HUDHideScheduling,
          animator: any HUDAnimating,
-         halo: any ListeningHaloControlling) {
+         halo: any ListeningHaloControlling,
+         activeScreenProvider: @escaping @MainActor () -> NSScreen? = HUDController.pointerScreen) {
         self.scheduler = scheduler
         self.animator = animator
         self.halo = halo
+        self.activeScreenProvider = activeScreenProvider
     }
 
     /// Reveal the HUD for a new utterance. `interactive` (toggle mode) makes the
@@ -406,7 +421,7 @@ final class HUDController {
     func begin(
         presentation: Bool,
         lang: String,
-        shortcutLabel: String = "⌃⌥Space",
+        shortcutLabel: String = "⌃⇧Space",
         interactive: Bool = false,
         onStop: @escaping () -> Void = {}
     ) {
@@ -428,15 +443,14 @@ final class HUDController {
         model.recoveryActionTitle = nil
         model.onRecoveryAction = {}
         panel.ignoresMouseEvents = !interactive
+        activeScreen = activeScreenProvider()
         position(panel)
         animator.show(panel)
+        announcementSink("Listening")
         completesWithHalo = interactive
         isListeningHaloVisible = interactive
         if interactive {
-            let activeDisplay = NSScreen.screens.first {
-                NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
-            } ?? NSScreen.main
-            halo.begin(on: activeDisplay)
+            halo.begin(on: activeScreen)
         } else {
             halo.dismiss()
         }
@@ -467,6 +481,7 @@ final class HUDController {
         model.recording = false
         model.showingFinal = false
         model.showStop = false
+        announcementSink("Processing dictation")
         if isListeningHaloVisible {
             halo.stopListening()
             isListeningHaloVisible = false
@@ -497,6 +512,7 @@ final class HUDController {
         completesWithHalo = false
         position(panel)
         animator.show(panel)
+        announcementSink([title, detail].filter { !$0.isEmpty }.joined(separator: ". "))
         scheduleHide(after: delay)
     }
 
@@ -512,6 +528,7 @@ final class HUDController {
             self?.panel?.orderOut(nil)
         }
         panel?.ignoresMouseEvents = false
+        announcementSink("Open Recent Dictations is available")
         scheduleHide(after: 7.0)
     }
 
@@ -544,6 +561,9 @@ final class HUDController {
         }
         isListeningHaloVisible = false
         completesWithHalo = false
+        if !finalText.isEmpty {
+            announcementSink(model.presentation ? "Dictation complete. \(finalText)" : "Dictation complete")
+        }
         let delay = model.showingFinal
             ? model.finalDisplayDuration
             : (model.presentation ? 4.0 : 1.6)
@@ -597,10 +617,22 @@ final class HUDController {
     }
 
     private func position(_ panel: NSPanel) {
-        guard let screen = NSScreen.main else { return }
+        guard let screen = activeScreen ?? activeScreenProvider() else { return }
         let v = screen.visibleFrame
         let size = panel.frame.size
-        panel.setFrame(NSRect(x: v.midX - size.width / 2, y: v.minY + 24,
-                              width: size.width, height: size.height), display: true)
+        panel.setFrame(Self.frame(panelSize: size, visibleFrame: v), display: true)
+    }
+
+    static func pointerScreen() -> NSScreen? {
+        NSScreen.screens.first {
+            NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
+        } ?? NSScreen.main
+    }
+
+    static func frame(panelSize: NSSize, visibleFrame: NSRect) -> NSRect {
+        NSRect(x: visibleFrame.midX - panelSize.width / 2,
+               y: visibleFrame.minY + 24,
+               width: panelSize.width,
+               height: panelSize.height)
     }
 }

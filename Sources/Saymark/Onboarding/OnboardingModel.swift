@@ -62,7 +62,7 @@ final class OnboardingModel {
 
     /// The configured dictation shortcut shown and exercised on Try It.
     var shortcutLabel: String {
-        KeyboardShortcuts.getShortcut(for: .dictate)?.description ?? "⌃⌥Space"
+        KeyboardShortcuts.getShortcut(for: .dictate)?.description ?? "⌃⇧Space"
     }
 
     func next() {
@@ -241,6 +241,7 @@ final class OnboardingModel {
     /// loading finishes, which lags the download bars (`session.isReady` isn't tracked).
     var modelsReady = false
     var tryReady: Bool { modelsReady }
+    var canToggleTry: Bool { tryReady && !tryBusy }
 
     /// Independent observation of the shared session while try-it is active.
     @ObservationIgnored private var tryUpdateSubscription: DictationUpdateSubscription?

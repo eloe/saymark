@@ -39,11 +39,12 @@ struct ShortcutScreen: View {
 
             Button("Use Recommended Shortcut") {
                 KeyboardShortcuts.setShortcut(
-                    .init(.space, modifiers: [.control, .option]),
+                    .init(.space, modifiers: [.control, .shift]),
                     for: .dictate
                 )
             }
             .buttonStyle(.link)
+            .accessibilityHint("Uses Control and Shift so it does not conflict with the VoiceOver modifier")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
