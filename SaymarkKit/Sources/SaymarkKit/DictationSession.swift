@@ -36,7 +36,15 @@ public final class DictationSession: @unchecked Sendable {
     private let updates = DictationUpdateHub()
     private let correctedUpdates = CorrectedDictationUpdateHub()
     private let captureStopRequests = CaptureStopRequestHub()
-    public private(set) var activeSessionID: String?
+    private let activeSessionLock = NSLock()
+    private var storedActiveSessionID: String?
+    public var activeSessionID: String? {
+        activeSessionLock.withLock { storedActiveSessionID }
+    }
+
+    private func setActiveSessionID(_ value: String?) {
+        activeSessionLock.withLock { storedActiveSessionID = value }
+    }
 
     public init(
         nemotronRepo: String = TwoTierEngine.defaultNemotronRepo,
@@ -110,7 +118,7 @@ public final class DictationSession: @unchecked Sendable {
                 correctionHub.publish(confirmed: confirmed, partial: partial)
             }
         )
-        activeSessionID = sessionID
+        setActiveSessionID(sessionID)
         mic.onChunk = { [weak self] chunk in
             guard let self else { return }
             let (confirmed, partial) = self.engine.step(chunk)
@@ -137,7 +145,7 @@ public final class DictationSession: @unchecked Sendable {
             mic.abort()
             mic.onChunk = { _ in }
             engine.abort()
-            activeSessionID = nil
+            setActiveSessionID(nil)
             mic = MicCapture()
             throw error
         }
@@ -175,7 +183,7 @@ public final class DictationSession: @unchecked Sendable {
         let detailed = engine.latestCorrection()
         correctedUpdates.publish(confirmed: detailed.confirmed, partial: detailed.partial)
         mic = MicCapture()                               // fresh engine for the next gesture
-        activeSessionID = nil
+        setActiveSessionID(nil)
         return DictationStopOutcome(text: final, reason: capture.stopReason)
     }
 

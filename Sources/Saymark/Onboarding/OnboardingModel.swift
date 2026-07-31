@@ -34,6 +34,9 @@ final class OnboardingModel {
     /// Guards `startDownload` so repeated Download-step appearances or a manual
     /// Retry never spawn two concurrent downloads.
     @ObservationIgnored private var downloadStarted = false
+    /// Owns download + shared-session preparation through completion. Runtime
+    /// hotkey ownership cannot be reclaimed while this task still uses the engine.
+    @ObservationIgnored private var downloadTask: Task<Void, Never>?
 
     private let session: DictationSession
     @ObservationIgnored private var captureStopSubscription: DictationUpdateSubscription?
@@ -47,8 +50,8 @@ final class OnboardingModel {
         captureStopSubscription = session.observeCaptureStopRequests { [weak self] request in
             Task { @MainActor in
                 guard let self,
-                      request.belongs(to: self.session.activeSessionID),
-                      self.tryListening
+                      self.tryListening,
+                      request.belongs(to: self.session.activeSessionID)
                 else { return }
                 self.tryEnd()
             }
@@ -186,7 +189,12 @@ final class OnboardingModel {
             return
         }
         PostHogSDK.shared.capture("model_download_started")
-        Task {
+        downloadTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.downloadTask = nil
+                self.runTryIdleCallbacks()
+            }
             do {
                 try await OnboardingDownloader.download(plan: OnboardingFlow.modelPlan) { progress in
                     // Monotonic: progress ticks arrive unordered (per-tick Tasks),
@@ -235,6 +243,7 @@ final class OnboardingModel {
     var tryPartial = ""
     var tryListening = false
     var tryError: String?
+    private(set) var didVerifyShortcut = false
 
     /// True once the Hybrid pipeline is loaded into memory (set after the Download
     /// step's `session.load`). Observable — so the try-it button re-enables the moment
@@ -250,6 +259,7 @@ final class OnboardingModel {
     /// rapid re-press from starting a new utterance before teardown finishes —
     /// otherwise it would overlap start()/stop() on the shared session.
     @ObservationIgnored private var tryBusy = false
+    @ObservationIgnored private var currentAttemptUsedShortcut = false
     @ObservationIgnored private var tryIdleCallbacks: [@MainActor () -> Void] = []
     @ObservationIgnored private let tryHalo: any ListeningHaloControlling =
         ActiveDisplayHaloController()
@@ -304,6 +314,7 @@ final class OnboardingModel {
             tryConfirmed = "Write with your voice anywhere."
             tryPartial = ""
             flow.didTry = true
+            didVerifyShortcut = didVerifyShortcut || currentAttemptUsedShortcut
             if completesWithHalo {
                 tryHalo.complete()
             }
@@ -334,6 +345,8 @@ final class OnboardingModel {
                 self.tryPartial = ""
                 let wasFirst = !self.flow.didTry
                 self.flow.didTry = self.flow.didTry || !outcome.text.isEmpty   // monotonic: one success is enough
+                self.didVerifyShortcut = self.didVerifyShortcut ||
+                    (!outcome.text.isEmpty && self.currentAttemptUsedShortcut)
                 if wasFirst && !outcome.text.isEmpty {
                     PostHogSDK.shared.capture("try_it_completed")
                 }
@@ -352,17 +365,18 @@ final class OnboardingModel {
     }
 
     /// Stop any onboarding utterance and run `completion` only after the shared
-    /// session has fully drained. Runtime hotkey ownership must not resume sooner.
+    /// session has fully drained and onboarding model preparation has released it.
+    /// Runtime hotkey ownership must not resume sooner.
     func stopTrying(then completion: @escaping @MainActor () -> Void) {
         tryIdleCallbacks.append(completion)
         tryEnd()
-        if !tryListening && !tryBusy {
+        if !tryListening && !tryBusy && downloadTask == nil {
             runTryIdleCallbacks()
         }
     }
 
     private func runTryIdleCallbacks() {
-        guard !tryListening, !tryBusy else { return }
+        guard !tryListening, !tryBusy, downloadTask == nil else { return }
         let callbacks = tryIdleCallbacks
         tryIdleCallbacks.removeAll()
         callbacks.forEach { $0() }
@@ -376,13 +390,20 @@ final class OnboardingModel {
         tryHalo.dismiss()
     }
 
-    /// VoiceOver can't hold a key — double-tap toggles the utterance instead.
-    func tryToggle() {
+    /// VoiceOver can't hold a key. This native control practices dictation
+    /// without claiming that the global shortcut itself was exercised.
+    func tryAccessibleToggle() {
+        if !tryListening { currentAttemptUsedShortcut = false }
+        tryToggle()
+    }
+
+    private func tryToggle() {
         if tryListening { tryEnd() } else { tryStart() }
     }
 
     func tryHotkeyDown() {
         guard flow.step == .tryIt, !finished else { return }
+        if !tryListening { currentAttemptUsedShortcut = true }
         switch TriggerMode.current {
         case .hold: tryStart()
         case .toggle: tryToggle()

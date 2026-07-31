@@ -18,6 +18,7 @@ public enum Accessibility {
 /// Identity of the accessibility element and selection that owned focus when
 /// dictation began. Delivery can fail closed if the user's intent moves.
 public struct FocusedInsertionLease {
+    private static let maximumReceiptUTF16 = 64
     private let element: AXUIElement
     private let processID: pid_t
     private let selectedRange: CFRange
@@ -50,9 +51,10 @@ public struct FocusedInsertionLease {
         guard let current = currentElement(),
               let currentRange = Self.selectionRange(of: current)
         else { return false }
+        let expectedProbe = Self.receiptProbe(for: insertedText)
         let insertedRange = CFRange(
             location: selectedRange.location,
-            length: insertedText.utf16.count
+            length: expectedProbe.utf16.count
         )
         guard let observedText = Self.string(in: insertedRange, of: current) else { return false }
         return Self.receiptMatches(
@@ -61,6 +63,23 @@ public struct FocusedInsertionLease {
             currentRange: currentRange,
             observedText: observedText
         )
+    }
+
+    /// A caret at the exact final offset proves the target consumed the full
+    /// payload. Reading a matching bounded prefix distinguishes that paste from
+    /// unrelated caret motion without inspecting an arbitrary amount of the
+    /// user's field content.
+    private static func receiptProbe(for insertedText: String) -> String {
+        let utf16 = insertedText.utf16
+        var utf16End = utf16.index(
+            utf16.startIndex,
+            offsetBy: min(maximumReceiptUTF16, utf16.count)
+        )
+        while String.Index(utf16End, within: insertedText) == nil {
+            utf16End = utf16.index(before: utf16End)
+        }
+        let end = String.Index(utf16End, within: insertedText) ?? insertedText.startIndex
+        return String(insertedText[..<end])
     }
 
     @_spi(Testing)
@@ -72,7 +91,7 @@ public struct FocusedInsertionLease {
     ) -> Bool {
         currentRange.location == originalRange.location + insertedText.utf16.count
             && currentRange.length == 0
-            && observedText == insertedText
+            && observedText == receiptProbe(for: insertedText)
     }
 
     public var stillTargetsOriginalElement: Bool { currentElement() != nil }
@@ -99,7 +118,11 @@ public struct FocusedInsertionLease {
         let value,
         CFGetTypeID(value) == AXUIElementGetTypeID()
         else { return nil }
-        return unsafeBitCast(value, to: AXUIElement.self)
+        let element = unsafeBitCast(value, to: AXUIElement.self)
+        // A newly fetched application element otherwise inherits the system AX
+        // timeout. Apply our bound before any selection or content IPC.
+        guard AXUIElementSetMessagingTimeout(element, 0.05) == .success else { return nil }
+        return element
     }
 
     private static func selectionRange(of element: AXUIElement) -> CFRange? {

@@ -29,6 +29,7 @@ final class HUDModel {
     var presentation = false      // HUD-only / subtitles
     var recording = false
     var showingFinal = false
+    var completionNotice: String?
     var showStop = false          // toggle-mode: HUD shows a clickable Stop
     var onStop: () -> Void = {}
 
@@ -189,14 +190,22 @@ private struct HUDView: View {
             }
             if model.showingFinal {
                 ScrollView(.vertical) {
-                    transcript
-                        .font(.system(size: big ? 25 : 19))
-                        .lineSpacing(big ? 7 : 5)
-                        .lineLimit(nil)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("hud.final-transcript")
-                        .accessibilityLabel(model.transcriptAccessibilityLabel)
+                    VStack(alignment: .leading, spacing: 8) {
+                        transcript
+                            .font(.system(size: big ? 25 : 19))
+                            .lineSpacing(big ? 7 : 5)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("hud.final-transcript")
+                            .accessibilityLabel(model.transcriptAccessibilityLabel)
+                        if let notice = model.completionNotice {
+                            Label(notice, systemImage: "clock.badge.checkmark")
+                                .font(.system(size: big ? 13 : 11.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("hud.completion-notice")
+                        }
+                    }
                 }
                 .scrollIndicators(.automatic)
                 .frame(maxHeight: big ? 300 : 220)
@@ -438,6 +447,7 @@ final class HUDController {
         model.correctionStatus = "unchanged"; model.correctionRevision = 0
         model.recording = true
         model.showingFinal = false
+        model.completionNotice = nil
         model.showStop = interactive
         model.onStop = onStop
         model.recoveryActionTitle = nil
@@ -460,6 +470,7 @@ final class HUDController {
     func update(confirmed: String, partial: String, rawConfirmed: String? = nil, rawPartial: String? = nil,
                 correctionStatus: String? = nil, correctionRevision: UInt64? = nil) {
         model.showingFinal = false
+        model.completionNotice = nil
         model.confirmed = confirmed
         model.partial = partial
         if let rawConfirmed, let rawPartial { model.rawTranscript = rawConfirmed + rawPartial }
@@ -480,6 +491,7 @@ final class HUDController {
         model.rawTranscript = ""; model.showRawTranscript = false
         model.recording = false
         model.showingFinal = false
+        model.completionNotice = nil
         model.showStop = false
         announcementSink("Processing dictation")
         if isListeningHaloVisible {
@@ -504,6 +516,7 @@ final class HUDController {
         if !detail.isEmpty { model.errorText = detail }
         model.recording = false
         model.showingFinal = false
+        model.completionNotice = nil
         model.showStop = false
         model.recoveryActionTitle = nil
         model.onRecoveryAction = {}
@@ -534,7 +547,7 @@ final class HUDController {
 
     /// Show the final text, then fade — lingering longer in presentation mode.
     func finish(_ finalText: String, rawText: String? = nil, correctionStatus: String? = nil,
-                correctionRevision: UInt64? = nil) {
+                correctionRevision: UInt64? = nil, completionNotice: String? = nil) {
         guard panel != nil else { return }
         model.recording = false
         model.showStop = false
@@ -546,6 +559,7 @@ final class HUDController {
             if let correctionRevision { model.correctionRevision = correctionRevision }
             model.showRawTranscript = false
             model.showingFinal = true
+            model.completionNotice = completionNotice
             model.phase = .transcribing
             panel?.ignoresMouseEvents = !model.allowsFinalInteraction
             if model.requiresExpandedFinal, let panel {
@@ -562,7 +576,8 @@ final class HUDController {
         isListeningHaloVisible = false
         completesWithHalo = false
         if !finalText.isEmpty {
-            announcementSink(model.presentation ? "Dictation complete. \(finalText)" : "Dictation complete")
+            let completion = model.presentation ? "Dictation complete. \(finalText)" : "Dictation complete"
+            announcementSink([completion, completionNotice].compactMap { $0 }.joined(separator: ". "))
         }
         let delay = model.showingFinal
             ? model.finalDisplayDuration

@@ -55,7 +55,7 @@ struct TryItScreen: View {
             status
 
             Button(model.tryListening ? "Stop Dictation" : "Start Dictation") {
-                model.tryToggle()
+                model.tryAccessibleToggle()
             }
             .disabled(!model.canToggleTry)
             .accessibilityIdentifier("onboarding.try-toggle")
@@ -70,14 +70,16 @@ struct TryItScreen: View {
     private var successHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label {
-                Text("Shortcut works.")
+                Text(model.didVerifyShortcut ? "Shortcut works." : "Dictation works.")
                     .font(.system(size: 26, weight: .semibold))
             } icon: {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             }
 
-            Text("Saymark is ready to dictate in any app.")
+            Text(model.didVerifyShortcut
+                 ? "Saymark is ready to dictate in any app."
+                 : "Practice succeeded. Use this button with VoiceOver, or choose and test a global shortcut later.")
                 .font(.title3)
                 .foregroundStyle(.secondary)
         }

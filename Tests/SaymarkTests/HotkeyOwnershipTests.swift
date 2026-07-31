@@ -1,9 +1,29 @@
 import XCTest
 import SaymarkKit
+import KeyboardShortcuts
 @testable import Saymark
 
 @MainActor
 final class HotkeyOwnershipTests: XCTestCase {
+    func testLegacyVoiceOverConflictMigratesOnlyOnceAndOnlyWhenUnchanged() {
+        XCTAssertTrue(DictationShortcutDefaults.shouldMigrate(
+            current: DictationShortcutDefaults.legacyVoiceOverConflict,
+            migrationCompleted: false
+        ))
+        XCTAssertFalse(DictationShortcutDefaults.shouldMigrate(
+            current: DictationShortcutDefaults.legacyVoiceOverConflict,
+            migrationCompleted: true
+        ))
+        XCTAssertFalse(DictationShortcutDefaults.shouldMigrate(
+            current: .init(.d, modifiers: [.command, .shift]),
+            migrationCompleted: false
+        ))
+        XCTAssertFalse(DictationShortcutDefaults.shouldMigrate(
+            current: nil,
+            migrationCompleted: false
+        ))
+    }
+
     func testOnboardingHandoffIsIdempotentAndCanBeReclaimed() {
         let controller = DictationController()
 

@@ -110,8 +110,8 @@ final class DictationController {
         captureStopSubscription = session.observeCaptureStopRequests { [weak self] request in
             Task { @MainActor in
                 guard let self,
-                      request.belongs(to: self.session.activeSessionID),
-                      self.state == .recording
+                      self.state == .recording,
+                      request.belongs(to: self.session.activeSessionID)
                 else { return }
                 self.endRecording()
             }
@@ -360,9 +360,6 @@ final class DictationController {
             return
         }
         let insert = InsertMode.current
-        insertionLease = insert == .inField && Accessibility.isTrusted
-            ? FocusedInsertionLease.capture()
-            : nil
         // History is explicit opt-in at the beginning of the utterance. A later
         // settings change must not retroactively retain speech that began Off.
         let history = RecentDictationsController.shared
@@ -380,6 +377,11 @@ final class DictationController {
             "latency_ms": (ProcessInfo.processInfo.systemUptime - gestureStarted) * 1_000,
             "model_mode": modelMode.rawValue,
         ])
+        // AX target capture is bounded, but remains an external IPC. Present the
+        // HUD first so even a sick target application cannot delay user feedback.
+        insertionLease = insert == .inField && Accessibility.isTrusted
+            ? FocusedInsertionLease.capture()
+            : nil
         do {
             // The live two-tier view stays in the HUD; the field receives one paste
             // on release (Variant B — paste is atomic, so no live-into-field typing).
@@ -475,7 +477,9 @@ final class DictationController {
             finishHotkeyHandoffIfPossible()
             return
         }
-        var deliverySucceeded = false
+        let completionNotice = captureStopReason == .maximumDuration
+            ? String(localized: "Maximum dictation length reached. Your text was finalized")
+            : nil
         if final.isEmpty {
             hud.error(
                 title: String(localized: "No speech detected"),
@@ -496,7 +500,8 @@ final class DictationController {
                         rawText: corrected.rawText,
                         correctionStatus: corrected.correctionStatus.rawValue,
                         correctionRevision: corrected.snapshotRevision,
-                        sessionID: diagnosticSessionID
+                        sessionID: diagnosticSessionID,
+                        completionNotice: completionNotice
                     )
                 } markDelivery: {
                     RecentDictationsController.shared.markDelivery($0, state: $1)
@@ -506,7 +511,6 @@ final class DictationController {
                         RecentDictationsController.shared.present()
                     }
                 }
-                deliverySucceeded = delivery.outcome == .inserted
             } else {
                 _ = await RecentDictationsController.shared.recordFinal(
                     final,
@@ -518,9 +522,9 @@ final class DictationController {
                     final,
                     rawText: corrected.rawText,
                     correctionStatus: corrected.correctionStatus.rawValue,
-                    correctionRevision: corrected.snapshotRevision
+                    correctionRevision: corrected.snapshotRevision,
+                    completionNotice: completionNotice
                 )
-                deliverySucceeded = true
             }
         }
                 SaymarkDiagnostics.log(.info, "dictation.ui_completed", sessionID: diagnosticSessionID, fields: [
@@ -535,12 +539,6 @@ final class DictationController {
                     "insert_mode": insertModeAtStop,
                 ])
         state = .transcribed(final)
-        if captureStopReason == .maximumDuration, deliverySucceeded {
-            hud.error(
-                title: String(localized: "Maximum dictation length reached"),
-                detail: String(localized: "Your text was finalized")
-            )
-        }
         finishHotkeyHandoffIfPossible()
         if hotkeyOwner == .runtime {
             resumeDeferredPreparationIfPossible()
@@ -565,6 +563,7 @@ final class DictationController {
         correctionStatus: String? = nil,
         correctionRevision: UInt64? = nil,
         sessionID: String?,
+        completionNotice: String? = nil,
         uiTestCompletion: ((String) -> Void)? = nil
     ) async -> HistoryDeliveryState {
         #if DEBUG
@@ -581,7 +580,8 @@ final class DictationController {
                 uiTestCompletion?("copied")
                 return .copiedAccessibility
             default:
-                hud.finish(text, rawText: rawText, correctionStatus: correctionStatus, correctionRevision: correctionRevision)
+                hud.finish(text, rawText: rawText, correctionStatus: correctionStatus,
+                           correctionRevision: correctionRevision, completionNotice: completionNotice)
                 uiTestCompletion?("inserted")
                 return .inserted
             }
@@ -621,7 +621,8 @@ final class DictationController {
                 "outcome": "pasted",
                 "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
             ])
-            hud.finish(text, rawText: rawText, correctionStatus: correctionStatus, correctionRevision: correctionRevision)
+            hud.finish(text, rawText: rawText, correctionStatus: correctionStatus,
+                       correctionRevision: correctionRevision, completionNotice: completionNotice)
             return .inserted
         case .failed:
             SaymarkDiagnostics.log(.error, "dictation.insert_completed", sessionID: sessionID, fields: [

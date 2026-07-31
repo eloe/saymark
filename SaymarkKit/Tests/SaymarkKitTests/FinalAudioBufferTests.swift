@@ -49,6 +49,15 @@ final class FinalAudioBufferTests: XCTestCase {
         XCTAssertNil(buffer.takeIfSpeechDetected())
         XCTAssertEqual(buffer.sampleCount, 0)
     }
+
+    func testDefaultBufferDoesNotInheritMicrophoneDurationLimit() {
+        var buffer = FinalAudioBuffer()
+        let samples = Array(repeating: Float(0.25), count: MicCapture.maximumUtteranceSamples + 1)
+
+        buffer.append(samples, speechDetected: true)
+
+        XCTAssertEqual(buffer.takeIfSpeechDetected()?.count, samples.count)
+    }
     func testLeadingAudioIsPreservedWhenSpeechIsDetectedLater() {
         var buffer = FinalAudioBuffer()
         buffer.append([1, 2, 3], speechDetected: false)
