@@ -109,6 +109,99 @@ final class TextInjectorTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
     }
 
+    func testAcknowledgedPasteRestoresOnlyAfterExactCaretReceipt() async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        var postCount = 0
+
+        let result = await TextInjector.pasteAcknowledgedForTesting(
+            "transcript ",
+            pasteboard: pasteboard,
+            postPaste: { postCount += 1; return true },
+            targetIsCurrent: { true },
+            targetStillPresent: { true },
+            targetAcknowledged: { true }
+        )
+
+        XCTAssertEqual(result, .pasted)
+        XCTAssertEqual(postCount, 1)
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+    }
+
+    func testReceiptRequiresExactInsertedContentNotOnlySameLengthCaretMovement() {
+        let original = CFRange(location: 4, length: 3)
+        let caret = CFRange(location: 8, length: 0)
+
+        XCTAssertTrue(FocusedInsertionLease.receiptMatches(
+            originalRange: original,
+            insertedText: "word",
+            currentRange: caret,
+            observedText: "word"
+        ))
+        XCTAssertFalse(FocusedInsertionLease.receiptMatches(
+            originalRange: original,
+            insertedText: "word",
+            currentRange: caret,
+            observedText: "same"
+        ))
+    }
+
+    func testUnacknowledgedPasteTimesOutWithTranscriptStillRecoverable() async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+
+        let result = await TextInjector.pasteAcknowledgedForTesting(
+            "transcript ",
+            pasteboard: pasteboard,
+            timeout: 0.001,
+            postPaste: { true },
+            targetIsCurrent: { true },
+            targetStillPresent: { true },
+            targetAcknowledged: { false }
+        )
+
+        XCTAssertEqual(result, .deliveryUnconfirmed)
+        XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
+    }
+
+    func testTargetLossAfterPasteEventNeverReportsSuccessOrRestores() async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+
+        let result = await TextInjector.pasteAcknowledgedForTesting(
+            "transcript ",
+            pasteboard: pasteboard,
+            postPaste: { true },
+            targetIsCurrent: { true },
+            targetStillPresent: { false },
+            targetAcknowledged: { false }
+        )
+
+        XCTAssertEqual(result, .deliveryUnconfirmed)
+        XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
+    }
+
+    func testNewerClipboardDuringAcknowledgementIsPreservedAndUnconfirmed() async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+
+        let result = await TextInjector.pasteAcknowledgedForTesting(
+            "transcript ",
+            pasteboard: pasteboard,
+            postPaste: {
+                pasteboard.clearContents()
+                pasteboard.setString("newer-user-copy", forType: .string)
+                return true
+            },
+            targetIsCurrent: { true },
+            targetStillPresent: { true },
+            targetAcknowledged: { true }
+        )
+
+        XCTAssertEqual(result, .deliveryUnconfirmed)
+        XCTAssertEqual(pasteboard.string(forType: .string), "newer-user-copy")
+    }
+
     func testConcealedAndTransientItemsAreNeverRepublished() async {
         for markerName in [
             "org.nspasteboard.ConcealedType",

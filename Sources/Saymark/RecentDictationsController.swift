@@ -458,7 +458,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                 self.announce("Dictation reinserted.")
             case .copiedSecureInput:
                 self.showReinsertFallback(record, message: "Field is protected. The text was copied.")
-            case .copiedTargetChanged, .failed:
+            case .copiedTargetChanged, .deliveryUnconfirmed, .failed:
                 self.showReinsertFallback(record, message: "Couldn’t paste text. The text was copied.")
             }
         }

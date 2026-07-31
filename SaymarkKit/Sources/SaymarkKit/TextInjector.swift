@@ -19,6 +19,7 @@ public enum TextInjector {
         case pasted              // ⌘V sent into the field; clipboard restored
         case copiedSecureInput   // secure input on → left on the clipboard for manual ⌘V
         case copiedTargetChanged // intended field/selection no longer owns focus
+        case deliveryUnconfirmed // event posted, but intended field did not acknowledge it
         case failed              // couldn't synthesize the events
     }
 
@@ -54,6 +55,102 @@ public enum TextInjector {
             restoreDelay: 0.12,
             onRestore: nil
         )
+    }
+
+    /// Paste into a leased field and report success only after Accessibility
+    /// observes the exact caret movement caused by the inserted UTF-16 payload.
+    /// The transcript remains on the clipboard on timeout or target loss.
+    @MainActor
+    public static func pasteAcknowledged(
+        _ text: String,
+        targetLease: FocusedInsertionLease,
+        timeout: TimeInterval = 0.75
+    ) async -> Result {
+        await pasteAcknowledged(
+            text,
+            pasteboard: .general,
+            secureInputActive: secureInputActive,
+            postPaste: postPasteShortcut,
+            targetIsCurrent: { targetLease.isCurrent },
+            targetStillPresent: { targetLease.stillTargetsOriginalElement },
+            deliveryStillAllowed: { !secureInputActive },
+            targetAcknowledged: { targetLease.acknowledgesInsertion(text) },
+            timeout: timeout
+        )
+    }
+
+    @_spi(Testing)
+    @MainActor
+    public static func pasteAcknowledgedForTesting(
+        _ text: String,
+        pasteboard: NSPasteboard,
+        secureInputActive: Bool = false,
+        timeout: TimeInterval = 0.05,
+        postPaste: @escaping () -> Bool,
+        targetIsCurrent: @escaping () -> Bool,
+        targetStillPresent: @escaping () -> Bool,
+        deliveryStillAllowed: @escaping () -> Bool = { true },
+        targetAcknowledged: @escaping () -> Bool
+    ) async -> Result {
+        await pasteAcknowledged(
+            text,
+            pasteboard: pasteboard,
+            secureInputActive: secureInputActive,
+            postPaste: postPaste,
+            targetIsCurrent: targetIsCurrent,
+            targetStillPresent: targetStillPresent,
+            deliveryStillAllowed: deliveryStillAllowed,
+            targetAcknowledged: targetAcknowledged,
+            timeout: timeout
+        )
+    }
+
+    @MainActor
+    private static func pasteAcknowledged(
+        _ text: String,
+        pasteboard pb: NSPasteboard,
+        secureInputActive: Bool,
+        postPaste: () -> Bool,
+        targetIsCurrent: () -> Bool,
+        targetStillPresent: () -> Bool,
+        deliveryStillAllowed: () -> Bool,
+        targetAcknowledged: () -> Bool,
+        timeout: TimeInterval
+    ) async -> Result {
+        guard !text.isEmpty else { return .failed }
+        if secureInputActive {
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+            return .copiedSecureInput
+        }
+
+        let saved = snapshot(pb)
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        let mine = pb.changeCount
+        guard targetIsCurrent() else { return .copiedTargetChanged }
+        guard postPaste() else { return .failed }
+
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            guard !Task.isCancelled else { return .deliveryUnconfirmed }
+            guard pb.changeCount == mine, deliveryStillAllowed() else {
+                return .deliveryUnconfirmed
+            }
+            if targetAcknowledged() {
+                guard pb.changeCount == mine else { return .deliveryUnconfirmed }
+                pb.clearContents()
+                if let saved, !saved.isEmpty { pb.writeObjects(saved) }
+                return .pasted
+            }
+            guard targetStillPresent() else { return .deliveryUnconfirmed }
+            do {
+                try await Task.sleep(nanoseconds: 20_000_000)
+            } catch {
+                return .deliveryUnconfirmed
+            }
+        }
+        return .deliveryUnconfirmed
     }
 
     /// Deterministic seam for UI and policy tests. It runs the exact production

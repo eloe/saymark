@@ -12,11 +12,11 @@ enum FinalDeliveryCoordinator {
     @MainActor
     static func deliver(
         recordBeforeDelivery: () async -> HistoryRecord?,
-        insertExactlyOnce: () -> HistoryDeliveryState,
+        insertExactlyOnce: () async -> HistoryDeliveryState,
         markDelivery: (HistoryRecord?, HistoryDeliveryState) -> Void
     ) async -> (record: HistoryRecord?, outcome: HistoryDeliveryState) {
         let record = await recordBeforeDelivery()
-        let outcome = insertExactlyOnce()
+        let outcome = await insertExactlyOnce()
         markDelivery(record, outcome)
         return (record, outcome)
     }
@@ -461,7 +461,7 @@ final class DictationController {
                         isHUDOnly: false
                     )
                 } insertExactlyOnce: {
-                    insertFinal(
+                    await insertFinal(
                         final,
                         rawText: corrected.rawText,
                         correctionStatus: corrected.correctionStatus.rawValue,
@@ -528,7 +528,7 @@ final class DictationController {
         correctionRevision: UInt64? = nil,
         sessionID: String?,
         uiTestCompletion: ((String) -> Void)? = nil
-    ) -> HistoryDeliveryState {
+    ) async -> HistoryDeliveryState {
         #if DEBUG
         if RuntimeEnvironment.isDailyDriverUITesting {
             switch RuntimeEnvironment.dailyDriverOutcome {
@@ -577,7 +577,7 @@ final class DictationController {
             return .insertionFailed
         }
         let started = ProcessInfo.processInfo.systemUptime
-        switch TextInjector.paste(text + " ", targetLease: insertionLease) {
+        switch await TextInjector.pasteAcknowledged(text + " ", targetLease: insertionLease) {
         case .pasted:
             SaymarkDiagnostics.log(.info, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "pasted",
@@ -595,6 +595,16 @@ final class DictationController {
                 detail: String(localized: "The transcript was copied — press ⌘V")
             )
             return .insertionFailed
+        case .deliveryUnconfirmed:
+            SaymarkDiagnostics.log(.warn, "dictation.insert_completed", sessionID: sessionID, fields: [
+                "outcome": "delivery_unconfirmed",
+                "duration_ms": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
+            ])
+            hud.error(
+                title: String(localized: "Paste wasn’t confirmed"),
+                detail: String(localized: "Check the field before pasting again")
+            )
+            return .pending
         case .copiedSecureInput:
             SaymarkDiagnostics.log(.warn, "dictation.insert_completed", sessionID: sessionID, fields: [
                 "outcome": "copied_secure_input",
