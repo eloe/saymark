@@ -93,7 +93,10 @@ struct TryItScreen: View {
     }
 
     @ViewBuilder private var status: some View {
-        if model.tryListening {
+        if let error = model.tryError {
+            Label(error, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.red)
+        } else if model.tryListening {
             Label(listeningInstruction, systemImage: "waveform")
                 .foregroundStyle(SaymarkTheme.accent)
                 .accessibilityIdentifier("onboarding.try-listening")

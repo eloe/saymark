@@ -233,12 +233,47 @@ if let wavIdx = args.firstIndex(of: "--wav"), wavIdx + 1 < args.count {
         FileHandle.standardError.write(Data("\r\u{1B}[2K\(tail)".utf8))
     }
 
+    final class LiveStopLatch: @unchecked Sendable {
+        private let lock = NSLock()
+        private let semaphore = DispatchSemaphore(value: 0)
+        private var signaled = false
+
+        func signal() {
+            let shouldWake = lock.withLock { () -> Bool in
+                guard !signaled else { return false }
+                signaled = true
+                return true
+            }
+            if shouldWake { semaphore.signal() }
+        }
+
+        func wait() {
+            semaphore.wait()
+        }
+    }
+
+    let stopLatch = LiveStopLatch()
+    let stopSubscription = session.observeCaptureStopRequests { _ in
+        stopLatch.signal()
+    }
+
     FileHandle.standardError.write(Data("loading \(mode.rawValue) model(s) (warming up MLX)…\n".utf8))
     try await session.load(mode: mode)
     try session.start(mode: mode)
     FileHandle.standardError.write(Data("\nREADY: speak now — press Enter to stop.\n".utf8))
-    _ = readLine()
-    let final = session.stop()
-    withExtendedLifetime(updateSubscription) {}
-    print("\n\nFINAL: \(final)")
+    DispatchQueue.global(qos: .userInitiated).async {
+        _ = readLine()
+        stopLatch.signal()
+    }
+    stopLatch.wait()
+    let outcome = session.stop()
+    withExtendedLifetime((updateSubscription, stopSubscription)) {}
+    guard outcome.completedNormally else {
+        FileHandle.standardError.write(Data("\nCapture stopped because audio could not be processed safely.\n".utf8))
+        exit(4)
+    }
+    if outcome.reason == .maximumDuration {
+        FileHandle.standardError.write(Data("\nMaximum dictation length reached; finalizing captured audio.\n".utf8))
+    }
+    print("\n\nFINAL: \(outcome.text)")
 }

@@ -88,6 +88,7 @@ final class DictationController {
     private let session: DictationSession
     private let hud = HUDController()
     @ObservationIgnored private var hudTranscriptObserver: CorrectedHUDObserver?
+    @ObservationIgnored private var captureStopSubscription: DictationUpdateSubscription?
 
     /// The shared, already-warmed pipeline — exposed so onboarding's try-it step
     /// reuses it instead of spinning up a second `DictationSession`.
@@ -106,6 +107,15 @@ final class DictationController {
         // thread-safe, nonisolated store snapshot from capture/metering queues.
         let vocabulary = VocabularySettingsModel.shared
         session = DictationSession(correctionSnapshotProvider: { vocabulary.snapshot })
+        captureStopSubscription = session.observeCaptureStopRequests { [weak self] request in
+            Task { @MainActor in
+                guard let self,
+                      request.belongs(to: self.session.activeSessionID),
+                      self.state == .recording
+                else { return }
+                self.endRecording()
+            }
+        }
     }
 
     var shortcutLabel: String {
@@ -422,16 +432,17 @@ final class DictationController {
         // Drain off the main thread so a slow finish never freezes the UI, then
         // paste the final on the main thread (pasteboard + ⌘V).
         Task.detached(priority: .userInitiated) { [weak self, session] in
-            let final = session.stop()
+            let outcome = session.stop()
             let corrected = session.latestCorrectedTranscript
             await self?.completeFinal(
-                final,
+                outcome.text,
                 corrected: corrected,
                 diagnosticSessionID: diagnosticSessionID,
                 modelModeAtStop: modelModeAtStop,
                 insertModeAtStop: insertModeAtStop,
                 stopStarted: stopStarted,
-                historyWasEnabledAtStart: historyWasEnabledAtStart
+                historyWasEnabledAtStart: historyWasEnabledAtStart,
+                captureStopReason: outcome.reason
             )
         }
     }
@@ -443,9 +454,28 @@ final class DictationController {
         modelModeAtStop: String,
         insertModeAtStop: String,
         stopStarted: TimeInterval,
-        historyWasEnabledAtStart: Bool
+        historyWasEnabledAtStart: Bool,
+        captureStopReason: CaptureStopReason?
     ) async {
         defer { insertionLease = nil }
+        if captureStopReason == .backlogOverload || captureStopReason == .captureFailure {
+            let captureFailed = captureStopReason == .captureFailure
+            SaymarkDiagnostics.log(
+                .error,
+                captureFailed ? "dictation.capture_failed" : "dictation.capture_overloaded",
+                sessionID: diagnosticSessionID
+            )
+            hud.error(
+                title: captureFailed
+                    ? String(localized: "Audio capture failed")
+                    : String(localized: "Dictation couldn’t keep up"),
+                detail: String(localized: "No text was inserted — try again")
+            )
+            state = .error(captureFailed ? "audio capture failed" : "capture backlog overloaded")
+            finishHotkeyHandoffIfPossible()
+            return
+        }
+        var deliverySucceeded = false
         if final.isEmpty {
             hud.error(
                 title: String(localized: "No speech detected"),
@@ -476,6 +506,7 @@ final class DictationController {
                         RecentDictationsController.shared.present()
                     }
                 }
+                deliverySucceeded = delivery.outcome == .inserted
             } else {
                 _ = await RecentDictationsController.shared.recordFinal(
                     final,
@@ -489,6 +520,7 @@ final class DictationController {
                     correctionStatus: corrected.correctionStatus.rawValue,
                     correctionRevision: corrected.snapshotRevision
                 )
+                deliverySucceeded = true
             }
         }
                 SaymarkDiagnostics.log(.info, "dictation.ui_completed", sessionID: diagnosticSessionID, fields: [
@@ -503,6 +535,12 @@ final class DictationController {
                     "insert_mode": insertModeAtStop,
                 ])
         state = .transcribed(final)
+        if captureStopReason == .maximumDuration, deliverySucceeded {
+            hud.error(
+                title: String(localized: "Maximum dictation length reached"),
+                detail: String(localized: "Your text was finalized")
+            )
+        }
         finishHotkeyHandoffIfPossible()
         if hotkeyOwner == .runtime {
             resumeDeferredPreparationIfPossible()

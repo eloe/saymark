@@ -19,6 +19,64 @@ struct CaptureStartTransaction {
     }
 }
 
+public enum CaptureStopReason: Sendable, Equatable {
+    case maximumDuration
+    case backlogOverload
+    case captureFailure
+}
+
+/// Pure accounting for audio admitted across the realtime/capture-queue boundary.
+/// It bounds both retained utterance audio and closures waiting behind inference.
+struct CaptureAdmissionBudget {
+    struct Admission: Equatable {
+        let acceptedCount: Int
+        let newStopReason: CaptureStopReason?
+    }
+
+    let maximumTotalSamples: Int
+    let maximumQueuedSamples: Int
+    private(set) var totalAcceptedSamples = 0
+    private(set) var queuedSamples = 0
+    private(set) var stopReason: CaptureStopReason?
+
+    mutating func reset() {
+        totalAcceptedSamples = 0
+        queuedSamples = 0
+        stopReason = nil
+    }
+
+    mutating func reserve(_ requestedCount: Int) -> Admission {
+        guard requestedCount > 0, stopReason == nil else { return Admission(acceptedCount: 0, newStopReason: nil) }
+        let remaining = maximumTotalSamples - totalAcceptedSamples
+        guard remaining > 0 else {
+            stopReason = .maximumDuration
+            return Admission(acceptedCount: 0, newStopReason: .maximumDuration)
+        }
+        let accepted = min(requestedCount, remaining)
+        guard queuedSamples + accepted <= maximumQueuedSamples else {
+            stopReason = .backlogOverload
+            return Admission(acceptedCount: 0, newStopReason: .backlogOverload)
+        }
+        totalAcceptedSamples += accepted
+        queuedSamples += accepted
+        if totalAcceptedSamples == maximumTotalSamples {
+            stopReason = .maximumDuration
+            return Admission(acceptedCount: accepted, newStopReason: .maximumDuration)
+        }
+        return Admission(acceptedCount: accepted, newStopReason: nil)
+    }
+
+    mutating func complete(_ count: Int) {
+        queuedSamples = max(0, queuedSamples - max(0, count))
+    }
+
+    mutating func terminate(_ reason: CaptureStopReason) -> Bool {
+        guard stopReason == nil else { return false }
+        stopReason = reason
+        return true
+    }
+}
+
 /// Captures the default input and resamples to 16 kHz mono Float, delivering
 /// fixed 160 ms chunks via `onChunk`. Ported from the mic-compare CLI's MicRunner.
 ///
@@ -34,10 +92,12 @@ final class MicCapture: @unchecked Sendable {
         let inputChannels: Int
         let inputBufferCount: Int
         let conversionErrorCount: Int
+        let stopReason: CaptureStopReason?
     }
 
     /// Fixed-size 16 kHz mono chunks delivered on the capture queue.
     var onChunk: ([Float]) -> Void = { _ in }
+    var onStopRequested: @Sendable (UInt64, CaptureStopReason) -> Void = { _, _ in }
 
     // This is the FEED size, not Nemotron's internal chunk. A 20-run
     // 160/240/320/480 ms experiment on the release model stack selected 160 ms:
@@ -47,6 +107,8 @@ final class MicCapture: @unchecked Sendable {
     static let feedSamples = 2_560
     static let feedIntervalMilliseconds = 160
     static let speechHangoverChunks = 6
+    static let maximumUtteranceSamples = 10 * 60 * 16_000
+    static let maximumBacklogSamples = 5 * 16_000
     private let chunkSize = feedSamples
     private let queue = DispatchQueue(label: "saymark.mic.capture")
     private let callbackGroup = DispatchGroup()
@@ -57,6 +119,10 @@ final class MicCapture: @unchecked Sendable {
     private var tapInstalled = false
     private var captureGeneration: UInt64 = 0
     private var acceptingCallbacks = false
+    private var admission = CaptureAdmissionBudget(
+        maximumTotalSamples: maximumUtteranceSamples,
+        maximumQueuedSamples: maximumBacklogSamples
+    )
 
     private var pending: [Float] = []
     private var totalSamples = 0
@@ -89,6 +155,7 @@ final class MicCapture: @unchecked Sendable {
             acceptingCallbacks = true
             outFmt = out
             converter = conv
+            admission.reset()
             return captureGeneration
         }
         queue.sync {
@@ -131,7 +198,8 @@ final class MicCapture: @unchecked Sendable {
                           inputSampleRate: inputSampleRate,
                           inputChannels: inputChannels,
                           inputBufferCount: inputBufferCount,
-                          conversionErrorCount: conversionErrorCount)
+                          conversionErrorCount: conversionErrorCount,
+                          stopReason: lifecycleLock.withLock { admission.stopReason })
         }
         invalidateCallbacks()
         return result
@@ -165,13 +233,17 @@ final class MicCapture: @unchecked Sendable {
     private func ingest(_ buffer: AVAudioPCMBuffer, generation: UInt64) {
         guard let (outFmt, converter) = lifecycleLock.withLock({ () -> (AVAudioFormat, AVAudioConverter)? in
             guard acceptingCallbacks, captureGeneration == generation,
+                  admission.stopReason == nil,
                   let outFmt, let converter
             else { return nil }
             return (outFmt, converter)
         }) else { return }
         let ratio = outFmt.sampleRate / buffer.format.sampleRate
         let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
-        guard let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: cap) else { return }
+        guard let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: cap) else {
+            requestTerminalStop(.captureFailure, generation: generation)
+            return
+        }
 
         var consumed = false
         var err: NSError?
@@ -182,22 +254,36 @@ final class MicCapture: @unchecked Sendable {
             return buffer
         }
         guard err == nil, out.frameLength > 0, let ch = out.floatChannelData else {
-            queue.async { [self] in conversionErrorCount += 1 }
+            if requestTerminalStop(.captureFailure, generation: generation) {
+                queue.async { [self] in conversionErrorCount += 1 }
+            }
             return
         }
 
         let n = Int(out.frameLength)
-        let chunk = Array(UnsafeBufferPointer(start: ch[0], count: n))
+        let converted = Array(UnsafeBufferPointer(start: ch[0], count: n))
         var sum: Float = 0
-        for v in chunk { sum += v * v }
+        for v in converted { sum += v * v }
         let rms = (sum / Float(max(1, n))).squareRoot()
 
+        let admissionResult = lifecycleLock.withLock { admission.reserve(n) }
+        let acceptedCount = admissionResult.acceptedCount
+        if let reason = admissionResult.newStopReason {
+            let callback = onStopRequested
+            DispatchQueue.global(qos: .userInitiated).async { callback(generation, reason) }
+        }
+        guard acceptedCount > 0 else { return }
+        let chunk = acceptedCount == converted.count
+            ? converted
+            : Array(converted.prefix(acceptedCount))
+
         queue.async { [self] in
+            defer { lifecycleLock.withLock { admission.complete(acceptedCount) } }
             guard lifecycleLock.withLock({
                 acceptingCallbacks && captureGeneration == generation
             }) else { return }
             inputBufferCount += 1
-            totalSamples += n
+            totalSamples += acceptedCount
             if rms > peak { peak = rms }
             pending.append(contentsOf: chunk)
             while pending.count >= chunkSize {
@@ -206,6 +292,19 @@ final class MicCapture: @unchecked Sendable {
                 onChunk(c)
             }
         }
+    }
+
+    @discardableResult
+    private func requestTerminalStop(_ reason: CaptureStopReason, generation: UInt64) -> Bool {
+        let callback: (@Sendable (UInt64, CaptureStopReason) -> Void)? = lifecycleLock.withLock {
+            guard acceptingCallbacks, captureGeneration == generation,
+                  admission.terminate(reason)
+            else { return nil }
+            return onStopRequested
+        }
+        guard let callback else { return false }
+        DispatchQueue.global(qos: .userInitiated).async { callback(generation, reason) }
+        return true
     }
 
     /// Mic TCC gate. Calls back on the main queue.

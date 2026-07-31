@@ -60,3 +60,22 @@ final class CorrectedDictationUpdateHub: @unchecked Sendable {
         for handler in copy { handler(confirmed, partial) }
     }
 }
+
+final class CaptureStopRequestHub: @unchecked Sendable {
+    typealias Handler = (CaptureStopRequest) -> Void
+    private let lock = NSLock()
+    private var handlers: [UUID: Handler] = [:]
+
+    func subscribe(_ handler: @escaping Handler) -> DictationUpdateSubscription {
+        let id = UUID()
+        lock.withLock { handlers[id] = handler }
+        return DictationUpdateSubscription { [weak self] in
+            self?.lock.withLock { self?.handlers[id] = nil }
+        }
+    }
+
+    func publish(_ request: CaptureStopRequest) {
+        let snapshot = lock.withLock { Array(handlers.values) }
+        snapshot.forEach { $0(request) }
+    }
+}
