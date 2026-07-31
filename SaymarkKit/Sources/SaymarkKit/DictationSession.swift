@@ -1,5 +1,23 @@
 import Foundation
 
+public struct CaptureStopRequest: Sendable, Equatable {
+    public let sessionID: String
+    public let generation: UInt64
+    public let reason: CaptureStopReason
+
+    public func belongs(to activeSessionID: String?) -> Bool {
+        sessionID == activeSessionID
+    }
+}
+
+public struct DictationStopOutcome: Sendable, Equatable {
+    public let text: String
+    public let reason: CaptureStopReason?
+    public var completedNormally: Bool {
+        reason == nil || reason == .maximumDuration
+    }
+}
+
 /// The UI-agnostic dictation pipeline shared by the menu-bar app and the CLI:
 /// load the two-tier models (with warm-up), capture the mic in 160 ms chunks,
 /// stream `(confirmed, partial)` updates, and flush a final transcript on stop.
@@ -17,6 +35,7 @@ public final class DictationSession: @unchecked Sendable {
     private var mic = MicCapture()
     private let updates = DictationUpdateHub()
     private let correctedUpdates = CorrectedDictationUpdateHub()
+    private let captureStopRequests = CaptureStopRequestHub()
     public private(set) var activeSessionID: String?
 
     public init(
@@ -42,6 +61,10 @@ public final class DictationSession: @unchecked Sendable {
     public func observeCorrectedUpdates(
         _ handler: @escaping (_ confirmed: CorrectedTranscript, _ partial: CorrectedTranscript) -> Void
     ) -> DictationUpdateSubscription { correctedUpdates.subscribe(handler) }
+
+    public func observeCaptureStopRequests(
+        _ handler: @escaping (CaptureStopRequest) -> Void
+    ) -> DictationUpdateSubscription { captureStopRequests.subscribe(handler) }
 
     public var latestCorrectedTranscript: CorrectedTranscript {
         engine.latestCorrection().confirmed
@@ -93,6 +116,13 @@ public final class DictationSession: @unchecked Sendable {
             let (confirmed, partial) = self.engine.step(chunk)
             self.updates.publish(confirmed: confirmed, partial: partial)
         }
+        mic.onStopRequested = { [weak self] generation, reason in
+            self?.captureStopRequests.publish(.init(
+                sessionID: sessionID,
+                generation: generation,
+                reason: reason
+            ))
+        }
         do {
             try mic.start()
             SaymarkDiagnostics.log(.info, "microphone.capture_started", sessionID: sessionID, fields: [
@@ -116,7 +146,7 @@ public final class DictationSession: @unchecked Sendable {
     /// Stop capture, flush, and return the final transcript. Blocks while the
     /// backlog drains — call off the main thread.
     @discardableResult
-    public func stop() -> String {
+    public func stop() -> DictationStopOutcome {
         let sessionID = activeSessionID
         let capture = mic.stop()
         SaymarkDiagnostics.log(.info, "microphone.capture_stopped", sessionID: sessionID, fields: [
@@ -127,13 +157,26 @@ public final class DictationSession: @unchecked Sendable {
             "input_channels": capture.inputChannels,
             "input_buffer_count": capture.inputBufferCount,
             "conversion_error_count": capture.conversionErrorCount,
+            "capture_stop_reason": capture.stopReason.map { reason in
+                switch reason {
+                case .maximumDuration: "maximum_duration"
+                case .backlogOverload: "backlog_overload"
+                case .captureFailure: "capture_failure"
+                }
+            } ?? "user",
         ])
-        let final = engine.finish()
+        let final: String
+        if capture.stopReason == .backlogOverload || capture.stopReason == .captureFailure {
+            engine.abort()
+            final = ""
+        } else {
+            final = engine.finish()
+        }
         let detailed = engine.latestCorrection()
         correctedUpdates.publish(confirmed: detailed.confirmed, partial: detailed.partial)
         mic = MicCapture()                               // fresh engine for the next gesture
         activeSessionID = nil
-        return final
+        return DictationStopOutcome(text: final, reason: capture.stopReason)
     }
 
     /// Offline transcription of pre-loaded 16 kHz mono samples, feeding the same

@@ -36,12 +36,24 @@ final class OnboardingModel {
     @ObservationIgnored private var downloadStarted = false
 
     private let session: DictationSession
+    @ObservationIgnored private var captureStopSubscription: DictationUpdateSubscription?
 
     /// Polls AX trust while the Permissions step is open — there's no
     /// notification for Accessibility-trust changes, so we have to ask.
     @ObservationIgnored private var accPollTimer: Timer?
 
-    init(session: DictationSession) { self.session = session }
+    init(session: DictationSession) {
+        self.session = session
+        captureStopSubscription = session.observeCaptureStopRequests { [weak self] request in
+            Task { @MainActor in
+                guard let self,
+                      request.belongs(to: self.session.activeSessionID),
+                      self.tryListening
+                else { return }
+                self.tryEnd()
+            }
+        }
+    }
 
     // MARK: navigation
 
@@ -222,6 +234,7 @@ final class OnboardingModel {
     var tryConfirmed = ""
     var tryPartial = ""
     var tryListening = false
+    var tryError: String?
 
     /// True once the Hybrid pipeline is loaded into memory (set after the Download
     /// step's `session.load`). Observable — so the try-it button re-enables the moment
@@ -255,6 +268,7 @@ final class OnboardingModel {
         guard session.isReady(OnboardingFlow.modelPlan.mode), !tryListening, !tryBusy else { return }
         tryConfirmed = ""
         tryPartial = ""
+        tryError = nil
         tryUpdateSubscription = session.observeUpdates { c, p in
             Task { @MainActor in
                 self.tryConfirmed = c
@@ -301,22 +315,36 @@ final class OnboardingModel {
         // Only the draining `stop()` goes off-main (like endRecording); capture
         // `session` directly so it doesn't touch main-actor `self` there.
         Task.detached(priority: .userInitiated) { [session] in
-            let final = session.stop()
+            let outcome = session.stop()
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.tryConfirmed = final
+                if outcome.reason == .backlogOverload || outcome.reason == .captureFailure {
+                    self.tryConfirmed = ""
+                    self.tryPartial = ""
+                    self.tryError = outcome.reason == .captureFailure
+                        ? "Audio capture failed. Try again."
+                        : "Dictation couldn’t keep up. Try a shorter sentence."
+                    self.tryHalo.dismiss()
+                    self.tryBusy = false
+                    self.runTryIdleCallbacks()
+                    return
+                }
+                self.tryConfirmed = outcome.text
                 self.tryPartial = ""
                 let wasFirst = !self.flow.didTry
-                self.flow.didTry = self.flow.didTry || !final.isEmpty   // monotonic: one success is enough
-                if wasFirst && !final.isEmpty {
+                self.flow.didTry = self.flow.didTry || !outcome.text.isEmpty   // monotonic: one success is enough
+                if wasFirst && !outcome.text.isEmpty {
                     PostHogSDK.shared.capture("try_it_completed")
                 }
-                if completesWithHalo, !final.isEmpty {
+                if completesWithHalo, !outcome.text.isEmpty {
                     self.tryHalo.complete()
                 } else {
                     self.tryHalo.dismiss()
                 }
                 self.tryBusy = false
+                if outcome.reason == .maximumDuration {
+                    self.tryError = "Maximum dictation length reached."
+                }
                 self.runTryIdleCallbacks()
             }
         }
