@@ -33,12 +33,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require an annotated tag reachable from origin/main
+      - name: Require an annotated SemVer 2 tag reachable from origin/main
         run: |
           [[ "$GITHUB_REF_TYPE" == "tag" ]] ||
             { echo "Release workflow must run from a tag" >&2; exit 1; }
-          [[ "$GITHUB_REF_NAME" =~ ^saymark-v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-            { echo "Tag must be saymark-vX.Y.Z" >&2; exit 1; }
+          Scripts/release-version.sh semver "$GITHUB_REF_NAME" >/dev/null
           [[ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" == "tag" ]] ||
             { echo "Release tags must be annotated, not lightweight" >&2; exit 1; }
           tag_commit="$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")"
@@ -77,9 +76,7 @@ jobs:
           NOTARY_ISSUER_ID: ${{ secrets.SAYMARK_NOTARY_ISSUER_ID }}
           NOTARY_PRIVATE_KEY: ${{ secrets.SAYMARK_NOTARY_PRIVATE_KEY }}
         run: |
-          version="${GITHUB_REF_NAME#saymark-v}"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-            { echo "Tag must be saymark-vX.Y.Z" >&2; exit 1; }
+          Scripts/release-version.sh semver "$GITHUB_REF_NAME" >/dev/null
           for name in SIGNING_P12 SIGNING_PASSWORD EXPECTED_TEAM_ID \
             EXPECTED_CERT_SHA256 KEYCHAIN_PASSWORD \
             NOTARY_KEY_ID NOTARY_ISSUER_ID NOTARY_PRIVATE_KEY; do
@@ -138,8 +135,10 @@ jobs:
 
       - name: Generate release project
         run: |
-          version="${GITHUB_REF_NAME#saymark-v}"
-          TUIST_APP_VERSION="$version" \
+          semantic_version="$(Scripts/release-version.sh semver "$GITHUB_REF_NAME")"
+          marketing_version="$(Scripts/release-version.sh core "$GITHUB_REF_NAME")"
+          TUIST_APP_SEMVER="$semantic_version" \
+          TUIST_APP_VERSION="$marketing_version" \
           TUIST_APP_BUILD="${GITHUB_RUN_NUMBER}" \
             tuist generate --no-open
 
@@ -209,7 +208,8 @@ jobs:
       - name: Package verified artifact
         run: |
           app="$RUNNER_TEMP/Saymark.xcarchive/Products/Applications/Saymark.app"
-          artifact_name="Saymark-${GITHUB_REF_NAME#saymark-v}-arm64.zip"
+          version="$(Scripts/release-version.sh semver "$GITHUB_REF_NAME")"
+          artifact_name="Saymark-${version}-arm64.zip"
           artifact="$RUNNER_TEMP/$artifact_name"
           ditto -c -k --keepParent "$app" "$artifact"
           (
@@ -221,14 +221,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#saymark-v}"
+          version="$(Scripts/release-version.sh semver "$GITHUB_REF_NAME")"
+          prerelease="$(Scripts/release-version.sh prerelease "$GITHUB_REF_NAME")"
+          release_flags=()
+          if [[ "$prerelease" == "true" ]]; then
+            release_flags+=(--prerelease)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             "$RUNNER_TEMP/Saymark-${version}-arm64.zip" \
             "$RUNNER_TEMP/Saymark-${version}-arm64.zip.sha256" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --generate-notes \
-            --title "Saymark ${version}"
+            --title "Saymark ${version}" \
+            "${release_flags[@]}"
 
       - name: Remove ephemeral signing material
         if: ${{ always() }}

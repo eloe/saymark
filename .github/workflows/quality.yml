@@ -83,6 +83,9 @@ jobs:
       - name: Live insertion policy boundary
         run: Scripts/check-live-insertion-policy-boundary.sh
 
+      - name: SemVer 2 release policy
+        run: Scripts/check-release-version.sh
+
   swift:
     name: Swift core and app tests
     runs-on: macos-26

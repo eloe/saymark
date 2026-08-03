@@ -14,12 +14,13 @@ import ProjectDescription
 // CI). Absent in a plain `tuist generate` → source/fork builds ship with analytics OFF.
 let posthogAPIKey = ProcessInfo.processInfo.environment["TUIST_SAYMARK_POSTHOG_KEY"] ?? ""
 
-// App version comes from the release tag. Tuist ONLY forwards TUIST_-prefixed env vars into
-// the manifest, so CI must export TUIST_APP_VERSION (`saymark-vX.Y.Z` → X.Y.Z) before
-// `tuist generate` — a bare APP_VERSION is silently filtered out and the build falls back.
-// TUIST_APP_BUILD (e.g. the run number) gives a monotonic CFBundleVersion; else the version.
-// Without these, Tuist's default Info.plist ships the placeholder 1.0.
-let appVersion = ProcessInfo.processInfo.environment["TUIST_APP_VERSION"] ?? "0.1.0"
+// Release tags carry full SemVer 2. Apple requires CFBundleShortVersionString to remain a
+// numeric X.Y.Z, so release CI passes the version core as TUIST_APP_VERSION and preserves
+// prerelease/build metadata separately in TUIST_APP_SEMVER. Tuist ONLY forwards TUIST_-
+// prefixed variables into this manifest. TUIST_APP_BUILD (the workflow run number) gives a
+// monotonic CFBundleVersion.
+let appVersion = ProcessInfo.processInfo.environment["TUIST_APP_VERSION"] ?? "0.1.1"
+let appSemanticVersion = ProcessInfo.processInfo.environment["TUIST_APP_SEMVER"] ?? appVersion
 let appBuild = ProcessInfo.processInfo.environment["TUIST_APP_BUILD"] ?? appVersion
 let isLocalBuild = ProcessInfo.processInfo.environment["TUIST_SAYMARK_LOCAL_BUILD"] == "1"
 let appBundleID = isLocalBuild ? "com.eloe.saymark.local" : "com.eloe.saymark"
@@ -44,6 +45,7 @@ let project = Project(
             infoPlist: .extendingDefault(with: [
                 "CFBundleShortVersionString": .string(appVersion),   // X.Y.Z from the release tag
                 "CFBundleVersion": .string(appBuild),                // monotonic build (APP_BUILD) or version
+                "SaymarkSemanticVersion": .string(appSemanticVersion), // complete SemVer 2 release identity
                 "LSUIElement": true,                       // menu-bar agent: no Dock icon
                 "LSApplicationCategoryType": "public.app-category.productivity",
                 "CFBundleDisplayName": .string(appDisplayName),
