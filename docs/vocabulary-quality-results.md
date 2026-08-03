@@ -1,10 +1,14 @@
 # Vocabulary correction quality evidence
 
-**Evidence date:** 2026-08-03  
-**Application baseline:** `dc1297a6d0d2b8860f34869b3d3ff9f171952a3b`  
+**Evidence date:** 2026-08-03
+
+**Application baseline:** `dc1297a6d0d2b8860f34869b3d3ff9f171952a3b`
+
 **Fixture:** `SaymarkKit/Tests/Fixtures/vocabulary-quality-v1.json`, revision
-`synthetic-text-v1`  
-**Unicode contract:** 15.1.0  
+`synthetic-text-v1`
+
+**Unicode contract:** 15.1.0
+
 **Correction dependency:** `mlx-audio-swift`
 `6671490176d24bc962f0b8cd50dbf24e2427e387`
 
