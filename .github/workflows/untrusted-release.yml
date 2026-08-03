@@ -1,0 +1,159 @@
+name: Untrusted binary release
+
+on:
+  push:
+    tags:
+      - "saymark-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: untrusted-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Required source gates
+    if: ${{ vars.SAYMARK_TRUSTED_RELEASES != 'enabled' }}
+    uses: ./.github/workflows/quality.yml
+    permissions:
+      contents: read
+
+  provenance:
+    name: Main, issue, and tag provenance
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require an annotated SemVer 2 tag reachable from origin/main
+        run: |
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] ||
+            { echo "Release workflow must run from a tag" >&2; exit 1; }
+          Scripts/release-version.sh semver "$GITHUB_REF_NAME" >/dev/null
+          [[ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" == "tag" ]] ||
+            { echo "Release tags must be annotated, not lightweight" >&2; exit 1; }
+          tag_commit="$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")"
+          [[ "$tag_commit" == "$GITHUB_SHA" ]] ||
+            { echo "Checked-out commit does not match the release tag" >&2; exit 1; }
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+          git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main ||
+            { echo "Release tag commit is not reachable from origin/main" >&2; exit 1; }
+
+      - name: Require zero open product issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          open_issues="$(
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+              --jq '.[] | select(.pull_request | not) | .number'
+          )"
+          if [[ -n "$open_issues" ]]; then
+            echo "Untrusted release is blocked by open issues:" >&2
+            while IFS= read -r issue_number; do
+              echo "#$issue_number" >&2
+            done <<<"$open_issues"
+            exit 1
+          fi
+
+  release:
+    name: Build and publish conspicuously untrusted binary
+    needs: provenance
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+
+      - name: Generate the untrusted release project
+        run: |
+          semantic_version="$(Scripts/release-version.sh semver "$GITHUB_REF_NAME")"
+          marketing_version="$(Scripts/release-version.sh core "$GITHUB_REF_NAME")"
+          TUIST_SAYMARK_UNTRUSTED_BUILD=1 \
+          TUIST_APP_SEMVER="$semantic_version" \
+          TUIST_APP_VERSION="$marketing_version" \
+          TUIST_APP_BUILD="${GITHUB_RUN_NUMBER}" \
+            tuist generate --no-open
+
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Build with an ad-hoc signature
+        run: |
+          xcodebuild build \
+            -workspace Saymark.xcworkspace \
+            -scheme Saymark \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/saymark-untrusted-release" \
+            -skipPackagePluginValidation \
+            -disableAutomaticPackageResolution \
+            -onlyUsePackageVersionsFromResolvedFile \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM= \
+            ENABLE_HARDENED_RUNTIME=YES
+
+      - name: Reject any trusted or misleading artifact
+        run: |
+          version="$(Scripts/release-version.sh semver "$GITHUB_REF_NAME")"
+          Scripts/verify-untrusted-release-app.sh \
+            "$RUNNER_TEMP/saymark-untrusted-release/Build/Products/Release/Saymark.app" \
+            --semver "$version"
+
+      - name: Verify bundled legal notices
+        run: |
+          Scripts/check-legal-notices.sh \
+            "$RUNNER_TEMP/saymark-untrusted-release/Build/Products/Release/Saymark.app"
+
+      - name: Package artifact, warning, and checksum
+        run: |
+          app="$RUNNER_TEMP/saymark-untrusted-release/Build/Products/Release/Saymark.app"
+          version="$(Scripts/release-version.sh semver "$GITHUB_REF_NAME")"
+          artifact_name="Saymark-${version}-UNTRUSTED-NOT-NOTARIZED-arm64.zip"
+          staging="$RUNNER_TEMP/saymark-untrusted-package"
+          mkdir -p "$staging"
+          ditto "$app" "$staging/Saymark (Untrusted).app"
+          cp Distribution/UNTRUSTED-BINARY-NOTICE.txt "$staging/READ-ME-FIRST.txt"
+          ditto -c -k --sequesterRsrc "$staging" "$RUNNER_TEMP/$artifact_name"
+          (
+            cd "$RUNNER_TEMP"
+            shasum -a 256 "$artifact_name" > "${artifact_name}.sha256"
+          )
+
+      - name: Publish a permanently labeled GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(Scripts/release-version.sh semver "$GITHUB_REF_NAME")"
+          artifact_name="Saymark-${version}-UNTRUSTED-NOT-NOTARIZED-arm64.zip"
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/$artifact_name" \
+            "$RUNNER_TEMP/${artifact_name}.sha256" \
+            Distribution/UNTRUSTED-BINARY-NOTICE.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --notes-file Distribution/UNTRUSTED-BINARY-NOTICE.txt \
+            --title "Saymark ${version} — UNTRUSTED / NOT NOTARIZED"

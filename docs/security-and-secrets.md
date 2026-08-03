@@ -5,9 +5,10 @@ every GitHub Actions log as public information.
 
 ## Current secret inventory
 
-Source builds, local builds, and ordinary CI require **no repository, Actions,
-Dependabot, Codespaces, or environment secrets**. Signed distribution requires
-the protected `release` environment secrets documented below.
+Source builds, local builds, ordinary CI, and the explicitly untrusted binary
+release require **no repository, Actions, Dependabot, Codespaces, or environment
+secrets**. Apple-trusted distribution requires the protected `release`
+environment secrets documented below.
 
 - Local builds are ad-hoc signed, then signed with a self-generated
   `Saymark Local Development` identity stored only in the developer's local
@@ -39,14 +40,30 @@ Gitleaks fingerprint is reviewed in `.gitleaksignore`; no broader rule is disabl
 The repository `.gitignore`, `Scripts/security-audit.sh`, Gitleaks workflow,
 GitHub secret scanning, and push protection form multiple independent controls.
 
+## No-fee untrusted binary boundary
+
+With `SAYMARK_TRUSTED_RELEASES` unset, `.github/workflows/untrusted-release.yml`
+publishes only an ad-hoc-signed, non-notarized prerelease after every quality gate
+passes and every GitHub issue is closed. That workflow must never declare the
+`release` environment or reference Apple secrets. Its verification rejects an
+Apple Team identifier, certificate authority, stapled ticket, successful
+Gatekeeper assessment, production bundle identifier, or missing visible warning.
+
+The distinct `com.eloe.saymark.untrusted` identity prevents this artifact from
+masquerading as or silently replacing a future trusted build. A SHA-256 checksum
+detects download corruption but does not confer publisher identity or Apple
+trust.
+
 ## Future release secrets
 
-Signed distribution uses the protected GitHub Environment named `release`.
+Apple-trusted distribution uses the protected GitHub Environment named `release`.
 Store release material only as environment secrets, restrict the environment
 to protected branches and `saymark-v*` tags, and require approval before
-deployment. The app target attaches its reviewed entitlements and enables
-Hardened Runtime; `.github/workflows/release.yml` notarizes, staples, verifies,
-and Gatekeeper-assesses an artifact before publication. See
+deployment. Set the repository variable `SAYMARK_TRUSTED_RELEASES=enabled` only
+after all credentials and protections are ready. The app target attaches its
+reviewed entitlements and enables Hardened Runtime;
+`.github/workflows/release.yml` notarizes, staples, verifies, and
+Gatekeeper-assesses an artifact before publication. See
 [`releasing.md`](releasing.md). The owner-supplied credentials remain tracked in
 [`#2`](https://github.com/eloe/saymark/issues/2).
 Expected names are:

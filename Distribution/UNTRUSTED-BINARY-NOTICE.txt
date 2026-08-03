@@ -1,0 +1,13 @@
+SAYMARK UNTRUSTED BINARY NOTICE
+================================
+
+This build is ad-hoc signed. It is NOT signed with Apple Developer ID, is NOT
+notarized by Apple, and will NOT pass Gatekeeper's normal trust assessment.
+
+Only install it if you obtained it from the eloe/saymark GitHub Releases page,
+verified the accompanying SHA-256 checksum, and accept the risk of running an
+untrusted application. macOS may require an explicit Privacy & Security
+override. Do not weaken Gatekeeper globally.
+
+This build uses the distinct bundle identifier com.eloe.saymark.untrusted. It
+does not represent a future Developer ID-signed and notarized Saymark release.

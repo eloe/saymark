@@ -40,7 +40,8 @@
         "entrypoint": "Sources/Saymark/SaymarkApp.swift",
         "bundle_ids": {
           "release": "com.eloe.saymark",
-          "local": "com.eloe.saymark.local"
+          "local": "com.eloe.saymark.local",
+          "untrusted_distribution": "com.eloe.saymark.untrusted"
         }
       },
       {
