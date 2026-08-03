@@ -6,6 +6,7 @@ Start with the documents that match the work you are doing:
 - [`architecture.json`](architecture.json) — machine-readable handoff for agents and tooling
 - [`architecture.md`](architecture.md) — app boundaries and the dictation lifecycle
 - [`product-roadmap.md`](product-roadmap.md) — benchmark-gated product sequence and competitive target
+- [`v1-scope-decisions.md`](v1-scope-decisions.md) — explicit 1.0 inclusions and not-planned roadmap decisions
 - [`language-correction-quality-sdd.md`](language-correction-quality-sdd.md) — shipped deterministic Vocabulary baseline and remaining quality/language gates
 - [`unicode-15.1-evidence.md`](unicode-15.1-evidence.md) — pinned Unicode data, pure-Swift conformance contract, attribution, and update procedure
 - [`live-insertion-sdd.md`](live-insertion-sdd.md) — shipped fail-closed policy foundation and blocked live field-insertion contract
