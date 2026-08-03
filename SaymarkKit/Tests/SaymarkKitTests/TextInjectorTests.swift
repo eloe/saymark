@@ -178,6 +178,64 @@ final class TextInjectorTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
     }
 
+    func testSecureInputTransitionDuringValidationPreventsPasteDispatch() async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        let lock = NSLock()
+        var deliveryAllowed = true
+        var postCount = 0
+
+        let result = await TextInjector.pasteAcknowledgedForTesting(
+            "transcript ",
+            pasteboard: pasteboard,
+            postPaste: { lock.withLock { postCount += 1 }; return true },
+            targetIsCurrent: {
+                lock.withLock { deliveryAllowed = false }
+                return true
+            },
+            targetStillPresent: { true },
+            deliveryStillAllowed: { lock.withLock { deliveryAllowed } },
+            targetAcknowledged: { true }
+        )
+
+        XCTAssertEqual(result, .deliveryUnconfirmed)
+        XCTAssertEqual(lock.withLock { postCount }, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
+    }
+
+    func testSecureInputTransitionAfterPasteNeverRestoresOrRetries() async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        let lock = NSLock()
+        var deliveryAllowed = true
+        var postCount = 0
+        var acknowledgementCount = 0
+
+        let result = await TextInjector.pasteAcknowledgedForTesting(
+            "transcript ",
+            pasteboard: pasteboard,
+            postPaste: {
+                lock.withLock {
+                    postCount += 1
+                    deliveryAllowed = false
+                }
+                return true
+            },
+            targetIsCurrent: { true },
+            targetStillPresent: { true },
+            deliveryStillAllowed: { lock.withLock { deliveryAllowed } },
+            targetAcknowledged: {
+                lock.withLock { acknowledgementCount += 1 }
+                return true
+            }
+        )
+
+        XCTAssertEqual(result, .deliveryUnconfirmed)
+        XCTAssertEqual(lock.withLock { postCount }, 1)
+        XCTAssertEqual(lock.withLock { acknowledgementCount }, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
+    }
+
     func testHungAXReceiptFailsClosedAtCoordinatorDeadline() async {
         let pasteboard = makePasteboard()
         let started = ProcessInfo.processInfo.systemUptime
@@ -275,17 +333,20 @@ final class TextInjectorTests: XCTestCase {
     func testTargetLossAfterPasteEventNeverReportsSuccessOrRestores() async {
         let pasteboard = makePasteboard()
         pasteboard.setString("original", forType: .string)
+        let lock = NSLock()
+        var postCount = 0
 
         let result = await TextInjector.pasteAcknowledgedForTesting(
             "transcript ",
             pasteboard: pasteboard,
-            postPaste: { true },
+            postPaste: { lock.withLock { postCount += 1 }; return true },
             targetIsCurrent: { true },
             targetStillPresent: { false },
             targetAcknowledged: { false }
         )
 
         XCTAssertEqual(result, .deliveryUnconfirmed)
+        XCTAssertEqual(lock.withLock { postCount }, 1)
         XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
     }
 
