@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "unicodeVersion": "15.1.0",
+  "fixtureRevision": "synthetic-text-v1",
+  "rulesFrozenBeforeEvaluation": true,
+  "rules": [
+    { "written": "Saymark", "heard": ["say mark"] },
+    { "written": "OpenAI", "heard": ["open AI"] },
+    { "written": "API", "heard": ["A P I"] },
+    { "written": "example.com", "heard": ["example dot com"] }
+  ],
+  "cases": [
+    { "split": "development", "category": "proper-noun", "raw": "try say mark today", "reference": "try Saymark today", "expectedTarget": "Saymark", "targetOccurrences": 1, "eligibleNegativeOccurrences": 0 },
+    { "split": "development", "category": "acronym", "raw": "read the A P I guide", "reference": "read the API guide", "expectedTarget": "API", "targetOccurrences": 1, "eligibleNegativeOccurrences": 0 },
+    { "split": "evaluation", "category": "proper-noun", "raw": "I use say mark every day", "reference": "I use Saymark every day", "expectedTarget": "Saymark", "targetOccurrences": 1, "eligibleNegativeOccurrences": 0 },
+    { "split": "evaluation", "category": "product", "raw": "Open AI builds useful tools", "reference": "OpenAI builds useful tools", "expectedTarget": "OpenAI", "targetOccurrences": 1, "eligibleNegativeOccurrences": 0 },
+    { "split": "evaluation", "category": "acronym", "raw": "the A P I stays local", "reference": "the API stays local", "expectedTarget": "API", "targetOccurrences": 1, "eligibleNegativeOccurrences": 0 },
+    { "split": "evaluation", "category": "url", "raw": "visit example dot com now", "reference": "visit example.com now", "expectedTarget": "example.com", "targetOccurrences": 1, "eligibleNegativeOccurrences": 0 },
+    { "split": "evaluation", "category": "repeated-term", "raw": "say mark then say mark", "reference": "Saymark then Saymark", "expectedTarget": "Saymark", "targetOccurrences": 2, "eligibleNegativeOccurrences": 0 },
+    { "split": "evaluation", "category": "negative-substring", "raw": "the landmark is open", "reference": "the landmark is open", "targetOccurrences": 0, "eligibleNegativeOccurrences": 1 },
+    { "split": "evaluation", "category": "negative-substring", "raw": "an apiary is nearby", "reference": "an apiary is nearby", "targetOccurrences": 0, "eligibleNegativeOccurrences": 1 },
+    { "split": "evaluation", "category": "negative-near-miss", "raw": "open airplane mode", "reference": "open airplane mode", "targetOccurrences": 0, "eligibleNegativeOccurrences": 1 },
+    { "split": "evaluation", "category": "negative-near-miss", "raw": "the say marker moved", "reference": "the say marker moved", "targetOccurrences": 0, "eligibleNegativeOccurrences": 1 },
+    { "split": "evaluation", "category": "general-english", "raw": "ordinary words remain unchanged", "reference": "ordinary words remain unchanged", "targetOccurrences": 0, "eligibleNegativeOccurrences": 1 }
+  ]
+}
