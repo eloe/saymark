@@ -625,7 +625,7 @@ PR/release evidence.
 | Snapshot consistency | U-15, I-02, I-04 | Live sequence fixture. |
 | Raw fallback and final authority | I-01–I-03, I-11–I-13, UI-06 | Efficient and Live Preview integration run. |
 | Import/export and safe migration | U-17–U-20, U-25–U-27, UI-07, S-03–S-04, S-08–S-09 | Recovery and transaction test report. |
-| Correction quality | U-21, I-05–I-07, I-12, P-01–P-04 | Versioned streaming/model corpus report with raw, corrected, surface, and confidence metrics. |
+| Correction quality | U-21, I-05–I-07, I-12, P-01–P-04, `VocabularyQualityAcceptanceTests` | [`vocabulary-quality-results.md`](vocabulary-quality-results.md) records the 1.0 synthetic text-level gate and its claim boundary. Statistical model/audio promotion still requires the larger versioned streaming/model corpus described above. |
 | Privacy/security | S-01–S-09, A-01 | CI diagnostics scan, network monitor, architecture, and adversarial import report. |
 | Future model-native adapter | I-09–I-10 | Capability evidence for both model paths and privacy review. |
 | Accessible approved UI | UI-04–UI-09 | XCUITest plus manual VoiceOver verification against mockup. |
