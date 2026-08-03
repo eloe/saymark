@@ -73,6 +73,9 @@ public enum HistoryStoreError: Error, Sendable, Equatable {
     /// truncated.  Callers must not tell a person that removal is complete.
     case cleanupIncomplete
     case recordTooLarge
+    /// The physical store already contains the supported maximum number of
+    /// records. Existing user-retained rows are never silently evicted.
+    case recordLimitReached
 }
 
 /// A destructive mutation committed before its cleanup phase failed. The
@@ -119,6 +122,7 @@ public actor SQLiteHistoryStore: HistoryStore {
     public static let maximumSearchTokens = 12
     public static let defaultResultLimit = 20
     public static let maximumResultLimit = 25
+    public static let maximumRecordCount = 10_000
     private static let controlledArtifactNames: Set<String> = [
         databaseName, "\(databaseName)-wal", "\(databaseName)-shm",
         ".history.lock", ".metadata_never_index", ".cleanup-proof",
@@ -142,6 +146,7 @@ public actor SQLiteHistoryStore: HistoryStore {
     private let testBeforeDeletionCheckpoint: (@Sendable () -> Void)?
     private let testProofDisposalBoundary: (@Sendable (String) -> Void)?
     private let testPostCommitCleanupFailure: HistoryStoreError?
+    private let maximumRecordCount: Int
 
     /// Passing `.off` is intentionally side-effect free: no directory, database,
     /// WAL, or metadata file is created until an explicit enabled policy arrives.
@@ -155,7 +160,8 @@ public actor SQLiteHistoryStore: HistoryStore {
         testSchemaCreationFailure: Bool = false,
         testBeforeDeletionCheckpoint: (@Sendable () -> Void)? = nil,
         testProofDisposalBoundary: (@Sendable (String) -> Void)? = nil,
-        testPostCommitCleanupFailure: HistoryStoreError? = nil
+        testPostCommitCleanupFailure: HistoryStoreError? = nil,
+        testMaximumRecordCount: Int = SQLiteHistoryStore.maximumRecordCount
     ) throws {
         self.directoryURL = directoryURL
         self.databaseURL = directoryURL.appendingPathComponent(Self.databaseName, isDirectory: false)
@@ -168,6 +174,7 @@ public actor SQLiteHistoryStore: HistoryStore {
         self.testBeforeDeletionCheckpoint = testBeforeDeletionCheckpoint
         self.testProofDisposalBoundary = testProofDisposalBoundary
         self.testPostCommitCleanupFailure = testPostCommitCleanupFailure
+        self.maximumRecordCount = min(Self.maximumRecordCount, max(1, testMaximumRecordCount))
         // Do not create the store in an initializer.  This preserves the
         // default-Off no-files guarantee even if a caller only constructs a
         // dependency container and never records a final transcript.
@@ -251,10 +258,14 @@ public actor SQLiteHistoryStore: HistoryStore {
         if let database { writeCancellation.attach(database) }
         installDeadlineProgressHandler(writeCancellation)
 
-        let effectiveNow = try advanceHighWaterMarkForMutation()
+        let effectiveNow = max(now(), inMemoryHighWaterMark, try storedHighWaterMark())
         let id = UUID().uuidString.lowercased()
         let expiry = policy.durationMilliseconds.map { effectiveNow + $0 }
         try transaction(deadlineUptimeNanoseconds, cancellation: writeCancellation) {
+            guard try totalRecordCount() < maximumRecordCount else {
+                throw HistoryStoreError.recordLimitReached
+            }
+            try metadataSet("last_observed_now_ms", String(effectiveNow))
             let statement = try prepare("""
                 INSERT INTO records (id, created_at_ms, expires_at_ms, text, delivery_state, delivery_updated_at_ms)
                 VALUES (?, ?, ?, ?, 'pending', NULL)
@@ -270,11 +281,23 @@ public actor SQLiteHistoryStore: HistoryStore {
             // roll it back, and never create a late row.
             if testPreCommitDelayMicroseconds > 0 { usleep(testPreCommitDelayMicroseconds) }
         }
+        inMemoryHighWaterMark = effectiveNow
         generation &+= 1
         return HistoryRecord(
             id: id, createdAtMilliseconds: effectiveNow, expiresAtMilliseconds: expiry,
             text: finalization.text, deliveryState: .pending, deliveryUpdatedAtMilliseconds: nil
         )
+    }
+
+    private func totalRecordCount() throws -> Int {
+        let statement = try prepare("SELECT COUNT(*) FROM records")
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw mapSQLiteError(sqlite3_errcode(database))
+        }
+        let count = sqlite3_column_int64(statement, 0)
+        guard count >= 0, count <= Int64(Int.max) else { throw HistoryStoreError.corrupt }
+        return Int(count)
     }
 
     public func updateDeliveryState(id: String, to state: HistoryDeliveryState) throws -> Bool {
@@ -302,6 +325,16 @@ public actor SQLiteHistoryStore: HistoryStore {
     /// Protocol witness for the ordinary, non-cancellable store query.
     public func records(query: String? = nil, limit: Int = 20) throws -> [HistoryRecord] {
         try records(query: query, limit: limit, cancellation: nil)
+    }
+
+    /// Content-free capacity state for local UI. Physical rows are counted so
+    /// expired-but-not-yet-purged data cannot make storage grow past the bound.
+    public func isAtRecordLimit() throws -> Bool {
+        try reconcilePolicyBeforeGate()
+        if cleanupFailureLatched { throw HistoryStoreError.cleanupIncomplete }
+        guard policy.isEnabled else { return false }
+        try openIfNeeded()
+        return try totalRecordCount() >= maximumRecordCount
     }
 
     /// A private-window search can pass its own cancellation token. It is not

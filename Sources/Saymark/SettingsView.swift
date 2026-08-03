@@ -49,10 +49,17 @@ struct SettingsView: View {
                     showingClearConfirmation = true
                 }
                 .disabled(!historyController.isStartupComplete || historyController.activeRetention == .off)
+
+                if historyController.isAtRecordLimit {
+                    Text("Recent Dictations reached its 10,000-record limit. New dictations won’t be saved until you delete entries or clear history.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("recent-dictations.capacity-warning")
+                }
             } header: {
                 Text("Recent Dictations")
             } footer: {
-                Text("Off is the default. When enabled, Saymark keeps final text only on this Mac—never audio, secure-input dictation, or HUD-only sessions. 30 days is recommended after you choose to enable history. Clearing removes Saymark’s current local store; it cannot erase earlier backups or snapshots.")
+                Text("Off is the default. When enabled, Saymark keeps final text only on this Mac—never audio, secure-input dictation, or HUD-only sessions. 30 days is recommended. History holds at most 10,000 dictations; when full, new text is not saved until you delete or clear records. Clearing removes Saymark’s current local store; it cannot erase earlier backups or snapshots.")
             }
             .disabled(!historyController.isStartupComplete)
             .onChange(of: historyRetentionRaw) { _, rawValue in

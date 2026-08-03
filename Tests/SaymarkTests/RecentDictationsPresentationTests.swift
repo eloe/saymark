@@ -294,7 +294,7 @@ final class RecentDictationsPresentationTests: XCTestCase {
         var marked: [(String?, HistoryDeliveryState)] = []
 
         let result = await FinalDeliveryCoordinator.deliver {
-            expected
+            .record(expected)
         } insertExactlyOnce: {
             insertions += 1
             return .inserted
@@ -305,6 +305,10 @@ final class RecentDictationsPresentationTests: XCTestCase {
         XCTAssertEqual(insertions, 1)
         XCTAssertEqual(result.record?.id, expected.id)
         XCTAssertEqual(result.outcome, .inserted)
+        guard case .record(let persisted) = result.persistenceOutcome else {
+            return XCTFail("expected a recorded persistence outcome")
+        }
+        XCTAssertEqual(persisted?.id, expected.id)
         XCTAssertEqual(marked.count, 1)
         XCTAssertEqual(marked.first?.0, expected.id)
         XCTAssertEqual(marked.first?.1, .inserted)
@@ -315,7 +319,7 @@ final class RecentDictationsPresentationTests: XCTestCase {
         var marks = 0
 
         let result = await FinalDeliveryCoordinator.deliver {
-            nil
+            .record(nil)
         } insertExactlyOnce: {
             insertions += 1
             return .insertionFailed
@@ -327,6 +331,108 @@ final class RecentDictationsPresentationTests: XCTestCase {
         XCTAssertNil(result.record)
         XCTAssertEqual(result.outcome, .insertionFailed)
         XCTAssertEqual(marks, 1)
+    }
+
+    func testIntegratedFinalDeliveryPreservesCapacityOutcomeWithoutSkippingInsertion() async {
+        var insertions = 0
+        var marks = 0
+
+        let result = await FinalDeliveryCoordinator.deliver {
+            .recordLimitReached
+        } insertExactlyOnce: {
+            insertions += 1
+            return .inserted
+        } markDelivery: { _, _ in
+            marks += 1
+        }
+
+        XCTAssertEqual(insertions, 1)
+        XCTAssertEqual(marks, 1)
+        XCTAssertNil(result.record)
+        XCTAssertEqual(result.outcome, .inserted)
+        guard case .recordLimitReached = result.persistenceOutcome else {
+            return XCTFail("the content-free capacity outcome must reach post-delivery UI policy")
+        }
+    }
+
+    func testFullHistorySkipsNewRecordAndPublishesRecoveryMessage() async throws {
+        let controller = RecentDictationsController.shared
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saymark-hosted-cap-\(UUID().uuidString)", isDirectory: true)
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .untilDeleted,
+            testMaximumRecordCount: 1
+        )
+        let existingResult = try await store.recordFinal(.init(text: "existing retained row"))
+        let existing = try XCTUnwrap(existingResult)
+        controller.configureStoreForTesting(store, retention: .untilDeleted)
+
+        let outcome = await controller.recordFinalWithOutcome(
+            "new row while full",
+            enabledAtStart: true,
+            secureInputActive: false,
+            isHUDOnly: false
+        )
+        for _ in 0..<20 where controller.errorMessage == nil {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        guard case .recordLimitReached = outcome else {
+            return XCTFail("the delivery path must retain the content-free capacity outcome")
+        }
+        XCTAssertTrue(controller.isAtRecordLimit)
+        XCTAssertEqual(
+            controller.errorMessage,
+            "Recent Dictations is full. Delete a saved dictation or clear history before new text can be saved."
+        )
+        let retainedRows = try await store.records(limit: 25)
+        XCTAssertEqual(retainedRows.count, 1)
+
+        await controller.deleteForTesting(existing)
+        XCTAssertFalse(controller.isAtRecordLimit)
+        XCTAssertNil(controller.errorMessage)
+
+        _ = try await store.recordFinal(.init(text: "replacement retained row"))
+        _ = await controller.recordFinalWithOutcome(
+            "second row while full",
+            enabledAtStart: true,
+            secureInputActive: false,
+            isHUDOnly: false
+        )
+        XCTAssertTrue(controller.isAtRecordLimit)
+        await controller.clearHistoryForTesting()
+        XCTAssertFalse(controller.isAtRecordLimit)
+        XCTAssertNil(controller.errorMessage)
+        controller.configureStoreForTesting(nil, retention: .off)
+        await store.shutdown()
+        try FileManager.default.removeItem(at: directory)
+    }
+
+    func testLateCapacityRefreshCannotOverwriteNewerOffState() async throws {
+        let controller = RecentDictationsController.shared
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saymark-hosted-cap-race-\(UUID().uuidString)", isDirectory: true)
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .untilDeleted,
+            testMaximumRecordCount: 1
+        )
+        controller.configureStoreForTesting(store, retention: .untilDeleted)
+
+        _ = await controller.recordFinal(
+            "fills the test store",
+            enabledAtStart: true,
+            secureInputActive: false,
+            isHUDOnly: false
+        )
+        controller.configureStoreForTesting(nil, retention: .off)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(controller.activeRetention, .off)
+        XCTAssertFalse(controller.isAtRecordLimit)
+        await store.shutdown()
+        try FileManager.default.removeItem(at: directory)
     }
 
     func testRecentDictationsSourcesContainNoPostHogOrHardcodedLibraryPath() throws {
@@ -347,6 +453,7 @@ final class RecentDictationsPresentationTests: XCTestCase {
             XCTAssertFalse(source.contains("Library/Application Support"))
             XCTAssertFalse(source.contains("character_count"))
             XCTAssertFalse(source.contains("word_count"))
+            XCTAssertFalse(source.contains("10,000 saved"))
         }
     }
 
