@@ -13,9 +13,11 @@ final text.
 
 ## Status
 
-Saymark is under active development and is not yet distributed as a signed or
-notarized release. The local build uses a stable development-only signing
-identity so macOS Accessibility approval survives rebuilds.
+Saymark is under active development. Until Apple Developer enrollment is
+approved, a GitHub release may be published only as a conspicuously labeled,
+ad-hoc-signed, non-notarized prerelease. It does not pass normal Gatekeeper
+assessment. The local build uses a stable development-only signing identity so
+macOS Accessibility approval survives rebuilds.
 
 ## Requirements
 

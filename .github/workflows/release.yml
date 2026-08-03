@@ -9,12 +9,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: trusted-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   quality:
     name: Required source gates
+    if: ${{ vars.SAYMARK_TRUSTED_RELEASES == 'enabled' }}
     uses: ./.github/workflows/quality.yml
     permissions:
       contents: read

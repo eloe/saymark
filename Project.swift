@@ -23,8 +23,15 @@ let appVersion = ProcessInfo.processInfo.environment["TUIST_APP_VERSION"] ?? "0.
 let appSemanticVersion = ProcessInfo.processInfo.environment["TUIST_APP_SEMVER"] ?? appVersion
 let appBuild = ProcessInfo.processInfo.environment["TUIST_APP_BUILD"] ?? appVersion
 let isLocalBuild = ProcessInfo.processInfo.environment["TUIST_SAYMARK_LOCAL_BUILD"] == "1"
-let appBundleID = isLocalBuild ? "com.eloe.saymark.local" : "com.eloe.saymark"
-let appDisplayName = "Saymark"
+let isUntrustedDistribution = ProcessInfo.processInfo.environment["TUIST_SAYMARK_UNTRUSTED_BUILD"] == "1"
+let appBundleID = if isUntrustedDistribution {
+    "com.eloe.saymark.untrusted"
+} else if isLocalBuild {
+    "com.eloe.saymark.local"
+} else {
+    "com.eloe.saymark"
+}
+let appDisplayName = isUntrustedDistribution ? "Saymark (Untrusted)" : "Saymark"
 
 let project = Project(
     name: "Saymark",

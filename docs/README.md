@@ -18,7 +18,7 @@ Start with the documents that match the work you are doing:
 - [`diagnostic-logging.md`](diagnostic-logging.md) — configurable privacy-safe instrumentation
 - [`privacy-and-security.md`](privacy-and-security.md) — data handling and trust boundaries
 - [`security-and-secrets.md`](security-and-secrets.md) — repository security and GitHub secret policy
-- [`releasing.md`](releasing.md) — protected signing, notarization, and release checklist
+- [`releasing.md`](releasing.md) — untrusted no-fee and future Apple-trusted release checklists
 - [`telemetry-todo.md`](telemetry-todo.md) — gates required before remote analytics can be enabled
 
 Documentation describes the current Saymark product. Historical transition notes
