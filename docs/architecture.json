@@ -4,8 +4,8 @@
   "document": {
     "title": "Saymark architecture map",
     "purpose": "Machine-readable orientation for agents and contributors changing Saymark.",
-    "generated_on": "2026-07-26",
-    "based_on_revision": "working tree based on e179a3a",
+    "generated_on": "2026-08-03",
+    "based_on_revision": "codex/docs-product-truth based on PR #53 head 2f5c1ff",
     "canonical_source": "docs/architecture.json",
     "human_view": "docs/architecture.html",
     "regenerate": "node Scripts/generate-architecture-map.mjs"
@@ -49,6 +49,12 @@
         "name": "SaymarkKit",
         "kind": "reusable Swift library",
         "entrypoint": "SaymarkKit/Sources/SaymarkKit/DictationSession.swift"
+      },
+      {
+        "id": "live-insertion-policy",
+        "name": "LiveInsertionPolicy",
+        "kind": "dependency-free Swift policy library",
+        "entrypoint": "SaymarkKit/Sources/LiveInsertionPolicy/LiveInsertionPolicy.swift"
       },
       {
         "id": "saymark-cli",
@@ -121,6 +127,20 @@
     "dependency_rule": "Presentation may depend on SaymarkKit; SaymarkKit may depend on model and platform libraries. Model libraries must not depend on the app."
   },
   "components": [
+    {
+      "id": "live-insertion-policy",
+      "name": "LiveInsertionPolicy",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/LiveInsertionPolicy",
+      "kind": "dependency-free fail-closed policy foundation",
+      "responsibilities": [
+        "Model provisional ownership without platform mutation APIs",
+        "Reject stale generations and ambiguous ownership transitions",
+        "Route fallback-final, frozen-final, secure, and settled terminals exactly once",
+        "Keep production provisional field mutation disabled until evidence gates close"
+      ],
+      "depends_on": []
+    },
     {
       "id": "app-entry",
       "name": "SaymarkApp",
@@ -452,13 +472,41 @@
       "path": "SaymarkKit/Sources/SaymarkKit/TextInjector.swift",
       "kind": "macOS paste and event adapter",
       "responsibilities": [
-        "Snapshot and restore the pasteboard around atomic insertion",
+        "Snapshot and conditionally restore the pasteboard around single-shot final insertion",
+        "Lease the intended AX element, process, and selection at dictation start",
+        "Require bounded caret and content acknowledgement before reporting delivery and restoring the clipboard",
         "Synthesize Command-V using a private CGEvent source",
         "Detect secure input and leave text on the clipboard",
         "Avoid clobbering a user clipboard change"
       ],
       "depends_on": [
         "permissions"
+      ]
+    },
+    {
+      "id": "vocabulary",
+      "name": "Vocabulary correction",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/Vocabulary.swift",
+      "kind": "deterministic local correction and storage",
+      "responsibilities": [
+        "Freeze a local Vocabulary snapshot at dictation start",
+        "Apply pinned Unicode 15.1 deterministic replacements to draft and final ASR text",
+        "Import and export the versioned schema-v2 interchange format and migrate legacy schema-v1 imports",
+        "Keep vocabulary values out of diagnostics, telemetry, and network boundaries"
+      ]
+    },
+    {
+      "id": "history-store",
+      "name": "Recent Dictations store",
+      "layer": "core",
+      "path": "SaymarkKit/Sources/SaymarkKit/HistoryStore.swift",
+      "kind": "guarded local SQLite recovery store",
+      "responsibilities": [
+        "Remain absent while retention is Off",
+        "Persist only eligible final text and closed delivery outcomes",
+        "Provide bounded local search, retention, deletion, and crash-safe cleanup",
+        "Reject audio, provisional text, target identity, selection, and clipboard content"
       ]
     },
     {
@@ -735,15 +783,20 @@
         "Present the HUD synchronously on the main actor",
         "In Start/Stop mode, show the click-through blue halo on the active display",
         "Start a fresh DictationSession and MicCapture",
+        "Capture the focused AX element and selection lease when in-field delivery is requested",
         "Capture and convert audio to 16 kHz mono",
+        "Stop at 10 minutes or fail closed when queued and active audio exceeds 5 seconds",
         "Emit 160 ms chunks on the capture queue",
         "Serialize VAD and ASR on saymark.stt",
         "Publish live updates to the HUD",
         "On hold release or the second Start/Stop press, hide the halo, display Processing, and stop capture",
         "Finalize off the main actor",
         "Use Parakeet final text in Efficient and Live Preview",
+        "Apply the frozen deterministic Vocabulary snapshot to final text",
         "After a successful Start/Stop result, briefly fade the active-display edge green",
-        "Paste once into the focused app or leave text in the HUD",
+        "Paste once only while the original AX lease remains current and require bounded delivery acknowledgement",
+        "Retain recovery through the clipboard only while Saymark still owns it; after ownership loss preserve a newer user clipboard, report failure in the HUD, and recover final text only from eligible committed history",
+        "Write eligible final text to Recent Dictations only when its opt-in retention policy remained enabled",
         "Tear down per-utterance resources and schedule HUD dismissal"
       ],
       "authoritative_output": "Parakeet for product modes; Nemotron is live draft and empty-final fallback only"
@@ -755,6 +808,8 @@
       "steps": [
         "Persist the product mode",
         "Ask DictationController to prepare the current mode",
+        "Defer preparation without changing recording or finalization state while the lifecycle is busy",
+        "Coalesce deferred requests latest-wins and ignore obsolete completion or failure",
         "Reuse any already-loaded model",
         "Download and warm only a missing model",
         "Use the new mode on the next utterance"
@@ -767,9 +822,12 @@
       "steps": [
         "If Accessibility is absent, copy text and show an actionable HUD error",
         "If secure input is active, copy text and do not synthesize input",
+        "Revalidate the AX element, process, and exact selection leased at dictation start",
         "Snapshot the pasteboard",
         "Write final text and synthesize Command-V",
-        "Restore the prior pasteboard after 120 ms only if the user has not changed it"
+        "Poll within bounded AX messaging and overall acknowledgement timeouts for exact caret movement and a matching capped content probe",
+        "Restore the prior pasteboard only after confirmed consumption and only while Saymark still owns its temporary value",
+        "On ambiguity, post no late retry; preserve final text only while Saymark still owns the clipboard, otherwise preserve the newer user copy, report failure in the HUD, and recover final text only from eligible committed history"
       ]
     }
   ],
@@ -876,7 +934,7 @@
     },
     "pasteboard": {
       "lifetime": "Temporary during insertion, then restored when safe",
-      "exception": "Final text remains when automatic insertion is unavailable or secure input is active"
+      "exception": "Final text remains when automatic insertion is unavailable or secure input is active only until the user changes the clipboard; newer user clipboard content is always preserved"
     },
     "audio": {
       "persistence": "Memory only for the active utterance",
@@ -969,6 +1027,17 @@
   },
   "tests": [
     {
+      "target": "LiveInsertionPolicyTests",
+      "kind": "Swift package unit and property tests",
+      "covers": [
+        "Dependency-free policy boundary",
+        "Ownership loss and frozen-final behavior",
+        "Stale generation rejection",
+        "Exact-once terminal routing",
+        "Bounded revisable-tail accounting"
+      ]
+    },
+    {
       "target": "SaymarkKitTests",
       "kind": "Swift package unit and model acceptance tests",
       "covers": [
@@ -981,7 +1050,7 @@
         "Benchmark gates",
         "Real model acceptance",
         "Versioned public-corpus integrity and accuracy acceptance",
-        "Atomic clipboard restoration and secure-input policy",
+        "Single-shot final clipboard restoration and secure-input policy",
         "Production feed cadence"
       ]
     },
@@ -1008,7 +1077,7 @@
         "Real global-shortcut dictation lifecycle",
         "Accessibility and secure-input fallback",
         "Clipboard preservation",
-        "Native, web, Electron, and terminal exact-once compatibility"
+        "Deterministic named native, web, Electron, and terminal adapter simulations; real applications remain pending certification in issues #24 and #29"
       ]
     },
     {
@@ -1128,6 +1197,11 @@
       "why": "Feed cadence changes update frequency, MLX throughput, step latency, energy, and backlog behavior."
     },
     {
+      "id": "bounded-live-capture",
+      "rule": "Stop live microphone capture at 10 minutes and reject more than 5 seconds of queued or active audio; these bounds do not govern future offline-file transcription.",
+      "why": "A stalled or overloaded live session must not retain unbounded audio or insert partial output."
+    },
+    {
       "id": "resource-separation",
       "rule": "Distinguish expected process-lifetime model residency from per-utterance resources, which must be released.",
       "why": "This prevents both false memory alarms and real staircase leaks."
@@ -1159,8 +1233,8 @@
     },
     {
       "id": "safe-insertion",
-      "rule": "Current builds insert the final transcript once. Planned live insertion may revise only Saymark-owned provisional text and must retain atomic paste as the compatibility fallback.",
-      "why": "Atomic paste is reliable across Terminal, Electron, editors, and browsers; live revision must never overwrite user-owned text."
+      "rule": "Current builds lease the intended AX field and selection, post one final paste only while that intent is current, and require bounded acknowledgement before clipboard restoration. Clipboard ownership loss preserves the newer user copy. Planned live insertion may revise only Saymark-owned provisional text and must retain single-shot final paste as the compatibility fallback.",
+      "why": "Focus, selection, protection, timeout, target, or clipboard ambiguity must produce no late paste or overwrite of user-owned content; recovery may use the still-owned clipboard or eligible committed history, while the HUD reports failure without retaining the final text."
     }
   ],
   "known_work": [
@@ -1183,10 +1257,22 @@
       "summary": "Use benchmark evidence for changes to model composition, chunking, live preview, or memory policy."
     },
     {
+      "id": "vocabulary-evidence",
+      "status": "shipped baseline; promotion evidence pending",
+      "source": "docs/language-correction-quality-sdd.md",
+      "summary": "Deterministic local correction, storage, native management, schema-v2 interchange, and legacy-v1 import migration ship; held-out quality, accessibility, and optional model-native biasing remain tracked work."
+    },
+    {
+      "id": "recent-dictations",
+      "status": "shipped text-only baseline; export and scale pending",
+      "source": "docs/recent-dictations-sdd.md",
+      "summary": "Opt-in local recovery, search, retention, and deletion ship without audio; transcript export, file import, optional audio policy, and 10,000-record promotion remain tracked work."
+    },
+    {
       "id": "live-field-insertion",
       "status": "planned after daily-driver promotion",
       "source": "docs/product-roadmap.md",
-      "summary": "Write stable words at the cursor while speaking with committed-prefix and revisable-tail ownership; retain atomic final insertion as the compatibility fallback."
+      "summary": "Write stable words at the cursor while speaking with committed-prefix and revisable-tail ownership; retain single-shot final insertion as the compatibility fallback."
     }
   ],
   "file_index": [

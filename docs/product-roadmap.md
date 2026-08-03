@@ -46,7 +46,20 @@ The current source already contains:
   reduced-motion behavior and brief success feedback;
 - local Apple-silicon transcription with Efficient and Live Preview plans;
 - immediate HUD presentation, provisional text, final text, and error states;
-- automatic insertion with clipboard restoration and secure-input fallback;
+- single-shot final insertion leased to the originally focused Accessibility
+  element and selection, with bounded caret/content acknowledgement before
+  clipboard restoration; ambiguous delivery reports failure in the HUD and
+  retains final text on the clipboard while Saymark owns it; after clipboard
+  ownership loss, Saymark preserves the newer user copy and only an eligible
+  committed history row can recover the final text;
+- a 10-minute live-microphone limit and a 5-second queued/active-audio limit,
+  with fail-closed overload and capture-failure handling;
+- deferred, latest-wins model preparation that cannot replace an active
+  recording lifecycle, plus exclusive runtime/onboarding hotkey ownership;
+- private deterministic Vocabulary correction with native management,
+  import/export, and a versioned local interchange format;
+- opt-in, text-only Recent Dictations with local search, copy/reinsert,
+  retention, and deletion controls; export and audio retention are not shipped;
 - guided microphone and draggable Accessibility setup, shortcut behavior,
   download, and hotkey-only try-it onboarding;
 - privacy-safe local diagnostics for latency, CPU, memory, MLX allocation, and
@@ -57,6 +70,29 @@ The checked-in public English corpus now provides a reproducible clean, harder
 acoustic, noisy, and 30–120-second baseline. It does not yet cover spoken
 numbers, punctuation commands, conversational dictation, or multiple promoted
 languages, so Saymark still does not make a general accuracy claim.
+
+### Durable status and issue index
+
+This table is the authority for work that remains after the shipped foundations
+above. “Shipped” means the source and automated acceptance contract exist;
+machine- or human-dependent certification remains open until its issue contains
+the required evidence.
+
+| Area | Shipped truth | Remaining owner | Canonical contract |
+| --- | --- | --- | --- |
+| Product/document truth | This page records the current source baseline. | [#23](https://github.com/eloe/saymark/issues/23) | This roadmap and [`architecture.md`](architecture.md) |
+| Single-shot final insertion | Focus/selection lease, bounded receipt, and newer-clipboard preservation are implemented; real-target certification remains open. | [#24](https://github.com/eloe/saymark/issues/24), [#27](https://github.com/eloe/saymark/issues/27) | [`live-insertion-sdd.md`](live-insertion-sdd.md) |
+| Provisional field mutation | Pure fail-closed policy and evidence harness only; no production cross-app mutation. | [#25](https://github.com/eloe/saymark/issues/25), [#26](https://github.com/eloe/saymark/issues/26), [#27](https://github.com/eloe/saymark/issues/27) | [`live-insertion-sdd.md`](live-insertion-sdd.md) |
+| Daily-driver evidence | Deterministic tests and privacy-safe diagnostics exist. | [#28](https://github.com/eloe/saymark/issues/28), [#29](https://github.com/eloe/saymark/issues/29) | [`performance-acceptance.md`](performance-acceptance.md), [`integration-testing.md`](integration-testing.md) |
+| Vocabulary | Deterministic local correction, management UI, schema-v2 interchange, and legacy-v1 import migration are shipped. | [#30](https://github.com/eloe/saymark/issues/30), [#31](https://github.com/eloe/saymark/issues/31), optional model adapter [#32](https://github.com/eloe/saymark/issues/32) | [`language-correction-quality-sdd.md`](language-correction-quality-sdd.md) |
+| Recent Dictations | Opt-in text-only history, search, recovery, retention, and deletion are shipped. | Export [#33](https://github.com/eloe/saymark/issues/33), file import [#34](https://github.com/eloe/saymark/issues/34), audio policy [#35](https://github.com/eloe/saymark/issues/35), scale [#36](https://github.com/eloe/saymark/issues/36) | [`recent-dictations-sdd.md`](recent-dictations-sdd.md) |
+| Onboarding and identity | Native onboarding and Saymark branding are shipped foundations. | Comparison [#37](https://github.com/eloe/saymark/issues/37), manual acceptance [#38](https://github.com/eloe/saymark/issues/38), inheritance audit [#39](https://github.com/eloe/saymark/issues/39) | [`architecture.md`](architecture.md), [`../Branding/BRAND_DIRECTION.md`](../Branding/BRAND_DIRECTION.md) |
+| Formatting modes | Not shipped. | [#40](https://github.com/eloe/saymark/issues/40) | This roadmap |
+| Context workflows | Not shipped. | [#41](https://github.com/eloe/saymark/issues/41) | This roadmap |
+| Languages and translation | English-only product truth; selection, detection, and translation are not shipped. | [#42](https://github.com/eloe/saymark/issues/42) | [`language-correction-quality-sdd.md`](language-correction-quality-sdd.md) |
+| Meetings | Not shipped. | [#43](https://github.com/eloe/saymark/issues/43) | This roadmap |
+| Sync and portable platforms | Versioned Vocabulary interchange exists; sync and other platforms do not. | [#44](https://github.com/eloe/saymark/issues/44) | This roadmap |
+| Master roadmap | Closes only when every child is completed or explicitly declined. | [#45](https://github.com/eloe/saymark/issues/45) | This index |
 
 ## Release discipline
 
@@ -101,6 +137,9 @@ XCUITest harness covers the real registered shortcut, all delivery outcomes,
 and ten exact-once repetitions for each compatibility target. A final unlocked
 interactive-session run remains required before Slice 1 is promoted; macOS
 correctly disables HID/UI automation while the user session is locked.
+Real-hardware/resource promotion remains owned by
+[#28](https://github.com/eloe/saymark/issues/28), and unlocked automation/video
+evidence by [#29](https://github.com/eloe/saymark/issues/29).
 
 Acceptance gates:
 
@@ -131,15 +170,26 @@ in the HUD and paste the final transcript once.
 Live insertion must use a committed-prefix / revisable-tail ownership model.
 Saymark may replace only text it inserted provisionally; a focus, selection,
 cursor, or user-edit change must stop revision without overwriting user-owned
-text. Atomic final insertion remains the compatibility fallback for apps or
+text. Single-shot final insertion remains the compatibility fallback for apps or
 states where safe revision cannot be proven. The latency and ownership gates in
 [`performance-acceptance.md`](performance-acceptance.md#human-perceived-live-insertion-gates)
 are the release contract for this follow-up.
+The frozen-final proof is [#25](https://github.com/eloe/saymark/issues/25), the
+production coordinator is [#26](https://github.com/eloe/saymark/issues/26), and
+target certification is [#27](https://github.com/eloe/saymark/issues/27).
 
 ## Slice 2 — Vocabulary and correction
 
 **Outcome:** users can teach Saymark names, product terms, acronyms, and preferred
 spellings without sending that vocabulary off-device.
+
+Shipped baseline: deterministic correction, local durable storage, the approved
+native Vocabulary surface, schema-v2 import/export, and legacy-v1 migration are present
+on `main`. Held-out promotion evidence remains
+[#30](https://github.com/eloe/saymark/issues/30), accessibility/interchange
+acceptance remains [#31](https://github.com/eloe/saymark/issues/31), and
+model-native biasing is an optional investigation in
+[#32](https://github.com/eloe/saymark/issues/32).
 
 Deliverables:
 
@@ -168,6 +218,14 @@ Acceptance gates:
 
 **Outcome:** users can recover recent work and transcribe existing audio without
 turning Saymark into a hidden recording archive.
+
+Shipped baseline: the explicitly enabled Recent Dictations feature stores final
+text only and provides bounded local search, copy/reinsert, retention, deletion,
+and crash-safe cleanup. Transcript export
+([#33](https://github.com/eloe/saymark/issues/33)), file transcription
+([#34](https://github.com/eloe/saymark/issues/34)), optional audio retention
+([#35](https://github.com/eloe/saymark/issues/35)), and 10,000-record promotion
+([#36](https://github.com/eloe/saymark/issues/36)) remain separate work.
 
 Deliverables:
 
@@ -324,6 +382,11 @@ Acceptance gates:
 | Cross-platform quality | each platform passes its own native integration and performance gates |
 
 ## Competitive reference, not a parity checklist
+
+The dated analysis and review artifacts under `docs/reviews/` remain immutable
+evidence snapshots. When a historical statement differs from shipped source,
+the current-truth sections and issue index above are the explicit correction;
+the historical record is not silently rewritten.
 
 As of 2026-07-24, Superwhisper's public documentation describes system-wide
 dictation, local and cloud voice models, built-in and custom processing modes,

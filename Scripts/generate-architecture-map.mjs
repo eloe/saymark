@@ -49,6 +49,9 @@ const components = data.components
       ...paths,
       ...responsibilities
     ].join(" ").toLowerCase();
+    const dependencies = component.depends_on?.length
+      ? `        <div class="depends"><span>Depends on</span>${component.depends_on.map((item) => pill(item)).join("")}</div>`
+      : "";
     return `
       <article class="component-card" data-search="${escapeHTML(searchable)}" data-layer="${escapeHTML(component.layer)}">
         <div class="component-topline">
@@ -58,9 +61,7 @@ const components = data.components
         <h3>${escapeHTML(component.name)}</h3>
         ${paths.map((item) => `<code>${escapeHTML(item)}</code>`).join("")}
         ${responsibilities.length ? list(responsibilities) : ""}
-        ${component.depends_on?.length
-          ? `<div class="depends"><span>Depends on</span>${component.depends_on.map((item) => pill(item)).join("")}</div>`
-          : ""}
+${dependencies}
       </article>`;
   }).join("");
 
@@ -487,7 +488,7 @@ const html = `<!doctype html>
       <section id="flow">
         <div class="section-head">
           <div><span class="eyebrow">Critical path</span><h2>Hotkey to final text.</h2></div>
-          <p>The UI responds first. Audio and inference stay serialized. Final decoding leaves the main actor, then one atomic paste returns the result.</p>
+          <p>The UI responds first. Audio and inference stay serialized. Final decoding leaves the main actor, then one single-shot paste attempts delivery with bounded acknowledgement.</p>
         </div>
         <div class="flow">${flowSteps}</div>
         <div class="callout"><strong>Final authority:</strong> ${escapeHTML(flow.authoritative_output)}</div>
@@ -553,8 +554,8 @@ const html = `<!doctype html>
 
       <section id="tests">
         <div class="section-head">
-          <div><span class="eyebrow">Verification</span><h2>Four ways to catch a regression.</h2></div>
-          <p>Pure policy tests, hosted AppKit tests, XCUITest flows, and real-model benchmarks cover different failure classes.</p>
+          <div><span class="eyebrow">Verification</span><h2>Five ways to catch a regression.</h2></div>
+          <p>Pure policy tests, core unit/model-acceptance tests, hosted AppKit tests, XCUITest flows, and real-model benchmarks cover different failure classes.</p>
         </div>
         <div class="test-grid">${testCards}</div>
       </section>

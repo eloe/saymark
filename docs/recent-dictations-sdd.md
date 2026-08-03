@@ -1,8 +1,11 @@
 # Recent Dictations and insertion recovery — SDD and TDD
 
-**Status:** approved design and test contract. The UI decisions in
-[Approved UI contract](#approved-ui-contract) are binding for implementation.
-This document implements the Slice 3 direction in
+**Status:** opt-in text-only Recent Dictations storage, recovery, search,
+retention, deletion, and native UI shipped. Export remains
+[#33](https://github.com/eloe/saymark/issues/33) and 10,000-record promotion
+remains [#36](https://github.com/eloe/saymark/issues/36).
+The UI decisions in [Approved UI contract](#approved-ui-contract) remain binding.
+This document implements the shipped history portion of the Slice 3 direction in
 [the product roadmap](product-roadmap.md) without changing Saymark's
 local-first or no-audio-by-default contract.
 
@@ -121,9 +124,10 @@ how to tell the person that this recovery copy was not saved.
 
 No-speech, cancellation before final text, model failure without final text,
 history Off at dictation start or finalization, secure input, HUD-only when it
-is disallowed, and a too-large final do not create a record. Text is stored
-exactly as supplied by the authoritative final model, without the
-presentation-only trailing space used by `TextInjector.paste`.
+is disallowed, and a too-large final do not create a record. Text is stored as
+the deterministic Vocabulary-corrected final output selected by the production
+final pipeline, without the presentation-only trailing space used by
+`TextInjector.paste`.
 
 The bounded ordering makes failed synthetic paste or unavailable Accessibility
 recoverable when the deadline permits, without turning storage into a delivery
@@ -160,9 +164,12 @@ PID is frontmost immediately before its one `TextInjector.paste(text)` call. If
 the app quit/relaunched, identity cannot be verified within 500 ms, or another
 app becomes frontmost, it posts nothing and offers Copy. Reinsert is exact-text
 (no trailing-space suffix), unlike a new final insertion; approved copy must
-say so if needed. It has the same Accessibility, secure-input,
-clipboard-restoration, and result reporting rules as a new dictation, cannot be
-invoked by keyboard focus alone, and never runs automatically.
+say so if needed. It applies the same Accessibility and secure-input preflight
+rules, but the shipped `TextInjector.paste` path reports `.pasted` immediately
+and restores the clipboard after a fixed 120 ms delay rather than waiting for
+bounded caret/content acknowledgement. It therefore does not yet carry the new
+dictation path's delivery-confirmation or clipboard-restoration guarantee,
+cannot be invoked by keyboard focus alone, and never runs automatically.
 
 ## 3. Architecture and data model
 
