@@ -1,14 +1,17 @@
 # Language correction quality: SDD and TDD
 
-**Status:** proposed implementation contract (no production implementation yet)
+**Status:** deterministic local Vocabulary correction, storage, native UI, and
+schema-v2 import/export shipped, with legacy schema-v1 import migration. Held-out quality evidence remains
+[#30](https://github.com/eloe/saymark/issues/30), accessibility/interchange
+acceptance [#31](https://github.com/eloe/saymark/issues/31), and optional
+model-native biasing [#32](https://github.com/eloe/saymark/issues/32).
 
 **Owner:** Language Correction Quality feature stream
 **Scope:** local vocabulary, deterministic output replacements, quality evidence,
 and the product truth for language support.
 
-This document turns Slice 2 (Vocabulary and correction) and the language portion
-of Slice 6 in the [product roadmap](product-roadmap.md) into an implementable,
-testable contract. It does not change the current product claim.
+This document is both the shipped Slice 2 contract and the remaining language
+quality contract from Slice 6 in the [product roadmap](product-roadmap.md).
 
 ## 1. Current facts and product truth
 
@@ -29,8 +32,9 @@ The current pipeline is intentionally narrow:
   multilingual claim.
 - In Live Preview, Nemotron creates an **automatic ASR draft** while recording;
   Parakeet replaces it after release. In Efficient mode, Parakeet creates only a
-  final transcript. Neither path has a correction, vocabulary, learned-word, or
-  spoken-edit-command processor today.
+  final transcript. Both final paths apply the frozen deterministic Vocabulary
+  snapshot after ASR; Live Preview also applies it to displayed drafts. Saymark
+  still has no learned-word or spoken-edit-command processor.
 
 Accordingly, until separately promoted with fixtures and results:
 
@@ -42,9 +46,9 @@ Accordingly, until separately promoted with fixtures and results:
 | Manual language selection | Not implemented. A future selection may exist only for a model capability proven for both the draft and authoritative final path. |
 | Translation | Out of scope. It must be an explicit future operation, never an implicit correction. |
 
-The existing bare `AUTO` HUD language badge is not an acceptable product state:
-it implies automatic language detection. The approved implementation must either
-remove the badge or render `EN` while English is the sole supported language;
+The former bare `AUTO` HUD language badge was not an acceptable product state
+because it implied automatic language detection. The shipped implementation
+renders `EN` while English is the sole supported language;
 rename the UI model property so it is not called a detected language. No runtime
 path may derive that string from model output. Product copy must not enumerate a
 language count until every promoted language has a fixture manifest and an
@@ -280,7 +284,7 @@ post-ASR result is the behavior.
 
 ### 4.1 User controls
 
-The feature needs a local Vocabulary & Replacements settings surface with
+The shipped feature provides a local Vocabulary settings surface with
 search, add, edit, enable/disable, delete, import, export, and a way to reveal
 the raw transcript where corrected output is shown. Add/edit requires a written
 value and one or more “heard as” aliases. A preview must show supplied sample

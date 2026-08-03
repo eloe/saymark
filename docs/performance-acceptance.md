@@ -65,7 +65,8 @@ During continuous speech:
 - A correction must replace only Saymark-owned provisional text.
 - Focus, selection, cursor, or user-edit changes must stop revision safely rather
   than overwrite text Saymark no longer owns.
-- Atomic final insertion remains the required compatibility fallback.
+- Single-shot final insertion remains the required compatibility fallback;
+  target compatibility is certified only by the real-app evidence matrix.
 
 For live field insertion, word-appearance timing measures provisional text. The
 committed-prefix policy must also report and pass these stability limits: no

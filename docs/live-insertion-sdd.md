@@ -1,13 +1,16 @@
 # Live insertion — evidence-gated software design and test specification
 
-**Status:** policy-core design approved for implementation; no cross-application live field mutation is approved.
-**Scope:** establish safe, testable policy for writing stable dictation text only after platform and UX evidence proves Saymark can distinguish its own provisional tail from user-owned text. The current atomic final paste is the shipped delivery contract.
+**Status:** fail-closed policy core and evidence harness shipped; no production
+cross-application provisional field mutation is approved or shipped. Atomic
+single-shot final insertion now has its own focus/selection lease and bounded receipt,
+tracked for real-target certification in [#24](https://github.com/eloe/saymark/issues/24).
+**Scope:** establish safe, testable policy for writing stable dictation text only after platform and UX evidence proves Saymark can distinguish its own provisional tail from user-owned text. The current single-shot final paste is the shipped delivery contract; real-target certification remains open.
 
 Independent review record: [Claude Opus 5 review](reviews/live-insertion-claude-opus-5-2026-07-26.md). It permits Slice 1 only. Slices 2–5 are blocked by B-01 through B-05 and the evidence table below.
 
 ## Product contract and requirements
 
-Live insertion is an opt-in future delivery policy for Live Preview. Efficient mode and HUD-only must remain non-live; unknown, terminal, and protected targets retain atomic final delivery. A future live session may write a stable prefix at the captured insertion point and revise only Saymark's provisional tail. It fails closed before a further write whenever ownership is uncertain.
+Live insertion is an opt-in future delivery policy for Live Preview. Efficient mode and HUD-only must remain non-live; unknown, terminal, and protected targets retain single-shot final delivery. A future live session may write a stable prefix at the captured insertion point and revise only Saymark's provisional tail. It fails closed before a further write whenever ownership is uncertain.
 
 | ID | Requirement | Acceptance criterion |
 | --- | --- | --- |
@@ -15,9 +18,9 @@ Live insertion is an opt-in future delivery policy for Live Preview. Efficient m
 | LI-02 | Preserve prefix/tail ownership. | Released prefix is never selected or rewritten. A bounded read-only ranged read validates Saymark's tail before any selection or replacement. |
 | LI-03 | Meet human-visible latency and stability gates. | Pass the authoritative [performance acceptance](performance-acceptance.md#human-perceived-live-insertion-gates), including its live-insertion step/freeze reconciliation and committed-stability bounds. |
 | LI-04 | Fail closed on loss of ownership. | Focus/PID/element/range change, same-offset content substitution, user edit, undo/redo, target close/termination, invalid AX element, secure transition, notification/order error, or timeout produces zero later writes. |
-| LI-05 | Distinguish final delivery states. | In fallback-final, where no live tail was written, existing atomic final insertion occurs exactly once. In frozen-final, where a live tail exists but is unverified, there are zero AX writes and zero synthetic paste events; recovery is copy-only until an explicit user-approved action. |
+| LI-05 | Distinguish final delivery states. | In fallback-final, where no live tail was written, existing single-shot final insertion is attempted once. In frozen-final, where a live tail exists but is unverified, there are zero AX writes and zero synthetic paste events; recovery is copy-only until an explicit user-approved action. |
 | LI-06 | Preserve security and privacy. | No synthetic event or AX mutation in protected states; no provisional clipboard write; diagnostics and remote events use closed enums/buckets only. |
-| LI-07 | Retain compatibility and mode isolation. | Atomic paste is the current shipped contract, not proven real-app compatibility evidence. Efficient, HUD-only, Tier C, and Tier D emit zero AX writes and zero synthetic events. |
+| LI-07 | Retain compatibility and mode isolation. | Single-shot paste with bounded acknowledgement is the current shipped contract, not proven real-app compatibility evidence. Efficient and Tier C emit zero provisional/live mutations but may use that one final synthetic paste; HUD-only and Tier D emit zero external delivery events. |
 | LI-08 | Be ordered, bounded, and cancelable. | No stale/concurrent write after stop/restart/focus loss/quit; AX I/O is off-main, bounded, and timeout fails closed. |
 
 ## Non-negotiable evidence gates
@@ -52,12 +55,12 @@ idle → capture-target → live(lease) → settle-owned-tail → idle
                          │     ├ tail >64 → tail-throttled (HUD carries excess; no further live field writes)
                          │     │                   ├ verified ownership → settle-owned-tail → idle
                          │     │                   └ ownership loss → frozen-final → copy-only / explicit approved recovery → idle
-                         ├ unsupported before a tail write ─→ fallback-final → existing atomic final once → idle
+                         ├ unsupported before a tail write ─→ fallback-final → existing single-shot final attempt → idle
                          ├ secure input/role ───────→ secure-final → copy-only / HUD recovery → idle
                          └ ownership loss ───────→ frozen-final → copy-only / explicit approved recovery → idle
 ~~~
 
-tail-throttled is a live-lease substate: the existing capped tail remains untouched, later provisional content is HUD-only, and no further live field write is attempted. On stop, it routes to settle-owned-tail only when ownership is re-proven; otherwise it routes to frozen-final. It never routes directly to fallback-final because a tail was already written. fallback-final is reachable only before a live tail is written **and only while neither secure role nor secure input is active**. A secure-input transition, including with no tail or a throttled no-tail state, seals a distinct secure terminal: it does not route through atomic final, performs no automatic insertion, and exposes copy/HUD recovery only. Where automatic insertion is available, fallback-final uses the current settled field string: final transcript plus one ASCII trailing space. frozen-final is reachable after any tail write whose ownership cannot be re-proven. It leaves residual field text untouched, performs no automatic final insertion, and offers only copy until the user explicitly chooses an approved recovery. It never delivers full final text blindly at the current cursor. Every terminal route is consumed exactly once; repeated Stop is a no-op and cannot repeat fallback, settlement, frozen recovery, or secure recovery.
+tail-throttled is a live-lease substate: the existing capped tail remains untouched, later provisional content is HUD-only, and no further live field write is attempted. On stop, it routes to settle-owned-tail only when ownership is re-proven; otherwise it routes to frozen-final. It never routes directly to fallback-final because a tail was already written. fallback-final is reachable only before a live tail is written **and only while neither secure role nor secure input is active**. A secure-input transition, including with no tail or a throttled no-tail state, seals a distinct secure terminal: it does not route through single-shot final delivery, performs no automatic insertion, and exposes copy/HUD recovery only. Where automatic insertion is available, fallback-final uses the current settled field string: final transcript plus one ASCII trailing space. frozen-final is reachable after any tail write whose ownership cannot be re-proven. It leaves residual field text untouched, performs no automatic final insertion, and offers only copy until the user explicitly chooses an approved recovery. It never delivers full final text blindly at the current cursor. Every terminal route is consumed exactly once; repeated Stop is a no-op and cannot repeat fallback, settlement, frozen recovery, or secure recovery.
 
 ### Stability policy
 
@@ -79,10 +82,10 @@ B-01 must first demonstrate a public mutation primitive with an origin/ordering 
 | --- | --- |
 | A — verified AX replacement | Blocked pending B-01…B-05 and all UX approvals. A reference native control must satisfy every evidence/test gate. |
 | B — verified synthetic + AX observation | Blocked pending Tier A evidence plus per-control real-app certification. Tier B live synthesis is **disabled in hold mode** unless D-07 approval and LI-I24 prove zero modifier contamination. |
-| C — atomic final | Terminal/PTY, editors, rich text/IME, remote desktop, unknown/custom controls, and uncertified web/Electron. HUD updates; current atomic final path only. |
+| C — single-shot final | Terminal/PTY, editors, rich text/IME, remote desktop, unknown/custom controls, and uncertified web/Electron. HUD updates; current single-shot final path only. |
 | D — protected/unavailable | Missing Accessibility, no focus, read-only/password/secure role, secure input, or AX failure. No AX mutation, no synthetic event, no provisional clipboard write. Final copy/HUD recovery only. |
 
-Secure role includes AXSecureTextField/AXTextFieldSecure and any certified equivalent. IsSecureEventInputEnabled is not an AX-write permission grant: no AX write is allowed until B-04 empirically proves behavior. Existing final atomic paste retains its snapshot/change-count/delayed restore policy, but must skip restore when its snapshot carries org.nspasteboard.ConcealedType or org.nspasteboard.TransientType so Saymark never republishes such content.
+Secure role includes AXSecureTextField/AXTextFieldSecure and any certified equivalent. IsSecureEventInputEnabled is not an AX-write permission grant: no AX write is allowed until B-04 empirically proves behavior. The shipped single-shot final path leases the intended field and selection and requires bounded caret/content acknowledgement before clipboard restoration. Focus drift before dispatch and secure input leave final text copied. Timeout or target loss leaves it copied only while Saymark retains clipboard ownership; ownership loss preserves the newer user copy, the HUD reports failure, and only an eligible committed history row can recover the final text. The path also skips snapshot/restoration when the pasteboard carries org.nspasteboard.ConcealedType or org.nspasteboard.TransientType so Saymark never republishes such content.
 
 Toggle HUD Stop must be demonstrably non-focus-stealing. If it cannot preserve the lease, it enters frozen-final, never a blind settle. This is tested through LI-I23. Native undo must be one session-level undo step; otherwise live insertion remains disabled for that target.
 
@@ -108,20 +111,20 @@ Fakes must model AX ranges, read-only ranged-tail read-back, notifications, focu
 | LI-U39 | Unit | Logger/remote event values are rejected unless closed enum or bucket; no bundle_id at live call sites. |
 | LI-U40 | Unit | User undo and redo during a session invalidate the lease. |
 | LI-U41 | Unit | Target termination, closed document/window, and invalid AXUIElement fail closed. |
-| LI-U42 | Unit | Efficient, HUD-only, Tier C, and Tier D issue zero AX mutations and zero synthetic events. |
+| LI-U42 | Unit | Efficient and Tier C issue zero provisional/live mutations; HUD-only and Tier D issue zero AX mutations and zero synthetic events. |
 | LI-U43 | Unit | Ownership verification reads kAXStringForRangeParameterizedAttribute without mutating selection; unavailable ranged read rejects Tier A. |
 | LI-U44 | Build/unit gate | LiveInsertionPolicy has an empty import/dependency allowlist and rejects Foundation/CoreFoundation/XPC/IPC, AX, event, dynamic-link, Objective-C, process, and network escape hatches through negative fixtures. |
 | LI-U45…U49 | Unit/property | Exact-once terminal routing; secure no-tail/no-tail-throttled copy-only terminal; mutation-token-bound tail acknowledgement; exact UTF-16 identity; separator/trailing-whitespace preservation. |
 | LI-U50…U52 | Unit/async/property | Oversized hypothesis bounded retention; task-scheduled invalidation cannot revive the tracker; counter exhaustion retires instead of wrapping. |
 | LI-I01…I08 | Integration | Reference Tier A, correction/punctuation/long utterance, focus/cursor/user-edit loss. Blocked until B gates. |
 | LI-I09…I11 | Real-app integration | Real Safari, Chrome, and a production Electron app via LiveInsertionRealTargetHarness: ten repetitions/version, exact final, ordered proof. Blocked until B gates. |
-| LI-I12 | Real-app integration | Real Terminal/PTY and code editor: zero live operations; existing atomic final exactly once over ten repetitions. |
+| LI-I12 | Real-app integration | Real Terminal/PTY and code editor: zero live operations; single-shot final delivery attempted once over ten repetitions and independently acknowledged. |
 | LI-I13…I15 | Integration | Missing AX, secure/password/protected state, clipboard race: no protected AX/synthetic operation and recovery preserved. |
 | LI-I16…I21 | UI | Hold/toggle/restart/quit, VoiceOver, keyboard-only, Reduce Motion, localized recovery. |
-| LI-I22 | Integration | For a safe settled lease, live settled field string is byte-identical to atomic final transcript plus trailing space. |
+| LI-I22 | Integration | For a safe settled lease, live settled field string is byte-identical to the single-shot final transcript plus trailing space. |
 | LI-I23 | Integration | Toggle-mode Stop HUD click is non-focus-stealing or freezes per approved recovery; never blind-settles. |
 | LI-I24 | Integration | Hold-mode Tier B: zero modifier-contaminated synthetic events throughout a held chord. |
-| LI-I25 | Integration | Concealed/transient pasteboard snapshot is not republished by delayed restore. |
+| LI-I25 | Integration | Concealed/transient pasteboard content is never snapshotted or republished by any restoration path. |
 | LI-P01…P05 | Performance | Authoritative latency/resource gates, no queue growth, 20 warmed runs/target. |
 | LI-P06 | Performance | N/T policy, max four-word revision depth, p95 revoked provisional words/s <= 2. |
 | LI-P07 | Unit performance | 10,000 normal pure-policy updates: p95 <=1 ms and maximum <=5 ms; the opt-in harness records RSS/settled growth. |
@@ -194,7 +197,7 @@ their evidence gates pass.
 
 | Decision | Approved behavior |
 | --- | --- |
-| D-01 setting/default | Keep atomic final-on-release as the safe default. “Insert while I speak” is an explicit opt-in, and its consent says provisional words are written into the active app and may change before settling. Unsupported fields automatically use final-on-release. |
+| D-01 setting/default | Keep single-shot final-on-release as the safe default. “Insert while I speak” is an explicit opt-in, and its consent says provisional words are written into the active app and may change before settling. Unsupported fields automatically use final-on-release. |
 | D-02 revisable-text cue | The HUD labels the state “Live here” and uses a native dotted underline for provisional words with the accessible description “Underlined words may still change.” Reduce Motion removes nonessential transition animation. |
 | D-03 ownership-loss recovery | Show “Editing paused,” explain that live updates stopped because the text changed outside Saymark, and offer **Copy final text** plus **Done**. Never perform an implicit replacement. HUD-click Stop follows the same ownership rule. |
 | D-04 undo | Offer a single coalesced Undo/Redo only where target-specific evidence proves it is safe. Otherwise make no special undo claim and preserve the target application’s native history. |
@@ -221,8 +224,9 @@ The release evidence recording is
 [`videos/live-insertion-evidence.mp4`](videos/live-insertion-evidence.mp4).
 It shows the focused policy and clipboard-restoration tests passing, followed
 by the native DEBUG daily-driver integration host executing the production
-atomic final-delivery path: the complete final transcript is delivered exactly
-once and the original clipboard is restored. A recording-only on-screen trigger
+single-shot final-delivery path: the host invokes one delivery attempt, its
+simulated receiver acknowledges the final text, and the original clipboard is
+restored. This is deterministic seam evidence, not real-target certification. A recording-only on-screen trigger
 invoked the same deterministic key-down/key-up path because macOS rejected
 synthetic global keystrokes from the capture process; that trigger was removed
 before commit.
