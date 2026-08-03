@@ -4,6 +4,54 @@ These measurements are decision records, not general hardware claims. The
 synthetic fixture verifies repeatability and catches gross regressions; model
 promotion still requires the quality corpus in `performance-acceptance.md`.
 
+## 2026-08-03 — Apple silicon Mac16,9, 38.65 GB
+
+- Machine: `Mac16,9`, 38,654,705,664 bytes memory
+- macOS: 26.5.1 (25F80)
+- Xcode: 26.6 (17F113); Swift 6.3.3
+- Saymark commit: `dc1297a6d0d2b8860f34869b3d3ff9f171952a3b`
+- MLX Swift: 0.31.6
+- MLX Audio Swift: `6671490176d24bc962f0b8cd50dbf24e2427e387`
+- Synthetic timing fixture: 24.49-second deterministic `say` recording, one
+  complete unmeasured warm-up followed by 20 measured runs
+- Corpus: all 17 hash-pinned `saymark-english-v1` cases, including 30, 45, 60,
+  90, and 120-second long-form cases
+- Parakeet:
+  `mlx-community/parakeet-tdt-0.6b-v3@ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`
+- Live Preview Nemotron:
+  `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit@7279359e4481b5e9e185a318bd618e429c6d86cd`
+
+Both product profiles passed the same public corpus because Parakeet remains
+the authoritative final model. Aggregate-only results are recorded here; the
+ignored local JSON contains public reference/hypothesis text and is not
+published.
+
+| Profile | Macro WER | Clean | Other | Pink noise | Long form | Violations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Efficient | 4.88% | 0.51% | 8.37% | 6.25% | 5.21% | 0 |
+| Live Preview | 4.88% | 0.51% | 8.37% | 6.25% | 5.21% | 0 |
+
+The separate warmed synthetic timing/resource run passed every model-level
+budget:
+
+| Profile | Runs | Median RTF | Final median | p95/max step | Peak memory | Settled growth | Smoke WER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Efficient | 20 | 0.00995 | 0.111 s | 0.0009 / 0.0022 s | 3.80 GB | 0 GB | 3.03% |
+| Live Preview | 20 | 0.0801 | 0.128 s | 0.0138 / 0.0235 s | 4.60 GB | 0 GB | 3.03% |
+
+The clean checkout initially stopped before inference because SwiftPM had not
+emitted MLX's `mlx-swift_Cmlx.bundle`. An ad-hoc-signed local Xcode app build
+with package-plugin validation explicitly skipped produced the 3.82 MB Metal
+library; copying that generated bundle into the isolated XCTest resources made
+the documented runner reproducible. No app was installed, launched, signed by
+an Apple identity, or sent to Apple.
+
+This evidence closes the real-model WER, long-form, warmed model latency, peak
+memory, and settled model-memory portions of the hardware gate on this machine.
+It does not claim app-level shortcut feedback, microphone start, idle CPU,
+main-thread stall, retained UI resources, external-target delivery, or a real
+feature walkthrough; those remain separate measurements.
+
 ## 2026-07-24 — Apple M2, 24 GB
 
 - Machine: MacBook Pro `Mac14,7`
