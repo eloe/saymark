@@ -97,6 +97,38 @@ final class HUDControllerTests: XCTestCase {
                        "Dictation complete. Visible finalized text. Maximum dictation length reached. Your text was finalized")
     }
 
+    func testHistoryCapacityAddsContentFreeNoticeToSuccessfulFinal() {
+        let (controller, scheduler, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        var announcements: [String] = []
+        controller.announcementSink = { announcements.append($0) }
+
+        controller.begin(presentation: false, lang: "EN")
+        controller.finish("private final transcript")
+        controller.noteHistoryCapacityReached()
+
+        XCTAssertEqual(
+            controller.model.historyNotice,
+            "Recent Dictations is full. This dictation wasn’t saved there."
+        )
+        XCTAssertEqual(announcements.last, "Recent Dictations is full. This dictation wasn’t saved there.")
+        XCTAssertFalse(controller.model.historyNotice?.contains("private final transcript") ?? true)
+        XCTAssertGreaterThanOrEqual(scheduler.entries.last?.delay ?? 0, 5.0)
+    }
+
+    func testHistoryCapacityNeverReplacesPrimaryDeliveryError() {
+        let (controller, _, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+
+        controller.begin(presentation: false, lang: "EN")
+        controller.error(title: "Couldn’t paste text", detail: "The transcript was copied — press ⌘V")
+        controller.noteHistoryCapacityReached()
+
+        XCTAssertEqual(controller.model.phase, .error)
+        XCTAssertEqual(controller.model.errorTitle, "Couldn’t paste text")
+        XCTAssertNil(controller.model.historyNotice)
+    }
+
     func testBeginResetsModelAndConfiguresInteractivePanel() {
         let (controller, _, animator) = makeHUDController()
         defer { tearDownHUD(controller) }

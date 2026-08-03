@@ -11,14 +11,19 @@ import PostHog
 enum FinalDeliveryCoordinator {
     @MainActor
     static func deliver(
-        recordBeforeDelivery: () async -> HistoryRecord?,
+        recordBeforeDelivery: () async -> HistoryPersistenceOutcome,
         insertExactlyOnce: () async -> HistoryDeliveryState,
         markDelivery: (HistoryRecord?, HistoryDeliveryState) -> Void
-    ) async -> (record: HistoryRecord?, outcome: HistoryDeliveryState) {
-        let record = await recordBeforeDelivery()
+    ) async -> (
+        record: HistoryRecord?,
+        persistenceOutcome: HistoryPersistenceOutcome,
+        outcome: HistoryDeliveryState
+    ) {
+        let persistenceOutcome = await recordBeforeDelivery()
+        let record = persistenceOutcome.record
         let outcome = await insertExactlyOnce()
         markDelivery(record, outcome)
-        return (record, outcome)
+        return (record, persistenceOutcome, outcome)
     }
 }
 
@@ -488,7 +493,7 @@ final class DictationController {
         } else {
             if InsertMode.current == .inField {
                 let delivery = await FinalDeliveryCoordinator.deliver {
-                    await RecentDictationsController.shared.recordFinal(
+                    await RecentDictationsController.shared.recordFinalWithOutcome(
                         final,
                         enabledAtStart: historyWasEnabledAtStart,
                         secureInputActive: TextInjector.secureInputActive,
@@ -510,6 +515,9 @@ final class DictationController {
                     hud.offerRecentDictationsRecovery {
                         RecentDictationsController.shared.present()
                     }
+                }
+                if case .recordLimitReached = delivery.persistenceOutcome {
+                    hud.noteHistoryCapacityReached()
                 }
             } else {
                 _ = await RecentDictationsController.shared.recordFinal(

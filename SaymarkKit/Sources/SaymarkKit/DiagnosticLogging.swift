@@ -116,6 +116,7 @@ public enum HistoryDiagnosticOutcome: String, Sendable {
     case deadlineExceeded = "deadline_exceeded"
     case cleanupIncomplete = "cleanup_incomplete"
     case recordTooLarge = "record_too_large"
+    case recordLimitReached = "record_limit_reached"
 }
 
 private final class DiagnosticStorage: @unchecked Sendable {
@@ -354,7 +355,7 @@ private extension HistoryDiagnosticOutcome {
         [
             Self.success, .unavailable, .corrupt, .migrationFailed,
             .permissionDenied, .busy, .ioFailed, .unsupportedFilesystem,
-            .deadlineExceeded, .cleanupIncomplete, .recordTooLarge,
+            .deadlineExceeded, .cleanupIncomplete, .recordTooLarge, .recordLimitReached,
         ].map(\.rawValue)
     }
 }

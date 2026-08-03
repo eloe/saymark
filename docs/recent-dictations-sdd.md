@@ -65,7 +65,7 @@ recommended initial explicit choice is **30 days** (pending approval), with:
 | Off (default) | none | Delete the active store and disable all writes. |
 | This session | final text durably during the current app session | Delete on orderly quit; on relaunch remove any prior session store before accepting a new record. A crash can leave data until that next launch, so it is durable-within-session and best-effort removal, not no-disk persistence. |
 | 7 / 30 / 90 days | final text until its individual expiry | Reads filter expired rows without writing; purge runs at launch/idle maintenance. On a shorter-policy change, recompute existing expiry and purge immediately; increasing retention affects new records only. |
-| Until I delete | final text | Show the chosen indefinite retention plainly; clear/delete remains available. |
+| Until I delete | final text | Show the chosen indefinite retention plainly; clear/delete remains available. New writes never increase a store already at or above 10,000 physical records. Preserve every existing row—including rows in a legacy over-cap store—and skip new history until explicit delete, Clear, Off, expiry purge, or session cleanup reduces the count below the limit. Never silently evict. |
 
 The recent-list query is newest first, has a default limit of **20**, and has a
 hard cap of **25** regardless of caller. Search is local token/prefix search;
@@ -84,7 +84,16 @@ list, not a match-all FTS expression. Thus FTS punctuation and `AND`, `OR`,
 `NOT`, and `NEAR` are user text, not query grammar. It returns the same maximum.
 The list does not promise a complete archive browser.
 
-Record creation has a size limit of 100,000 UTF-8 bytes after finalization. A
+Record creation has a size limit of 100,000 UTF-8 bytes after finalization and
+new writes enforce a hard limit of 10,000 physical records across every
+retention policy. A legacy store already above that limit opens without
+truncation and accepts no new record until approved cleanup reduces its count
+below 10,000. A full or over-cap store fails open for final delivery: it keeps existing rows,
+creates no new row/FTS entry, and exposes an actionable local message directing
+the user to Delete or Clear. The count cap is a finite growth boundary, not a
+small-disk promise: 10,000 maximum-size transcripts can contain roughly 1 GB of
+text before SQLite, FTS, WAL, and cleanup-proof overhead. Low-disk handling
+therefore remains an independent fail-open write-error path. A
 larger final text is not retained; the delivery flow still uses the complete
 text and emits only the content-free category `record_too_large`.
 This bound prevents one paste from consuming unbounded disk. The typed,
@@ -145,6 +154,13 @@ placement need approval). Secure-input feedback never offers history because
 no credential text was retained. If history was Off or the bounded write did
 not commit, the existing clipboard fallback is the only recovery route and
 must not turn history on.
+At the physical record limit, the delivery outcome carries only a closed,
+content-free capacity reason. An otherwise successful final adds the secondary
+HUD notice “Recent Dictations is full. This dictation wasn’t saved there.” A
+paste, clipboard, protected-field, or target error remains primary and is never
+replaced by the capacity notice. Persistent History and Settings banners say
+the 10,000-record limit was reached rather than claiming an exact row count,
+because a legacy store may be over the limit.
 
 Planned live insertion is outside schema version 1. Focus loss, selection/cursor
 changes, or a user-owned edit stop revision as required by
@@ -230,8 +246,10 @@ deleted full-text probes remain mandatory. The specificity floor also avoids
 falsely attributing SQLite schema bytes. After verification, the active proof is
 atomically renamed to `.cleanup-proof.disposable` and the directory is fsynced.
 Only that terminal disposable file may then be zeroed, truncated, fsynced, and
-unlinked; the active proof is never modified in place. There is no row-count
-cap. A crash with only the pending name is pre-deletion and is scrubbed safely;
+unlinked; the active proof is never modified in place. The 10,000-record
+physical cap counts expired rows until an approved purge removes them; it never
+evicts retained content implicitly. A crash with only the pending name is
+pre-deletion and is scrubbed safely;
 a validated active proof is replayed by exact id/text on startup, checkpointed,
 verified, and promoted to disposable. A crash at any disposable boundary resumes
 safe disposal without parsing its potentially partial contents. Invalid active
@@ -518,7 +536,8 @@ tracked separately):
 3. **Failure recovery in the HUD.**  Existing copy/fallback language remains
    primary.  When a saved record exists, an additional “Open Recent
    Dictations” route is available; it must not reveal the transcript in a
-   notification or menu label.
+   notification or menu label. A full-store reason may add the approved static
+   secondary notice only when primary delivery succeeded.
 4. **Destructive confirmation.** Delete shows what will be removed without
    restating text. Clear/Off says local database artifacts will be cleared only
    after secure deletion and a truncating checkpoint complete; it explains that
@@ -541,7 +560,7 @@ decisions, not merely mockup annotations.
 | Decision | Approved behavior | Product consequence |
 | --- | --- | --- |
 | Enablement and retention selector | Off until explicit choice; 30 days recommended | Binding privacy default. |
-| Retention choices | This session, 7, 30, 90 days, Until I delete | Binding choices. |
+| Retention choices | This session, 7, 30, 90 days, Until I delete | Binding choices; every policy shares the 10,000-record physical cap. |
 | History access and layout | Standard private list/detail window | Binding information architecture. |
 | Result presentation | 20 initially, 25 maximum; exact selected text only in detail | Binding disclosure limit. |
 | Failure affordance | HUD route only when an eligible row committed | No secure-input credential route. |
@@ -551,6 +570,7 @@ decisions, not merely mockup annotations.
 | HUD-only retention | Never retain | Binding presentation safeguard. |
 | Reinsert confirmation | Names prior app; PID verification; Copy fallback if unavailable | Binding target safety. |
 | Oversize dictation feedback | Say that the >100 KB final was not saved | Binding recovery disclosure. |
+| Full-store feedback | State that the 10,000-record limit was reached and new text is not saved until Delete or Clear frees capacity; add a content-free secondary HUD notice only after successful primary delivery | Binding non-eviction, legacy-over-cap truth, and recovery disclosure. |
 | Retention-shortening copy | Immediate deletion confirmation | Binding destructive-action copy. |
 | Switching to This session | Confirm existing saved dictations are deleted immediately | Binding destructive-action copy. |
 | Delete/Clear/Off confirmation and backup wording | Explicit, no secure-wipe/backup claim | Binding privacy wording. |
@@ -648,6 +668,7 @@ revision, and fixture revision as required by `performance-acceptance.md`.
 | RD-U23 | Secure input sampled at finalization produces no row/FTS row and no sentinel byte in store files, regardless of retention policy. |
 | RD-U24 | A history row requires enabled policy at both dictation start and finalization; enabling only mid-dictation never retains earlier speech. |
 | RD-U25 | A delayed writer and a queued writer each cross the pre-delivery deadline: the gate externally interrupts the active SQLite connection, writer rollback is acknowledged before reuse, no late row appears, and advisory-lock contention fails closed as `busy`. |
+| RD-U26 | The store accepts at most 10,000 physical records. A further record fails with `recordLimitReached`, preserves every existing row, changes no metadata/WAL/FTS state, and succeeds only after explicit deletion or another approved cleanup frees capacity. |
 
 ### 7.2 Integration, crash, concurrency, performance, and security tests
 
@@ -700,7 +721,7 @@ merely because it appears in a test name.
 | `testSchemaZeroCreationRollsBackAtomicallyOnInjectedFailure` | RD-U15/I05 as applicable to the only supported v0 state. v0 is an empty SQLite database, not a released transcript schema; the test proves transactional creation/validation rollback, `user_version == 0`, zero schema objects, and no backup/migration file. Future row-bearing migrations require new evidence. |
 | `testUnicodeSearchContractCoversNormalizationScriptsAndLiteralGrammar` and `testTenThousandGeneratedUnicodeQueriesUseRealSQLiteUnicode61WithoutCrash` | RD-U09/U10/I06: SQLite's configured `unicode61 remove_diacritics 2` tokenizer is the sole query-token authority, including normalization, RTL, emoji, category Co/private-use, operators, and 10,000 generated real-database queries. Only implementation-authored quoted-prefix grammar reaches MATCH. Malformed UTF-8 is repaired at Swift's `String` boundary before storage. |
 | `testConcurrentReadsWritesDeletesAndPolicyChangesRemainSerialized` | RD-I03: 120 mixed actor operations complete without `BUSY`, deadlock, resurrection, or cap violation. Reader snapshot isolation remains SQLite's WAL transaction guarantee; the app owns one connection and never exposes a long-lived read transaction. |
-| `testTenThousandRecordSearchAndPurgeAcceptance` | RD-I07/I08/I12: real 10,000-row SQLite+FTS fixture, cold and detached/non-main list checks, twenty searches with <=100 ms p95, <30 s purge budget, logical empty, controlled-artifact proof, and a scan of newly-created external temp artifacts. Test output records macOS, memory, SQLite, fixture size, and measured timings. |
+| `testTenThousandRecordSearchAndPurgeAcceptance` plus the focused cap tests | Partial RD-U26 and scale evidence: a genuinely cold list at 9,980 rows is followed by twenty production inserts (including 9,999→10,000), exact 10,000 record/FTS counts, repeated at-cap rejection without eviction or sentinel persistence, 10,000-row warm detached list/search, expiry purge, controlled-artifact proof, and recursive hidden/large-file scanning of newly-created external temp artifacts. Focused tests cover concurrent last-slot writers, unchanged database/WAL/high-water state, expired physical rows, legacy over-cap preservation, and cleanup recovery. Complete reference-machine/manual RD-I07/I08/I11/I12 evidence remains open under #36 and is not claimed by this slice. |
 | `testEveryDestructivePathRemovesFullAndFTSNormalizedTokenFragments`, `testPostCommitCleanupFailurePreservesEveryUnderlyingCause`, `testOpenReplayMarksEveryPostCommitCleanupCause`, duplicate/shared-token ownership, proof recovery, and subprocess SIGKILL tests | RD-U12–U14/U21 and RD-I01/I02/I12: delete, Clear, Off, Session, expiry purge, downward transitions, and fresh/relaunch active-proof replay remove full text plus normalized token/prefix/suffix probes; every post-commit cleanup error is distinctly marked while preserving busy/I/O/corrupt/permission cause; retained duplicate text and shared tokens do not false-latch cleanup; failed proof persists; pre-activation pending proof is scrubbed; invalid active proof fails closed; validated active proof replays after injected failure and SIGKILL with committed frames still live in WAL before checkpoint; kill at every terminal proof-disposal boundary recovers without an invalid active proof. |
 | `DiagnosticLoggingTests.testHistoryDiagnosticsAcceptOnlyLiteralEventAndClosedBoundedValues` plus hosted source/privacy tests | RD-U20/I09/I13: only literal `history.operation` with closed operation/outcome/retention and bounded count/duration values crosses diagnostics. History sources contain no PostHog call; the whole-flow negative assertion is compile-time/source evidence because there is no history analytics dependency to inject. |
 | `testStoreIsExcludedFromBackupAndSpotlightDiscovery` | RD-I14: backup exclusion, `.metadata_never_index`, and an `mdfind -onlyin` negative sentinel check. |

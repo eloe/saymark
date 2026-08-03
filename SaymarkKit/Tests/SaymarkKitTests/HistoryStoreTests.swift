@@ -645,14 +645,44 @@ final class HistoryStoreTests: XCTestCase {
         try await setup?.warmUp()
         await setup?.shutdown()
         setup = nil
-        try seedFixtures(count: 10_000, prefix: fixturePrefix)
+        try seedFixtures(count: 9_980, prefix: fixturePrefix)
 
-        let store = try SQLiteHistoryStore(directoryURL: directory, policy: .off, now: { self.now })
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .off,
+            now: { self.now },
+            testMaximumRecordCount: 20_000
+        )
         let coldStarted = ContinuousClock.now
         let coldRows = try await store.records(limit: 25)
         let coldMilliseconds = milliseconds(since: coldStarted)
         XCTAssertEqual(coldRows.count, 25)
         XCTAssertLessThanOrEqual(coldMilliseconds, 100, "10k cold list was \(coldMilliseconds) ms")
+
+        var insertDurations: [Double] = []
+        for index in 0..<20 {
+            let started = ContinuousClock.now
+            let inserted = try await store.recordFinal(.init(text: "boundary production insert \(index)"))
+            insertDurations.append(milliseconds(since: started))
+            XCTAssertNotNil(inserted)
+        }
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 10_000)
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records_fts"), 10_000)
+
+        let rejectedSentinel = "rejected-capacity-sentinel-\(UUID().uuidString)"
+        var rejectionDurations: [Double] = []
+        for index in 0..<20 {
+            let started = ContinuousClock.now
+            await XCTAssertThrowsErrorAsync(
+                try await store.recordFinal(.init(text: "\(rejectedSentinel)-\(index)"))
+            ) { error in
+                XCTAssertEqual(error as? HistoryStoreError, .recordLimitReached)
+            }
+            rejectionDurations.append(milliseconds(since: started))
+        }
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 10_000)
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records_fts"), 10_000)
+        XCTAssertFalse(try controlledArtifactsContain(Data(rejectedSentinel.utf8)))
 
         let detachedList = try await Task.detached {
             let started = ContinuousClock.now
@@ -677,12 +707,25 @@ final class HistoryStoreTests: XCTestCase {
             XCTAssertEqual(records.count, 25)
         }
         let p95 = queryDurations.sorted()[18]
+        let queryMedian = queryDurations.sorted()[9]
+        let queryMaximum = try XCTUnwrap(queryDurations.max())
+        let insertP95 = insertDurations.sorted()[18]
+        let insertMedian = insertDurations.sorted()[9]
+        let insertMaximum = try XCTUnwrap(insertDurations.max())
+        let rejectionP95 = rejectionDurations.sorted()[18]
+        let rejectionMedian = rejectionDurations.sorted()[9]
+        let rejectionMaximum = try XCTUnwrap(rejectionDurations.max())
         XCTAssertLessThanOrEqual(p95, 100, "10k warm query p95 was \(p95) ms")
+        XCTAssertLessThanOrEqual(insertP95, 100, "near-cap insert p95 was \(insertP95) ms")
+        XCTAssertLessThanOrEqual(rejectionP95, 100, "at-cap rejection p95 was \(rejectionP95) ms")
         fputs(
             "RD-I07 macOS=\(ProcessInfo.processInfo.operatingSystemVersionString) "
                 + "memory=\(ProcessInfo.processInfo.physicalMemory) "
                 + "sqlite=\(String(cString: sqlite3_libversion())) fixture=10000 "
-                + "cold_ms=\(coldMilliseconds) list_ms=\(detachedMilliseconds) p95_ms=\(p95)\n",
+                + "fixture_revision=cap-v1 cold_ms=\(coldMilliseconds) list_ms=\(detachedMilliseconds) "
+                + "query_median_ms=\(queryMedian) query_p95_ms=\(p95) query_max_ms=\(queryMaximum) "
+                + "insert_median_ms=\(insertMedian) insert_p95_ms=\(insertP95) insert_max_ms=\(insertMaximum) "
+                + "reject_median_ms=\(rejectionMedian) reject_p95_ms=\(rejectionP95) reject_max_ms=\(rejectionMaximum)\n",
             stderr
         )
 
@@ -693,17 +736,153 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertLessThan(purgeMilliseconds, 30_000, "10k purge exceeded idle-maintenance budget")
         let remaining = try await store.records()
         XCTAssertTrue(remaining.isEmpty)
+        let afterPurge = try await store.recordFinal(.init(text: "record after capacity cleanup"))
+        XCTAssertNotNil(afterPurge)
         await store.shutdown()
         XCTAssertFalse(try controlledArtifactsContain(Data("\(fixturePrefix)-0".utf8)))
-        XCTAssertFalse(try controlledArtifactsContain(Data("\(fixturePrefix)-9999".utf8)))
+        XCTAssertFalse(try controlledArtifactsContain(Data("\(fixturePrefix)-9979".utf8)))
         let newExternalArtifacts = try topLevelTemporaryArtifacts().subtracting(externalTempBefore)
         for artifact in newExternalArtifacts where !artifact.path.hasPrefix(directory.path) {
-            let values = try? artifact.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values?.isRegularFile == true, (values?.fileSize ?? .max) <= 10_000_000,
-                  let data = try? Data(contentsOf: artifact)
-            else { continue }
-            XCTAssertNil(data.range(of: Data(fixturePrefix.utf8)), "external temp leaked fixture sentinel")
+            guard FileManager.default.fileExists(atPath: artifact.path) else { continue }
+            let files = try regularFiles(in: artifact)
+            for file in files where FileManager.default.fileExists(atPath: file.path) {
+                XCTAssertFalse(
+                    try fileContains(file, sentinel: Data(fixturePrefix.utf8)),
+                    "external temp leaked fixture sentinel at \(file.path)"
+                )
+            }
         }
+    }
+
+    func testRecordCapPreservesExistingRowsUntilExplicitDeletionFreesCapacity() async throws {
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .untilDeleted,
+            now: { self.now },
+            testMaximumRecordCount: 2
+        )
+        let firstResult = try await store.recordFinal(.init(text: "first retained row"))
+        let first = try XCTUnwrap(firstResult)
+        let secondResult = try await store.recordFinal(.init(text: "second retained row"))
+        _ = try XCTUnwrap(secondResult)
+        let metadataBefore = try databaseScalar(
+            "SELECT CAST(value AS INTEGER) FROM store_metadata WHERE key = 'last_observed_now_ms'"
+        )
+        let databaseBefore = try artifactBytes(SQLiteHistoryStore.databaseName)
+        let walBefore = try artifactBytes("\(SQLiteHistoryStore.databaseName)-wal")
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.recordFinal(.init(text: "must not displace retained rows"))
+        ) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .recordLimitReached)
+        }
+        let full = try await store.records(limit: 25)
+        XCTAssertEqual(full.count, 2)
+        XCTAssertFalse(full.contains(where: { $0.text == "must not displace retained rows" }))
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 2)
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records_fts"), 2)
+        XCTAssertEqual(
+            try databaseScalar("SELECT CAST(value AS INTEGER) FROM store_metadata WHERE key = 'last_observed_now_ms'"),
+            metadataBefore
+        )
+        XCTAssertEqual(try artifactBytes(SQLiteHistoryStore.databaseName), databaseBefore)
+        XCTAssertEqual(try artifactBytes("\(SQLiteHistoryStore.databaseName)-wal"), walBefore)
+
+        let deleted = try await store.delete(id: first.id)
+        XCTAssertTrue(deleted)
+        let replacement = try await store.recordFinal(.init(text: "accepted after explicit deletion"))
+        XCTAssertNotNil(replacement)
+        let reopened = try await store.records(limit: 25)
+        XCTAssertEqual(reopened.count, 2)
+        XCTAssertTrue(reopened.contains(where: { $0.text == "accepted after explicit deletion" }))
+    }
+
+    func testRecordCapRejectsConcurrentWritersAtOneRemainingSlot() async throws {
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .untilDeleted,
+            now: { self.now },
+            testMaximumRecordCount: 3
+        )
+        _ = try await store.recordFinal(.init(text: "seed one"))
+        _ = try await store.recordFinal(.init(text: "seed two"))
+
+        let accepted = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+            for index in 0..<20 {
+                group.addTask {
+                    do {
+                        return try await store.recordFinal(.init(text: "contender \(index)")) != nil
+                    } catch HistoryStoreError.recordLimitReached {
+                        return false
+                    } catch {
+                        XCTFail("unexpected concurrent cap error: \(error)")
+                        return false
+                    }
+                }
+            }
+            var count = 0
+            for await result in group where result { count += 1 }
+            return count
+        }
+
+        XCTAssertEqual(accepted, 1)
+        let finalRows = try await store.records(limit: 25)
+        XCTAssertEqual(finalRows.count, 3)
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 3)
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records_fts"), 3)
+    }
+
+    func testExpiredPhysicalRowsConsumeCapacityUntilPurge() async throws {
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .days7,
+            now: { self.now },
+            testMaximumRecordCount: 1
+        )
+        _ = try await store.recordFinal(.init(text: "expired but physical"))
+        now += HistoryRetentionPolicy.days7.durationMilliseconds! + 1
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.recordFinal(.init(text: "blocked before purge"))
+        ) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .recordLimitReached)
+        }
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 1)
+
+        try await store.purgeExpired()
+        let accepted = try await store.recordFinal(.init(text: "accepted after expiry purge"))
+        XCTAssertNotNil(accepted)
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 1)
+    }
+
+    func testLegacyOverLimitStorePreservesRowsAndRejectsUntilBelowLimit() async throws {
+        var setup: SQLiteHistoryStore? = try makeStore(policy: .days30)
+        try await setup?.warmUp()
+        await setup?.shutdown()
+        setup = nil
+        try seedFixtures(count: 3, prefix: "legacy-over-cap")
+
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .off,
+            now: { self.now },
+            testMaximumRecordCount: 2
+        )
+        let initialRows = try await store.records(limit: 25)
+        XCTAssertEqual(initialRows.count, 3)
+        await XCTAssertThrowsErrorAsync(
+            try await store.recordFinal(.init(text: "blocked while legacy store is over cap"))
+        ) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .recordLimitReached)
+        }
+        let rows = try await store.records(limit: 25)
+        let firstDeleted = try await store.delete(id: rows[0].id)
+        let secondDeleted = try await store.delete(id: rows[1].id)
+        XCTAssertTrue(firstDeleted)
+        XCTAssertTrue(secondDeleted)
+        let accepted = try await store.recordFinal(.init(text: "accepted below cap"))
+        XCTAssertNotNil(accepted)
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 2)
     }
 
     func testConcurrentReadsWritesDeletesAndPolicyChangesRemainSerialized() async throws {
@@ -913,12 +1092,73 @@ final class HistoryStoreTests: XCTestCase {
         return false
     }
 
+    private func databaseScalar(_ sql: String) throws -> Int64 {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(
+            directory.appendingPathComponent(SQLiteHistoryStore.databaseName).path,
+            &database,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK else { throw HistoryStoreError.unavailable }
+        defer { if let database { sqlite3_close_v2(database) } }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw HistoryStoreError.unavailable
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw HistoryStoreError.unavailable }
+        return sqlite3_column_int64(statement, 0)
+    }
+
+    private func artifactBytes(_ name: String) throws -> Data? {
+        let url = directory.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url)
+    }
+
     private func topLevelTemporaryArtifacts() throws -> Set<URL> {
         Set(try FileManager.default.contentsOfDirectory(
             at: FileManager.default.temporaryDirectory,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey],
+            options: []
         ))
+    }
+
+    private func regularFiles(in root: URL) throws -> [URL] {
+        let rootValues = try root.resourceValues(forKeys: [
+            .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey,
+        ])
+        if rootValues.isSymbolicLink == true { return [] }
+        if rootValues.isRegularFile == true { return [root] }
+        guard rootValues.isDirectory == true,
+              let enumerator = FileManager.default.enumerator(
+                  at: root,
+                  includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                  options: []
+              )
+        else { return [] }
+        return enumerator.compactMap { item in
+            guard let url = item as? URL,
+                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                  values.isRegularFile == true,
+                  values.isSymbolicLink != true
+            else { return nil }
+            return url
+        }
+    }
+
+    private func fileContains(_ url: URL, sentinel: Data) throws -> Bool {
+        guard !sentinel.isEmpty else { return true }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var carry = Data()
+        while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            var window = carry
+            window.append(chunk)
+            if window.range(of: sentinel) != nil { return true }
+            carry = Data(window.suffix(max(0, sentinel.count - 1)))
+        }
+        return false
     }
 
     private func runCrashSubprocess(

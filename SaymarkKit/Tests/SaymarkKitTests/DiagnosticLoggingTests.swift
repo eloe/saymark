@@ -130,6 +130,7 @@ final class DiagnosticLoggingTests: XCTestCase {
             resultCount: 999,
             durationMilliseconds: 80_000
         )
+        SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .recordLimitReached)
         SaymarkDiagnostics.log(.info, "history.query.private words", fields: [
             "history_operation": "query",
             "history_outcome": "success",
@@ -146,7 +147,7 @@ final class DiagnosticLoggingTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.02)
         }
         let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
-        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(lines.count, 2)
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any]
         )
@@ -157,5 +158,14 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertEqual(object["history_result_count"] as? Int, 25)
         XCTAssertEqual(object["history_duration_ms"] as? Int, 60_000)
         XCTAssertFalse(lines[0].contains("private"))
+        let capObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(lines[1].utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(capObject["event"] as? String, "history.operation")
+        XCTAssertEqual(capObject["history_operation"] as? String, "insert")
+        XCTAssertEqual(capObject["history_outcome"] as? String, "record_limit_reached")
+        for forbidden in ["transcript", "record_id", "path", "search", "destination", "error"] {
+            XCTAssertNil(capObject[forbidden])
+        }
     }
 }
