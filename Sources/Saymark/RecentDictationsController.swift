@@ -9,6 +9,8 @@ import SwiftUI
 @MainActor
 @Observable
 final class RecentDictationsController: NSObject, NSWindowDelegate {
+    private static let recordLimitMessage =
+        "Recent Dictations is full. Delete a saved dictation or clear history before new text can be saved."
     enum CommittedCleanupPath: CaseIterable {
         case singleDelete, clear, retention, off, session, expiry, recovery
     }
@@ -24,11 +26,13 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var previousApplication: NSRunningApplication?
     private var refreshGeneration: UInt64 = 0
+    private var capacityGeneration: UInt64 = 0
     private var resultLimit = 20
     private var hasMoreResults = false
     private(set) var activeRetention: RecentDictationsRetention = .off
     private(set) var isStartupComplete = false
     private(set) var isHistoryAvailable = false
+    private(set) var isAtRecordLimit = false
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var searchCancellation: HistoryWriteCancellation?
     @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
@@ -84,6 +88,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     private func performExpiryCleanup() async {
         do {
             try await store?.purgeExpired()
+            await refreshRecordLimitState()
         } catch is HistoryCommittedCleanupFailure {
             invalidatePresentationAfterCommittedCleanupFailure(.expiry)
             errorMessage = "Expired dictations were removed, but Saymark could not finish cleaning its local database."
@@ -147,6 +152,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                 UserDefaults.standard.set(retention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
                 activeRetention = .off
                 isHistoryAvailable = false
+                clearRecordLimitState()
                 records = []
                 query = ""
                 return true
@@ -168,6 +174,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             activeRetention = retention
             isHistoryAvailable = true
             await refresh()
+            await refreshRecordLimitState()
             return true
         } catch is HistoryCommittedCleanupFailure {
             await reconcileToDurablePolicy(mirrorDefaults: false, publishAvailability: false)
@@ -188,6 +195,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
     /// window can expose it.
     func initializeAtLaunch() async {
         isHistoryAvailable = false
+        clearRecordLimitState()
         isStartupComplete = false
         activeRetention = .off
         do {
@@ -208,6 +216,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             activeRetention = RecentDictationsRetention(durable)
             UserDefaults.standard.set(activeRetention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
             isHistoryAvailable = activeRetention != .off
+            await refreshRecordLimitState()
             isStartupComplete = true
         } catch is HistoryCommittedCleanupFailure {
             store = nil
@@ -262,6 +271,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             refreshGeneration &+= 1
             records = []
             resultSummary = "0 results"
+            clearRecordLimitState()
             SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .success)
         } catch is HistoryCommittedCleanupFailure {
             SaymarkDiagnostics.logHistoryOperation(.clear, outcome: .unavailable)
@@ -341,26 +351,46 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         secureInputActive: Bool,
         isHUDOnly: Bool
     ) async -> HistoryRecord? {
+        await recordFinalWithOutcome(
+            text,
+            enabledAtStart: enabledAtStart,
+            secureInputActive: secureInputActive,
+            isHUDOnly: isHUDOnly
+        ).record
+    }
+
+    func recordFinalWithOutcome(
+        _ text: String,
+        enabledAtStart: Bool,
+        secureInputActive: Bool,
+        isHUDOnly: Bool
+    ) async -> HistoryPersistenceOutcome {
         guard enabledAtStart,
               isStartupComplete,
               activeRetention != .off,
               !secureInputActive,
               !isHUDOnly
-        else { return nil }
+        else { return .record(nil) }
         guard let store else {
             // This must normally already be warm. Never turn late startup
             // into a release-to-delivery dependency; warm for the next
             // eligible final instead.
             Task { await prepareForDelivery() }
             errorMessage = "Recent Dictations was skipped to keep dictation instant."
-            return nil
+            return .record(nil)
         }
         let deadline = DispatchTime.now().uptimeNanoseconds + 100_000_000
-        return await recordBeforeDelivery(
+        let attempt = await recordBeforeDelivery(
             store: store,
             finalization: .init(text: text, secureInputActive: secureInputActive, isHUDOnly: isHUDOnly),
             deadline: deadline
         )
+        guard self.store === store, activeRetention != .off else { return .record(nil) }
+        switch attempt {
+        case .record(let record): return .record(record)
+        case .failure(.recordLimitReached): return .recordLimitReached
+        case .deadline, .failure: return .record(nil)
+        }
     }
 
     func markDelivery(_ record: HistoryRecord?, state: HistoryDeliveryState) {
@@ -389,6 +419,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         do {
             _ = try await store?.delete(id: record.id)
             await refresh()
+            await refreshRecordLimitState()
         } catch is HistoryCommittedCleanupFailure {
             invalidatePresentationAfterCommittedCleanupFailure(.singleDelete)
             errorMessage = "This dictation was removed, but Saymark could not finish cleaning its local database."
@@ -505,6 +536,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         guard let store else {
             activeRetention = .off
             isHistoryAvailable = false
+            clearRecordLimitState()
             return
         }
         do {
@@ -514,9 +546,11 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                 UserDefaults.standard.set(activeRetention.rawValue, forKey: RecentDictationsRetention.defaultsKey)
             }
             isHistoryAvailable = publishAvailability && activeRetention != .off
+            await refreshRecordLimitState()
         } catch {
             activeRetention = .off
             isHistoryAvailable = false
+            clearRecordLimitState()
         }
     }
 
@@ -561,6 +595,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         activeRetention = retention
         isStartupComplete = startupComplete
         isHistoryAvailable = retention != .off
+        clearRecordLimitState()
     }
 
     func clearHistoryForTesting() async {
@@ -626,6 +661,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         pendingDeletion = nil
         previousApplication = nil
         isHistoryAvailable = false
+        clearRecordLimitState()
         window?.orderOut(nil)
         window = nil
     }
@@ -634,7 +670,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
         store: SQLiteHistoryStore,
         finalization: HistoryFinalization,
         deadline: UInt64
-    ) async -> HistoryRecord? {
+    ) async -> RecordAttempt {
         // Do not use a task group here: structured concurrency waits for every
         // child at scope exit, which would turn a late SQLite actor turn into a
         // delivery-path stall. The store's deadline is the commit authority;
@@ -657,7 +693,7 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                     result = .failure(error as? HistoryStoreError)
                 }
                 guard gate.resolve(continuation, with: result) else { return }
-                await self?.applyRecordAttempt(result)
+                await self?.applyRecordAttempt(result, sourceStore: store)
             }
             Task.detached(priority: .userInitiated) { [weak self] in
                 let remaining = deadline > DispatchTime.now().uptimeNanoseconds
@@ -670,22 +706,29 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
                     // token interrupts only this write if it is already active.
                     cancellation.interrupt()
                 }) else { return }
-                await self?.applyRecordAttempt(result)
+                await self?.applyRecordAttempt(result, sourceStore: store)
             }
         }
     }
 
-    private func applyRecordAttempt(_ result: RecordAttempt) {
+    private func applyRecordAttempt(_ result: RecordAttempt, sourceStore: SQLiteHistoryStore) {
+        guard store === sourceStore, activeRetention != .off else { return }
         switch result {
         case .record(let record):
             if record != nil {
                 SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .success)
+                Task { await refreshRecordLimitState() }
             }
         case .deadline:
             SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .deadlineExceeded)
             errorMessage = "Recent Dictations was skipped to keep dictation instant."
         case .failure(let error):
             switch error {
+            case .some(.recordLimitReached):
+                SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .recordLimitReached)
+                capacityGeneration &+= 1
+                isAtRecordLimit = true
+                errorMessage = Self.recordLimitMessage
             case .some(.recordTooLarge):
                 SaymarkDiagnostics.logHistoryOperation(.insert, outcome: .recordTooLarge)
                 errorMessage = "This dictation is too large to save in Recent Dictations."
@@ -698,12 +741,53 @@ final class RecentDictationsController: NSObject, NSWindowDelegate {
             }
         }
     }
+
+    private func refreshRecordLimitState() async {
+        capacityGeneration &+= 1
+        let requestedGeneration = capacityGeneration
+        guard let requestedStore = store, activeRetention != .off else {
+            clearRecordLimitState()
+            return
+        }
+        do {
+            let isFull = try await requestedStore.isAtRecordLimit()
+            guard requestedGeneration == capacityGeneration,
+                  store === requestedStore,
+                  activeRetention != .off
+            else { return }
+            isAtRecordLimit = isFull
+            if !isFull, errorMessage == Self.recordLimitMessage { errorMessage = nil }
+        } catch {
+            guard requestedGeneration == capacityGeneration,
+                  store === requestedStore
+            else { return }
+            // Unavailable storage is not proof that 10,000 rows exist. Its
+            // separate availability/error state remains authoritative.
+            clearRecordLimitState()
+        }
+    }
+
+    private func clearRecordLimitState() {
+        capacityGeneration &+= 1
+        isAtRecordLimit = false
+        if errorMessage == Self.recordLimitMessage { errorMessage = nil }
+    }
 }
 
 private enum RecordAttempt: Sendable {
     case record(HistoryRecord?)
     case deadline
     case failure(HistoryStoreError?)
+}
+
+enum HistoryPersistenceOutcome: Sendable {
+    case record(HistoryRecord?)
+    case recordLimitReached
+
+    var record: HistoryRecord? {
+        guard case .record(let record) = self else { return nil }
+        return record
+    }
 }
 
 /// A one-shot lock keeps the 100 ms caller result independent of a queued
@@ -714,7 +798,7 @@ private final class RecordDeadlineGate: @unchecked Sendable {
     private var resolved = false
 
     func resolve(
-        _ continuation: CheckedContinuation<HistoryRecord?, Never>,
+        _ continuation: CheckedContinuation<RecordAttempt, Never>,
         with result: RecordAttempt,
         beforeResume: () -> Void = {}
     ) -> Bool {
@@ -725,10 +809,7 @@ private final class RecordDeadlineGate: @unchecked Sendable {
         }
         guard didWin else { return false }
         beforeResume()
-        switch result {
-        case .record(let record): continuation.resume(returning: record)
-        case .deadline, .failure: continuation.resume(returning: nil)
-        }
+        continuation.resume(returning: result)
         return true
     }
 }

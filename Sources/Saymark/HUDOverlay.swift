@@ -30,6 +30,7 @@ final class HUDModel {
     var recording = false
     var showingFinal = false
     var completionNotice: String?
+    var historyNotice: String?
     var showStop = false          // toggle-mode: HUD shows a clickable Stop
     var onStop: () -> Void = {}
 
@@ -204,6 +205,12 @@ private struct HUDView: View {
                                 .font(.system(size: big ? 13 : 11.5, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .accessibilityIdentifier("hud.completion-notice")
+                        }
+                        if let notice = model.historyNotice {
+                            Label(notice, systemImage: "externaldrive.badge.exclamationmark")
+                                .font(.system(size: big ? 13 : 11.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("hud.history-notice")
                         }
                     }
                 }
@@ -448,6 +455,7 @@ final class HUDController {
         model.recording = true
         model.showingFinal = false
         model.completionNotice = nil
+        model.historyNotice = nil
         model.showStop = interactive
         model.onStop = onStop
         model.recoveryActionTitle = nil
@@ -471,6 +479,7 @@ final class HUDController {
                 correctionStatus: String? = nil, correctionRevision: UInt64? = nil) {
         model.showingFinal = false
         model.completionNotice = nil
+        model.historyNotice = nil
         model.confirmed = confirmed
         model.partial = partial
         if let rawConfirmed, let rawPartial { model.rawTranscript = rawConfirmed + rawPartial }
@@ -492,6 +501,7 @@ final class HUDController {
         model.recording = false
         model.showingFinal = false
         model.completionNotice = nil
+        model.historyNotice = nil
         model.showStop = false
         announcementSink("Processing dictation")
         if isListeningHaloVisible {
@@ -517,6 +527,7 @@ final class HUDController {
         model.recording = false
         model.showingFinal = false
         model.completionNotice = nil
+        model.historyNotice = nil
         model.showStop = false
         model.recoveryActionTitle = nil
         model.onRecoveryAction = {}
@@ -545,10 +556,21 @@ final class HUDController {
         scheduleHide(after: 7.0)
     }
 
+    /// Add a content-free secondary notice only to an otherwise successful
+    /// final. Never replace a paste, clipboard, secure-field, or target error.
+    func noteHistoryCapacityReached() {
+        guard model.phase == .transcribing, model.showingFinal, panel != nil else { return }
+        let notice = "Recent Dictations is full. This dictation wasn’t saved there."
+        model.historyNotice = notice
+        announcementSink(notice)
+        scheduleHide(after: max(5.0, model.finalDisplayDuration))
+    }
+
     /// Show the final text, then fade — lingering longer in presentation mode.
     func finish(_ finalText: String, rawText: String? = nil, correctionStatus: String? = nil,
                 correctionRevision: UInt64? = nil, completionNotice: String? = nil) {
         guard panel != nil else { return }
+        model.historyNotice = nil
         model.recording = false
         model.showStop = false
         if !finalText.isEmpty {

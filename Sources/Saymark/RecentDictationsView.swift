@@ -28,6 +28,16 @@ struct RecentDictationsView: View {
                 .padding(.bottom, 8)
                 .accessibilityIdentifier("recent-dictations.result-count")
 
+            if controller.isAtRecordLimit {
+                Text("Recent Dictations reached its 10,000-record limit. New dictations won’t be saved until you delete entries or clear history.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .accessibilityIdentifier("recent-dictations.capacity-warning")
+            }
+
             HSplitView {
                 VStack(spacing: 0) {
                     List(controller.records, selection: $selectedID) { record in
