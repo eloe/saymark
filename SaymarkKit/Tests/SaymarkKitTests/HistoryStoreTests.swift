@@ -754,6 +754,113 @@ final class HistoryStoreTests: XCTestCase {
         }
     }
 
+    func testTenThousandRecordDestructiveMaintenanceMatrix() async throws {
+        enum Operation: String, CaseIterable { case delete, clear, off, session }
+        let root = try XCTUnwrap(directory)
+        let baselineResidentBytes = try residentByteCount()
+        defer { directory = root }
+
+        for operation in Operation.allCases {
+            directory = root.appendingPathComponent(operation.rawValue, isDirectory: true)
+            now = 1_700_000_000_000
+            let prefix = "rd-10k-\(operation.rawValue)-\(UUID().uuidString)"
+            var setup: SQLiteHistoryStore? = try makeStore(policy: .untilDeleted)
+            try await setup?.warmUp()
+            await setup?.shutdown()
+            setup = nil
+            try seedFixtures(count: 10_000, prefix: prefix)
+
+            let store = try SQLiteHistoryStore(
+                directoryURL: directory,
+                policy: .off,
+                now: { self.now }
+            )
+            let initialBytes = try controlledArtifactByteCount()
+            XCTAssertGreaterThan(initialBytes, 0)
+            XCTAssertLessThan(initialBytes, 100_000_000, "short-row fixture exceeded its 100 MB smoke ceiling")
+
+            let started = ContinuousClock.now
+            switch operation {
+            case .delete:
+                let newestRows = try await store.records(limit: 1)
+                let newest = try XCTUnwrap(newestRows.first)
+                let deleted = try await store.delete(id: newest.id)
+                XCTAssertTrue(deleted)
+                XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 9_999)
+                XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records_fts"), 9_999)
+                XCTAssertFalse(try controlledArtifactsContain(Data(newest.text.utf8)))
+            case .clear:
+                try await store.clear()
+                XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 0)
+                XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records_fts"), 0)
+                XCTAssertFalse(try controlledArtifactsContain(Data(prefix.utf8)))
+            case .off:
+                try await store.setRetentionPolicy(.off)
+                XCTAssertFalse(FileManager.default.fileExists(
+                    atPath: directory.appendingPathComponent(SQLiteHistoryStore.databaseName).path
+                ))
+                XCTAssertFalse(try controlledArtifactsContain(Data(prefix.utf8)))
+            case .session:
+                try await store.setRetentionPolicy(.session)
+                XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 0)
+                XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records_fts"), 0)
+                XCTAssertFalse(try controlledArtifactsContain(Data(prefix.utf8)))
+            }
+            let elapsed = milliseconds(since: started)
+            XCTAssertLessThan(elapsed, 30_000, "10k \(operation.rawValue) exceeded the idle-maintenance budget")
+            let finalBytes = try controlledArtifactByteCount()
+            // Secure deletion may rewrite/checkpoint pages and therefore grow
+            // the allocated database even though logical rows were removed.
+            // Bound the result without pretending physical compaction occurs.
+            XCTAssertLessThan(finalBytes, 100_000_000, "maintenance exceeded the fixture-local 100 MB smoke ceiling")
+            await store.shutdown()
+            let residentBytes = try residentByteCount()
+            let residentGrowth = max(0, residentBytes - baselineResidentBytes)
+            XCTAssertLessThan(
+                residentGrowth,
+                250_000_000,
+                "10k maintenance exceeded the fixture-local 0.25 GB immediate RSS smoke ceiling"
+            )
+            fputs(
+                "RD-I08 operation=\(operation.rawValue) fixture=10000 "
+                    + "elapsed_ms=\(elapsed) initial_bytes=\(initialBytes) final_bytes=\(finalBytes) "
+                    + "resident_bytes=\(residentBytes) resident_growth_bytes=\(residentGrowth)\n",
+                stderr
+            )
+        }
+    }
+
+    func testNearCapStoreFailsClosedWhenSQLiteReportsDiskFull() async throws {
+        let prefix = "rd-low-disk-\(UUID().uuidString)"
+        var setup: SQLiteHistoryStore? = try makeStore(policy: .untilDeleted)
+        try await setup?.warmUp()
+        await setup?.shutdown()
+        setup = nil
+        try seedFixtures(count: 9_999, prefix: prefix)
+
+        let store = try SQLiteHistoryStore(
+            directoryURL: directory,
+            policy: .off,
+            now: { self.now },
+            testConstrainPageCount: true
+        )
+        let sentinel = "disk-full-sentinel-\(UUID().uuidString)"
+        let paddingByteCount = SQLiteHistoryStore.maximumFinalTextBytes - sentinel.utf8.count
+        let largeFinal = sentinel + String(repeating: "x", count: paddingByteCount)
+        XCTAssertEqual(largeFinal.utf8.count, SQLiteHistoryStore.maximumFinalTextBytes)
+        await XCTAssertThrowsErrorAsync(
+            try await store.recordFinal(.init(text: largeFinal))
+        ) { error in
+            XCTAssertEqual(error as? HistoryStoreError, .ioFailed)
+        }
+
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records"), 9_999)
+        XCTAssertEqual(try databaseScalar("SELECT COUNT(*) FROM records_fts"), 9_999)
+        XCTAssertFalse(try controlledArtifactsContain(Data(sentinel.utf8)))
+        let survivingRows = try await store.records(limit: 25)
+        XCTAssertEqual(survivingRows.count, 25)
+    }
+
     func testRecordCapPreservesExistingRowsUntilExplicitDeletionFreesCapacity() async throws {
         let store = try SQLiteHistoryStore(
             directoryURL: directory,
@@ -1251,6 +1358,34 @@ final class HistoryStoreTests: XCTestCase {
         guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else {
             throw HistoryStoreError.unavailable
         }
+    }
+
+    private func controlledArtifactByteCount() throws -> Int64 {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return 0 }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileAllocatedSizeKey, .fileSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [],
+            errorHandler: { _, _ in false }
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in enumerator {
+            let values = try file.resourceValues(forKeys: keys)
+            guard values.isRegularFile == true else { continue }
+            total += Int64(values.fileAllocatedSize ?? values.fileSize ?? 0)
+        }
+        return total
+    }
+
+    private func residentByteCount() throws -> Int64 {
+        var information = proc_taskinfo()
+        let size = Int32(MemoryLayout<proc_taskinfo>.size)
+        let result = withUnsafeMutablePointer(to: &information) {
+            proc_pidinfo(getpid(), PROC_PIDTASKINFO, 0, $0, size)
+        }
+        guard result == size else { throw HistoryStoreError.unavailable }
+        return Int64(information.pti_resident_size)
     }
 
     private func milliseconds(since start: ContinuousClock.Instant) -> Double {

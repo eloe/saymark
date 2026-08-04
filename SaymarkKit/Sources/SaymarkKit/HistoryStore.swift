@@ -146,6 +146,7 @@ public actor SQLiteHistoryStore: HistoryStore {
     private let testBeforeDeletionCheckpoint: (@Sendable () -> Void)?
     private let testProofDisposalBoundary: (@Sendable (String) -> Void)?
     private let testPostCommitCleanupFailure: HistoryStoreError?
+    private let testConstrainPageCount: Bool
     private let maximumRecordCount: Int
 
     /// Passing `.off` is intentionally side-effect free: no directory, database,
@@ -161,6 +162,7 @@ public actor SQLiteHistoryStore: HistoryStore {
         testBeforeDeletionCheckpoint: (@Sendable () -> Void)? = nil,
         testProofDisposalBoundary: (@Sendable (String) -> Void)? = nil,
         testPostCommitCleanupFailure: HistoryStoreError? = nil,
+        testConstrainPageCount: Bool = false,
         testMaximumRecordCount: Int = SQLiteHistoryStore.maximumRecordCount
     ) throws {
         self.directoryURL = directoryURL
@@ -174,6 +176,7 @@ public actor SQLiteHistoryStore: HistoryStore {
         self.testBeforeDeletionCheckpoint = testBeforeDeletionCheckpoint
         self.testProofDisposalBoundary = testProofDisposalBoundary
         self.testPostCommitCleanupFailure = testPostCommitCleanupFailure
+        self.testConstrainPageCount = testConstrainPageCount
         self.maximumRecordCount = min(Self.maximumRecordCount, max(1, testMaximumRecordCount))
         // Do not create the store in an initializer.  This preserves the
         // default-Off no-files guarantee even if a caller only constructs a
@@ -603,6 +606,7 @@ public actor SQLiteHistoryStore: HistoryStore {
             try protectSQLiteArtifacts()
             try verifyProtectedSQLiteArtifacts()
             inMemoryHighWaterMark = try storedHighWaterMark()
+            if testConstrainPageCount { try constrainPageCountForTesting() }
             if existingIdentity != nil {
                 // A crash can separate a successful SQLite transition from its
                 // UserDefaults mirror. The durable store wins on reopen.
@@ -1478,6 +1482,17 @@ public actor SQLiteHistoryStore: HistoryStore {
         guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
             throw mapSQLiteError(sqlite3_errcode(database))
         }
+    }
+
+    private func constrainPageCountForTesting() throws {
+        let statement = try prepare("PRAGMA page_count")
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw mapSQLiteError(sqlite3_errcode(database))
+        }
+        let pageCount = sqlite3_column_int(statement, 0)
+        guard pageCount > 0 else { throw HistoryStoreError.unavailable }
+        try execute("PRAGMA max_page_count = \(pageCount)")
     }
 
     private func bind(_ value: String, to statement: OpaquePointer?, at index: Int32) throws {
