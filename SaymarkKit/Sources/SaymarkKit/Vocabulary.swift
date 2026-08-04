@@ -504,6 +504,7 @@ public final class VocabularyStore: @unchecked Sendable {
 
     public func snapshot() -> VocabularySnapshot { lock.withLock { (try? VocabularySnapshot(document: document)) ?? .empty } }
     public func currentDocument() -> VocabularyDocument { lock.withLock { document } }
+    public var preservesOpaqueDocumentForExport: Bool { lock.withLock { opaqueReadOnlyData != nil } }
 
     public func replace(_ proposed: VocabularyDocument) throws {
         try lock.withLock {

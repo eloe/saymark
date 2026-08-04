@@ -150,11 +150,11 @@ The app is not sandboxed: this protects against other local users, not processes
 running as the same macOS user. Do not use iCloud key-value storage,
 `UserDefaults`, a model repository, or the diagnostic directory.
 
-Version 1 logical document:
+Stable schema version 2 logical document:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "unicodeVersion": "15.1.0",
   "revision": 42,
   "entries": [
@@ -183,7 +183,7 @@ Version 1 logical document:
 `written` is exactly the desired output, including case, punctuation, and
 Unicode. Every `heard` item is an explicit ASR-output phrase, not an acoustic
 pronunciation model. A vocabulary entry and a replacement entry have the same
-deterministic matching behavior in v1; their distinct kinds make the user intent
+deterministic matching behavior in schema versions 1 and 2; their distinct kinds make the user intent
 and future UI clear. A single entry may include several explicit aliases.
 
 Entry validation:
@@ -200,9 +200,12 @@ Entry validation:
 - `written` and aliases reject C0/C1 controls, bidi overrides/isolates,
   default-ignorable code points, and unassigned code points. This prevents a
   value that displays differently from what insertion delivers.
-- Unknown document fields are preserved only if a future migration explicitly
-  supports them; v1 exporters emit only the documented fields. Unknown schema
-  versions are never overwritten.
+- Schema version 2 is the stable Saymark 1.0 interchange contract. Exporters
+  emit only the documented fields. Schema version 1 uses the same entry fields
+  and is migrated in memory to version 2 before the next transactional save.
+  Unknown document fields are preserved only if a future migration explicitly
+  supports them. Unknown newer schema versions are never overwritten and stay
+  byte-for-byte exportable from read-only mode.
 
 ### 3.3 Normalization, matching, ordering, and conflicts
 
@@ -298,8 +301,10 @@ records and records no speech content.
 
 ### 4.2 Import/export
 
-Export is an explicit save-panel action that writes the versioned JSON document
-above. It is user data: show that it may include names and other sensitive terms.
+Export is an explicit save-panel action. An ordinary editable store writes the
+stable schema version 2 JSON document above. A read-only unknown newer schema
+exports its original bytes unchanged rather than decoding or downgrading them.
+It is user data: show that it may include names and other sensitive terms.
 Do not export transcripts, audio, diagnostics, settings unrelated to this
 feature, active-app data, or analytics identifiers.
 
@@ -457,7 +462,8 @@ hypotheses cannot race into the HUD. Normalization precedes pinned UAX #29 word
 breaking and every normalized token retains its complete source provenance;
 full expansions such as `㍿ → 株式会社` can match while partial expansion matches
 remain forbidden. Unknown future schemas keep the primary document untouched
-and make edit/export read-only rather than falling back to an older backup. A
+  and disable editing while keeping byte-for-byte original export available,
+  rather than falling back to an older backup. A
 backup-only recovery remains in place until a replacement primary is durably
 installed. Raw-final correction failure is visible even when raw and rendered
 text are identical, using user-facing copy rather than an internal enum.
@@ -606,7 +612,7 @@ PR/release evidence.
 | S-01 | Diagnostic event capture at every level | No raw/corrected text, vocabulary value, rule ID, filename, clipboard, app text, or audio appears; test is CI-blocking. |
 | S-02 | Allowlist mutation attempt | Unknown diagnostic field is discarded; new aggregate fields require explicit tests. |
 | S-03 | Import adversarial corpus | Size/depth/count limits, unsupported `unicodeVersion`, invalid/unsafe Unicode, duplicate keys, symlink/path cases, and failed atomic writes are safe. |
-| S-04 | Export destination and content inspection | Only documented vocabulary document is written after explicit action. |
+| S-04 | Export destination and content inspection | After explicit action, an ordinary store writes only the documented schema-v2 vocabulary document; an opaque unknown-newer store writes only its unchanged original bytes. |
 | S-05 | Network monitor during all vocabulary flows | Zero network requests. |
 | S-06 | Permission boundary | Vocabulary management never requests microphone, Accessibility, screen, clipboard, or network permission. |
 | S-07 | Value-level diagnostics scan and aggregation unit | Seed scan from active aliases/written values proves no correction content appears under any existing/new allowlisted field; exactly one local, no-session-ID bucket is emitted per 100-dictation batch and never reaches PostHog. |
@@ -650,9 +656,9 @@ PR/release evidence.
    least eight seconds, including ordinary short Hold-mode results. Starting
    the next HUD lifecycle clears the raw value; no transcript history is
    created.
-4. **Import interoperability:** Decide whether the v1 JSON schema is public and
-   stable at launch or marked preview. The answer controls compatibility and
-   unknown-field preservation policy.
+4. **Import interoperability:** Resolved for Saymark 1.0. Schema version 2 is
+   the stable local interchange contract. Version 1 documents migrate in
+   memory; unknown newer schemas remain read-only and byte-for-byte exportable.
 5. **Ambiguous natural speech:** Exact aliases cannot reliably resolve all
    proper nouns. Avoid marketing them as pronunciation training until a
    model-native bias capability passes the separate evidence gate.
