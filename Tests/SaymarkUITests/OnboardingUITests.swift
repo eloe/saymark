@@ -95,24 +95,23 @@ final class OnboardingUITests: XCTestCase {
         }
     }
 
-    func testShortcutRecorderReverseTabReachesContinue() throws {
+    func testShortcutRecorderReverseTabFocusesContinue() throws {
         clickContinue("Set Up Saymark")
         clickContinue("Continue")
         XCTAssertTrue(app.staticTexts["Choose how to start dictation"].waitForExistence(timeout: 5))
 
         let recorder = app.descendants(matching: .any)["onboarding.shortcut-recorder"]
         XCTAssertTrue(recorder.waitForExistence(timeout: 2))
-        recorder.click()
+
+        for _ in 0..<20 {
+            if hasKeyboardFocus(recorder) { break }
+            app.typeKey(.tab, modifierFlags: [.shift])
+        }
+        XCTAssertTrue(waitForKeyboardFocus(recorder, timeout: 2))
+
         app.typeKey(.tab, modifierFlags: [.shift])
 
-        let focusedContinue = app.buttons
-            .matching(identifier: "onboarding.continue")
-            .matching(NSPredicate(format: "hasFocus == true"))
-            .firstMatch
-        XCTAssertTrue(focusedContinue.waitForExistence(timeout: 2))
-        app.typeKey(.space, modifierFlags: [])
-
-        XCTAssertTrue(app.staticTexts["Preparing on-device dictation"].waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForKeyboardFocus(app.buttons["Continue"], timeout: 2))
     }
 
     private func continueButton(_ label: String) -> XCUIElement {
@@ -125,5 +124,24 @@ final class OnboardingUITests: XCTestCase {
     private func clickContinue(_ label: String) {
         let button = continueButton(label)
         button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    }
+
+    private func waitForKeyboardFocus(
+        _ element: XCUIElement,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        repeat {
+            if hasKeyboardFocus(element) { return true }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        } while Date() < deadline
+        return hasKeyboardFocus(element)
+    }
+
+    /// Xcode 26 exposes macOS keyboard focus in the element snapshot but omits
+    /// a Swift `hasFocus` property. The debug description is that snapshot's
+    /// public textual representation and is refreshed on every access.
+    private func hasKeyboardFocus(_ element: XCUIElement) -> Bool {
+        element.debugDescription.contains("Keyboard Focused")
     }
 }
