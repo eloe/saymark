@@ -175,6 +175,9 @@ jobs:
           TUIST_APP_BUILD: ${{ github.run_number }}
         run: tuist generate --no-open
 
+      - name: Enable Full Keyboard Access for traversal coverage
+        run: defaults write -g AppleKeyboardUIMode -int 3
+
       - name: Exercise onboarding and daily-driver flows
         run: |
           xcodebuild test \
