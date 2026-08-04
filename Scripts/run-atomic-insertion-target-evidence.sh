@@ -42,7 +42,7 @@ fi
 
 mkdir -p "$output_root"
 swiftc_path=$(/usr/bin/xcrun --find swiftc)
-swiftc_version=$("$swiftc_path" --version | tr '\n' ';')
+swiftc_version=$("$swiftc_path" --version 2>&1 | tr '\n' ';')
 sdk_path=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
 sdk_version=$(/usr/bin/xcrun --sdk macosx --show-sdk-version)
 xcode_version=$(/usr/bin/xcodebuild -version | tr '\n' ';')
