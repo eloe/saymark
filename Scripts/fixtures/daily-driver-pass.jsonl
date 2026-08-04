@@ -1,4 +1,5 @@
-{"event":"dictation.hud_presented","latency_ms":12}
-{"event":"dictation.ui_completed","session_id":"fixture","insert_mode":"inField","stop_to_complete_ms":410}
-{"event":"dictation.pipeline_completed","session_id":"fixture","mode":"accurate","compute_rtf":0.022,"asr_step_p95_ms":4,"asr_step_max_ms":10,"mlx_peak_bytes":3800000000}
-{"event":"dictation.insert_completed","session_id":"fixture","outcome":"pasted","duration_ms":8}
+{"event":"dictation.ui_started","session_id":"00000000-0000-4000-8000-000000000001","hud_latency_ms":12,"insert_mode":"inField","model_mode":"accurate"}
+{"event":"microphone.capture_first_buffer","session_id":"00000000-0000-4000-8000-000000000001","capture_start_ms":84}
+{"event":"dictation.ui_completed","session_id":"00000000-0000-4000-8000-000000000001","insert_mode":"inField","model_mode":"accurate","stop_to_complete_ms":410}
+{"event":"dictation.pipeline_completed","session_id":"00000000-0000-4000-8000-000000000001","mode":"accurate","compute_rtf":0.022,"asr_step_p95_ms":4,"asr_step_max_ms":10,"mlx_peak_bytes":3800000000}
+{"event":"dictation.insert_completed","session_id":"00000000-0000-4000-8000-000000000001","outcome":"pasted","duration_ms":8}

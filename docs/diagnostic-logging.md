@@ -37,6 +37,8 @@ processing step.
 - app version, build, route, and lifecycle;
 - public model repository, load duration, warm-up duration, and reuse;
 - microphone format, captured duration, peak RMS, and conversion failures;
+- hotkey-handler entry to the first successfully admitted microphone-input
+  callback;
 - generated session ID shared across capture, inference, UI, and insertion;
 - VAD-fed/gated chunk counts and VAD p95 latency;
 - queue-delay and ASR step p50/p95/max latency;
@@ -74,8 +76,11 @@ make daily-driver-check
 node Scripts/check-daily-driver-diagnostics.mjs /path/to/saymark.jsonl --min-sessions 10
 ```
 
-This enforces the observed hotkey-to-HUD, stop-to-final, per-mode RTF and step
-latency, MLX peak-memory, insertion-success, and diagnostic privacy gates. It
+This enforces the observed hotkey-to-HUD, hotkey-to-capture-start,
+stop-to-final, per-mode RTF and step latency, MLX peak-memory,
+insertion-success across at least the requested number of completed in-field
+sessions, and diagnostic privacy gates. HUD-only sessions are still validated
+but cannot satisfy the insertion-evidence minimum. It
 fails when required measurements are missing rather than treating absent data
 as a pass. Idle CPU and settled-memory growth remain separate sampled checks
 because a diagnostic log cannot reliably infer that the user left the app idle.

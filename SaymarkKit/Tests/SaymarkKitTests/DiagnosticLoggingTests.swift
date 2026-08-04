@@ -21,8 +21,12 @@ final class DiagnosticLoggingTests: XCTestCase {
         SaymarkDiagnostics.log(.debug, "filtered.event", fields: ["value": 1])
         let sessionID = UUID().uuidString
         SaymarkDiagnostics.log(.info, "included.event", sessionID: sessionID, fields: [
+            "capture_start_ms": 42.25,
             "duration_ms": 12.5,
             "count": 3,
+            "hud_latency_ms": 9.75,
+            "insert_mode": "inField",
+            "outcome": "pasted",
             "success": true,
         ])
 
@@ -41,7 +45,11 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertEqual(object["event"] as? String, "included.event")
         XCTAssertEqual(object["session_id"] as? String, sessionID)
         XCTAssertEqual(object["duration_ms"] as? Double, 12.5)
+        XCTAssertEqual(object["capture_start_ms"] as? Double, 42.25)
         XCTAssertEqual(object["count"] as? Int, 3)
+        XCTAssertEqual(object["hud_latency_ms"] as? Double, 9.75)
+        XCTAssertEqual(object["insert_mode"] as? String, "inField")
+        XCTAssertEqual(object["outcome"] as? String, "pasted")
         XCTAssertEqual(object["success"] as? Bool, true)
         XCTAssertNil(lines.first(where: { $0.contains("filtered.event") }))
     }
