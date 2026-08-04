@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 resolved="$repo_root/.package.resolved"
+vendor_metadata="$repo_root/Vendor/KeyboardShortcuts/UPSTREAM.json"
 licenses="$repo_root/ThirdPartyLicenses"
 app_path=${1:-}
 
@@ -17,7 +18,14 @@ grep -Fq 'Copyright (c) 2026 Aleksandr Beshkenadze' "$repo_root/LICENSE" \
 grep -Fq 'MIT License' "$repo_root/LICENSE" || fail "the MIT license text is missing"
 [[ -f "$repo_root/THIRD_PARTY_NOTICES.md" ]] || fail "missing THIRD_PARTY_NOTICES.md"
 [[ -f "$resolved" ]] || fail "missing .package.resolved"
+[[ -f "$vendor_metadata" ]] || fail "missing vendored dependency provenance metadata"
 [[ -d "$licenses" ]] || fail "missing ThirdPartyLicenses directory"
+
+dependency_identities() {
+  sed -n 's/.*"identity" : "\([^"]*\)".*/\1/p' "$resolved"
+  node -e 'const metadata = require(process.argv[1]); console.log(metadata.name.toLowerCase())' \
+    "$vendor_metadata"
+}
 
 missing=0
 while IFS= read -r identity; do
@@ -26,11 +34,12 @@ while IFS= read -r identity; do
     echo "legal-notices: no checked-in license or notice for $identity" >&2
     missing=1
   fi
-done < <(sed -n 's/.*"identity" : "\([^"]*\)".*/\1/p' "$resolved" | sort -u)
+done < <(dependency_identities | sort -u)
 
 [[ "$missing" -eq 0 ]] || exit 1
 
 for required in \
+  'unicode-15.1.0-LICENSE.txt' \
   'posthog-ios--vendor--PHPLCrashReporter--LICENSE' \
   'posthog-ios--vendor--libwebp--COPYING' \
   'mlx-swift--Source--Cmlx--metal-cpp--LICENSE.txt' \
@@ -50,7 +59,7 @@ if [[ -n "$app_path" ]]; then
   while IFS= read -r identity; do
     find "$resources" -maxdepth 1 -type f -name "${identity}--*" -print -quit \
       | grep -q . || fail "application bundle is missing the $identity notice"
-  done < <(sed -n 's/.*"identity" : "\([^"]*\)".*/\1/p' "$resolved" | sort -u)
+  done < <(dependency_identities | sort -u)
 fi
 
 echo "legal-notices: PASS"

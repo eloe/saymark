@@ -205,6 +205,7 @@ daily-driver-fixture-check:
 # Fast app/HUD suite against an optimized arm64 build. Testability is enabled
 # only for this invocation, never for the normal distributable Release build.
 test-unit: gen-local
+	$(SWIFT) test --package-path Vendor/KeyboardShortcuts --disable-automatic-resolution
 	DEVELOPER_DIR="$(DEVELOPER_DIR)" xcodebuild test -workspace "$(WORKSPACE)" \
 		-scheme "$(SCHEME)" -configuration Release -destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath "$(UI_TEST_DERIVED_DATA)" -skipPackagePluginValidation \

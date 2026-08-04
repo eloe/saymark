@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 resolved="$repo_root/.package.resolved"
+vendor_metadata="$repo_root/Vendor/KeyboardShortcuts/UPSTREAM.json"
 output="$repo_root/ThirdPartyLicenses"
 
 if [[ $# -gt 1 ]]; then
@@ -82,6 +83,24 @@ awk '
     cp "$override" "$staging/${identity}--LICENSE.txt"
   fi
 done
+
+vendor_name=$(node -e 'const metadata = require(process.argv[1]); console.log(metadata.name.toLowerCase())' \
+  "$vendor_metadata")
+vendor_path=$(node -e 'const metadata = require(process.argv[1]); console.log(metadata.localPath)' \
+  "$vendor_metadata")
+vendor_license="$repo_root/$vendor_path/license"
+[[ -f "$vendor_license" ]] || {
+  echo "$vendor_name vendored package is missing its license" >&2
+  exit 1
+}
+cp "$vendor_license" "$staging/${vendor_name}--license"
+
+unicode_license="$output/unicode-15.1.0-LICENSE.txt"
+[[ -f "$unicode_license" ]] || {
+  echo "Unicode 15.1 data license is missing" >&2
+  exit 1
+}
+cp "$unicode_license" "$staging/unicode-15.1.0-LICENSE.txt"
 
 rm -rf "$output"
 mv "$staging" "$output"

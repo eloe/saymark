@@ -1,0 +1,14 @@
+{
+  "name": "KeyboardShortcuts",
+  "url": "https://github.com/sindresorhus/KeyboardShortcuts",
+  "version": "3.0.1",
+  "revision": "49c3fc04ea827f816df67843bfcc57286b47ff06",
+  "patchedFiles": [
+    {
+      "path": "Sources/KeyboardShortcuts/RecorderCocoa.swift",
+      "upstreamSHA256": "97923d140eb2a9fcbd18a6ae8b54d5471c7091f424238262eaacd992ec967a89",
+      "vendoredSHA256": "0bb9d8554fbe3ce710adb4a4435508364ebbd35ef34cbb8394896f8827abb847"
+    }
+  ],
+  "localPath": "Vendor/KeyboardShortcuts"
+}
