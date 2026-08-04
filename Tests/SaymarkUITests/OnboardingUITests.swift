@@ -104,6 +104,12 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(recorder.waitForExistence(timeout: 2))
         recorder.click()
         app.typeKey(.tab, modifierFlags: [.shift])
+
+        let focusedContinue = app.buttons
+            .matching(identifier: "onboarding.continue")
+            .matching(NSPredicate(format: "hasFocus == true"))
+            .firstMatch
+        XCTAssertTrue(focusedContinue.waitForExistence(timeout: 2))
         app.typeKey(.space, modifierFlags: [])
 
         XCTAssertTrue(app.staticTexts["Preparing on-device dictation"].waitForExistence(timeout: 5))

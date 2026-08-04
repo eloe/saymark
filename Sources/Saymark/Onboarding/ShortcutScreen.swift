@@ -61,5 +61,7 @@ private struct OnboardingShortcutRecorder: NSViewRepresentable {
         return recorder
     }
 
-    func updateNSView(_ recorder: KeyboardShortcuts.RecorderCocoa, context: Context) {}
+    func updateNSView(_ recorder: KeyboardShortcuts.RecorderCocoa, context: Context) {
+        recorder.onReverseTabTraversal = focusContinue
+    }
 }
