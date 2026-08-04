@@ -786,8 +786,9 @@ The release evidence walkthrough is
 [`videos/recent-dictations-evidence.mp4`](videos/recent-dictations-evidence.mp4).
 It is a real screen recording of the native Saymark app loading three synthetic
 local records, selecting a detail, filtering to one result, and presenting the
-single-record Delete confirmation before safely cancelling. Separately recorded
-automated results establish the focused integration behavior. The production Recent Dictations window
+single-record Delete confirmation before safely cancelling. The repository's
+focused Recent Dictations unit and hosted tests establish the named behavior.
+The production Recent Dictations window
 opts out of screen capture; recording used a DEBUG-only capture override that
 was removed before commit. No private dictation data appears in the recording.
 Its claims remain bounded to the recorded behavior and the independently
