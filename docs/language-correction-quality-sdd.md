@@ -702,8 +702,11 @@ decisions:
 
 The feature video at
 [`videos/vocabulary-language-correction-evidence.mp4`](videos/vocabulary-language-correction-evidence.mp4)
-is a real screen recording of six passing focused integration tests followed by
-the native Saymark app adding and saving a “say mark” → “Saymark” vocabulary
-rule. It is evidence for the approved native settings surface and named hosted
-behavior checks only. It is not evidence for full end-to-end model accuracy,
-VoiceOver manual acceptance, or live field insertion.
+is a real screen recording of the native Saymark app using synthetic entries to
+add, preview, search, and delete Vocabulary data. It is evidence for the approved
+native settings surface only; the separately recorded automated results establish
+the named hosted behavior checks. It is not evidence for full end-to-end model
+accuracy, VoiceOver manual acceptance, or live field insertion.
+
+The no-fee 1.0 keyboard, VoiceOver, interchange, and recovery acceptance is
+recorded separately in [`v1-manual-acceptance.md`](v1-manual-acceptance.md).
