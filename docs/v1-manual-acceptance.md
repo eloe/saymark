@@ -112,5 +112,5 @@ SHA-256 values for every published video are committed in
 [`videos/SHA256SUMS`](videos/SHA256SUMS). Recompute with:
 
 ```bash
-shasum -a 256 -c docs/videos/SHA256SUMS
+(cd docs/videos && shasum -a 256 -c SHA256SUMS)
 ```
