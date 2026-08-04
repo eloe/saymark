@@ -378,8 +378,10 @@ final class DictationController {
         hud.begin(presentation: insert == .hudOnly, lang: "EN",
                   shortcutLabel: shortcutLabel,
                   interactive: toggle, onStop: { [weak self] in self?.endRecording() })
+        let hudLatencyMilliseconds =
+            (ProcessInfo.processInfo.systemUptime - gestureStarted) * 1_000
         SaymarkDiagnostics.log(.debug, "dictation.hud_presented", fields: [
-            "latency_ms": (ProcessInfo.processInfo.systemUptime - gestureStarted) * 1_000,
+            "latency_ms": hudLatencyMilliseconds,
             "model_mode": modelMode.rawValue,
         ])
         // AX target capture is bounded, but remains an external IPC. Present the
@@ -390,8 +392,18 @@ final class DictationController {
         do {
             // The live two-tier view stays in the HUD; the field receives one paste
             // on release (Variant B — paste is atomic, so no live-into-field typing).
-            try session.start(mode: modelMode)
+            try session.start(mode: modelMode) { sessionID, firstBufferUptime in
+                SaymarkDiagnostics.log(
+                    .info,
+                    "microphone.capture_first_buffer",
+                    sessionID: sessionID,
+                    fields: [
+                        "capture_start_ms": (firstBufferUptime - gestureStarted) * 1_000,
+                    ]
+                )
+            }
             SaymarkDiagnostics.log(.info, "dictation.ui_started", sessionID: session.activeSessionID, fields: [
+                "hud_latency_ms": hudLatencyMilliseconds,
                 "model_mode": modelMode.rawValue,
                 "trigger_mode": TriggerMode.current.rawValue,
                 "insert_mode": insert.rawValue,

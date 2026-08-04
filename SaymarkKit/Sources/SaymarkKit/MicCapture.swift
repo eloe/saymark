@@ -98,6 +98,7 @@ final class MicCapture: @unchecked Sendable {
     /// Fixed-size 16 kHz mono chunks delivered on the capture queue.
     var onChunk: ([Float]) -> Void = { _ in }
     var onStopRequested: @Sendable (UInt64, CaptureStopReason) -> Void = { _, _ in }
+    var onFirstAcceptedBuffer: @Sendable (TimeInterval) -> Void = { _ in }
 
     // This is the FEED size, not Nemotron's internal chunk. A 20-run
     // 160/240/320/480 ms experiment on the release model stack selected 160 ms:
@@ -119,6 +120,7 @@ final class MicCapture: @unchecked Sendable {
     private var tapInstalled = false
     private var captureGeneration: UInt64 = 0
     private var acceptingCallbacks = false
+    private var firstAcceptedBufferReported = false
     private var admission = CaptureAdmissionBudget(
         maximumTotalSamples: maximumUtteranceSamples,
         maximumQueuedSamples: maximumBacklogSamples
@@ -153,6 +155,7 @@ final class MicCapture: @unchecked Sendable {
         let generation = lifecycleLock.withLock {
             captureGeneration &+= 1
             acceptingCallbacks = true
+            firstAcceptedBufferReported = false
             outFmt = out
             converter = conv
             admission.reset()
@@ -231,6 +234,7 @@ final class MicCapture: @unchecked Sendable {
     }
 
     private func ingest(_ buffer: AVAudioPCMBuffer, generation: UInt64) {
+        let inputCallbackUptime = ProcessInfo.processInfo.systemUptime
         guard let (outFmt, converter) = lifecycleLock.withLock({ () -> (AVAudioFormat, AVAudioConverter)? in
             guard acceptingCallbacks, captureGeneration == generation,
                   admission.stopReason == nil,
@@ -273,6 +277,16 @@ final class MicCapture: @unchecked Sendable {
             DispatchQueue.global(qos: .userInitiated).async { callback(generation, reason) }
         }
         guard acceptedCount > 0 else { return }
+        let firstAcceptedCallback: (@Sendable (TimeInterval) -> Void)? = lifecycleLock.withLock {
+            guard acceptingCallbacks, captureGeneration == generation,
+                  !firstAcceptedBufferReported
+            else { return nil }
+            firstAcceptedBufferReported = true
+            return onFirstAcceptedBuffer
+        }
+        if let firstAcceptedCallback {
+            queue.async { firstAcceptedCallback(inputCallbackUptime) }
+        }
         let chunk = acceptedCount == converted.count
             ? converted
             : Array(converted.prefix(acceptedCount))

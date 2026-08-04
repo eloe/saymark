@@ -106,7 +106,10 @@ public final class DictationSession: @unchecked Sendable {
     }
 
     /// Begin a fresh utterance and start capturing, with the chosen model mode.
-    public func start(mode: DictationMode = .hybrid) throws {
+    public func start(
+        mode: DictationMode = .hybrid,
+        onFirstCaptureBuffer: @escaping @Sendable (String, TimeInterval) -> Void = { _, _ in }
+    ) throws {
         // Freeze the explicit local rules before audio capture begins. Later
         // edits/imports apply to the next utterance only.
         let correctionHub = correctedUpdates
@@ -130,6 +133,9 @@ public final class DictationSession: @unchecked Sendable {
                 generation: generation,
                 reason: reason
             ))
+        }
+        mic.onFirstAcceptedBuffer = { firstBufferUptime in
+            onFirstCaptureBuffer(sessionID, firstBufferUptime)
         }
         do {
             try mic.start()
