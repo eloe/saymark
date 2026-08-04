@@ -33,22 +33,53 @@ for (const event of events) {
   if (forbidden) fail(`Privacy gate: forbidden diagnostic field "${forbidden}"`);
 }
 
-const hud = values("dictation.hud_presented", "latency_ms");
-const completed = select("dictation.ui_completed");
-const pipelines = select("dictation.pipeline_completed");
-const pasted = select("dictation.insert_completed")
-  .filter((event) => event.outcome === "pasted");
-
-if (completed.length < minimumSessions || pipelines.length < minimumSessions) {
-  fail(`Need ${minimumSessions} completed sessions; found UI=${completed.length}, pipeline=${pipelines.length}`);
+const completedBySession = uniqueSessionEvents("dictation.ui_completed");
+const startedBySession = uniqueSessionEvents("dictation.ui_started");
+const captureBySession = uniqueSessionEvents("microphone.capture_first_buffer");
+const pipelineBySession = uniqueSessionEvents("dictation.pipeline_completed");
+const insertionBySession = uniqueSessionEvents("dictation.insert_completed");
+if (completedBySession.size < minimumSessions) {
+  fail(`Need ${minimumSessions} completed sessions; found ${completedBySession.size}`);
 }
-if (hud.length < minimumSessions) {
-  fail(`Need ${minimumSessions} HUD latency samples; found ${hud.length}`);
+
+const completed = [];
+const pipelines = [];
+const captureStart = [];
+const hud = [];
+let inFieldCount = 0;
+let pastedCount = 0;
+for (const [sessionID, completion] of completedBySession) {
+  const started = requireSessionEvent(startedBySession, sessionID, "dictation.ui_started");
+  const capture = requireSessionEvent(captureBySession, sessionID, "microphone.capture_first_buffer");
+  const pipeline = requireSessionEvent(pipelineBySession, sessionID, "dictation.pipeline_completed");
+  if (started.insert_mode !== completion.insert_mode) {
+    fail(`Session ${sessionID} changed insert_mode between start and completion`);
+  }
+  if (started.model_mode !== completion.model_mode || pipeline.mode !== completion.model_mode) {
+    fail(`Session ${sessionID} changed model mode across its lifecycle`);
+  }
+  completed.push(completion);
+  pipelines.push(pipeline);
+  captureStart.push(nonnegativeNumber(capture.capture_start_ms, "capture_start_ms"));
+  hud.push(nonnegativeNumber(started.hud_latency_ms, "hud_latency_ms"));
+
+  if (completion.insert_mode === "inField") {
+    inFieldCount += 1;
+    const insertion = requireSessionEvent(insertionBySession, sessionID, "dictation.insert_completed");
+    if (insertion.outcome === "pasted") pastedCount += 1;
+  } else if (completion.insert_mode === "hudOnly") {
+    if (insertionBySession.has(sessionID)) {
+      fail(`HUD-only session ${sessionID} unexpectedly crossed the insertion boundary`);
+    }
+  } else {
+    fail(`Session ${sessionID} has missing or invalid insert_mode`);
+  }
 }
 
 const failures = [];
 gate("HUD p95", percentile(hud, 0.95), 100, "ms", failures);
 gate("HUD max", Math.max(...hud), 200, "ms", failures);
+gate("Capture-start p95", percentile(captureStart, 0.95), 250, "ms", failures);
 
 const stop = completed.map((event) => number(event.stop_to_complete_ms, "stop_to_complete_ms"));
 gate("Stop-to-final median", percentile(stop, 0.5), 2_000, "ms", failures);
@@ -68,13 +99,15 @@ for (const [mode, limits] of Object.entries({
 const peakGB = Math.max(...pipelines.map((event) => number(event.mlx_peak_bytes, "mlx_peak_bytes"))) / 1_000_000_000;
 gate("MLX peak", peakGB, 6, "GB", failures);
 
-const inField = completed.filter((event) => event.insert_mode === "inField");
-if (inField.length > 0 && pasted.length !== inField.length) {
-  failures.push(`Insertion success: ${pasted.length}/${inField.length} (expected 100%)`);
+if (pastedCount !== inFieldCount) {
+  failures.push(`Insertion success: ${pastedCount}/${inFieldCount} (expected 100%)`);
+}
+if (inFieldCount < minimumSessions) {
+  failures.push(`Insertion evidence: need ${minimumSessions} completed in-field sessions; found ${inFieldCount}`);
 }
 
 console.log(`Saymark daily-driver acceptance: ${path}`);
-console.log(`sessions: ${completed.length}; HUD samples: ${hud.length}; successful pastes: ${pasted.length}/${inField.length}`);
+console.log(`sessions: ${completed.length}; HUD samples: ${hud.length}; capture-start samples: ${captureStart.length}; successful pastes: ${pastedCount}/${inFieldCount}`);
 if (failures.length > 0) {
   for (const failure of failures) console.error(`FAIL ${failure}`);
   process.exit(1);
@@ -89,11 +122,36 @@ function values(name, field) {
   return select(name).map((event) => number(event[field], field));
 }
 
+function uniqueSessionEvents(name) {
+  const result = new Map();
+  for (const event of select(name)) {
+    const sessionID = event.session_id;
+    if (typeof sessionID !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionID)) {
+      fail(`${name} has a missing or invalid opaque session_id`);
+    }
+    if (result.has(sessionID)) fail(`${name} is duplicated for session ${sessionID}`);
+    result.set(sessionID, event);
+  }
+  return result;
+}
+
+function requireSessionEvent(eventsBySession, sessionID, name) {
+  const event = eventsBySession.get(sessionID);
+  if (!event) fail(`Completed session ${sessionID} is missing ${name}`);
+  return event;
+}
+
 function number(value, field) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     fail(`Missing or invalid numeric field "${field}"`);
   }
   return value;
+}
+
+function nonnegativeNumber(value, field) {
+  const result = number(value, field);
+  if (result < 0) fail(`Numeric field "${field}" must be nonnegative`);
+  return result;
 }
 
 function percentile(items, fraction) {

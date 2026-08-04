@@ -132,9 +132,10 @@ Deliverables:
 - one command that produces a red/green acceptance report from app diagnostics.
 
 Implementation status: `make daily-driver-check` enforces the observed HUD,
-stop-to-final, inference, memory, insertion, and privacy gates. The deterministic
-XCUITest harness covers the real registered shortcut, all delivery outcomes,
-and ten exact-once repetitions for each compatibility target. A final unlocked
+capture-start, stop-to-final, inference, memory, insertion, and privacy gates.
+The deterministic XCUITest harness covers the real registered shortcut, all
+delivery outcomes, and ten exact-once repetitions for each compatibility
+target. A final unlocked
 interactive-session run remains required before Slice 1 is promoted; macOS
 correctly disables HID/UI automation while the user session is locked.
 Real-hardware/resource promotion remains owned by
@@ -146,7 +147,7 @@ Acceptance gates:
 | Measure | Gate |
 | --- | ---: |
 | Shortcut down to first visible listening feedback, p95 / max | <= 100 ms / <= 200 ms |
-| Microphone capture start, p95 | <= 250 ms |
+| Hotkey-handler entry to first admitted microphone-input callback, p95 | <= 250 ms |
 | Stop-to-final median / p95 | <= 2.0 s / <= 3.0 s |
 | Successful single insertion | 100% across 10 repetitions per compatibility target |
 | Clipboard restoration | 100%, without overwriting a newer user copy |
