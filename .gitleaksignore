@@ -1,3 +1,7 @@
 # Reviewed inherited false positive: Murmur's historical Sparkle update
 # verification PUBLIC key. This is not a private signing key or credential.
 14a7838c2f8b2aa5217e00d25cc8fb60054dd530:Project.swift:generic-api-key:49
+
+# Reviewed content-free false positive: the atomic-insertion harness source
+# fingerprint is a reproducible SHA-256 cache/provenance identity, not a secret.
+c59d7b4c0e768157b3e3a9e3fa14455575529043:docs/reviews/evidence/atomic-insertion-target-matrix-2026-08-04.md:generic-api-key:14
