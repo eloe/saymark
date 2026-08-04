@@ -88,11 +88,15 @@ Dependabot secrets are only for credentials required to fetch private package
 registries. Saymark currently uses public packages and needs none.
 
 `SaymarkKit`, app-only packages, and GitHub Actions have Dependabot coverage.
-KeyboardShortcuts and PostHog remain exact-version pinned in `Project.swift`,
-which is the app build source of truth. `Tuist/Package.swift` mirrors those
-requirements and produces the committed, GitHub-readable
-`Tuist/Package.resolved`. `make dependency-check` fails if the Tuist build
-manifest, security manifest, and lockfile drift.
+PostHog remains exact-version pinned in `Project.swift`. KeyboardShortcuts is an
+exact-revision vendored package because Saymark carries a reviewed keyboard-focus
+patch. `Vendor/KeyboardShortcuts/UPSTREAM.json` and
+`UPSTREAM_RUNTIME.sha256` bind its upstream URL, version, revision, complete
+runtime-file inventory, unchanged upstream bytes, and the allowlisted patched
+file. `Tuist/Package.swift` keeps both upstream requirements visible and produces
+the committed, GitHub-readable `Tuist/Package.resolved`. `make dependency-check`
+fails if any declaration, revision, vendored runtime byte, or allowlisted patch
+drifts.
 
 GitHub does not reliably add nested Swift lockfiles to the repository SBOM by
 static analysis alone. The `Dependency graph` workflow converts the committed
@@ -102,12 +106,18 @@ push to `main` and submits it with the workflow token's narrowly scoped
 Swift package URLs make KeyboardShortcuts and PostHog visible to dependency
 review and Dependabot alerts.
 
-To update an app-only package:
+To update PostHog:
 
 1. Change its exact version in both `Project.swift` and `Tuist/Package.swift`.
 2. Run `make dependencies` to update the reviewed lockfile deterministically.
 3. Run `make test-unit`, `make test-integration`, `make security-check`, and the
    relevant performance acceptance benchmark before merging.
+
+To update KeyboardShortcuts, review the full old-upstream-to-new-upstream diff,
+apply the smallest local patch to the new source, then update the exact version
+and revision, regenerate `UPSTREAM_RUNTIME.sha256` from that revision, and record
+only intentionally patched files and their before/after SHA-256 digests in
+`UPSTREAM.json`. The same validation suite is required.
 
 ## Model supply-chain trust
 

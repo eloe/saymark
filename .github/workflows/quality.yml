@@ -117,6 +117,9 @@ jobs:
         working-directory: SaymarkKit
         run: swift test -c release --disable-automatic-resolution
 
+      - name: Test the vendored KeyboardShortcuts patch
+        run: swift test --package-path Vendor/KeyboardShortcuts --disable-automatic-resolution
+
       - name: Generate the local app project
         env:
           TUIST_SAYMARK_LOCAL_BUILD: "1"

@@ -18,7 +18,9 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                KeyboardShortcuts.Recorder("Push-to-talk:", name: .dictate)
+                LabeledContent("Push-to-talk:") {
+                    KeyboardShortcuts.Recorder(for: .dictate)
+                }
             } header: {
                 Text("Shortcut")
             } footer: {

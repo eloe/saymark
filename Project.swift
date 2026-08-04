@@ -37,8 +37,7 @@ let project = Project(
     name: "Saymark",
     packages: [
         .local(path: "SaymarkKit"),
-        .remote(url: "https://github.com/sindresorhus/KeyboardShortcuts",
-                requirement: .exact("3.0.1")),
+        .local(path: "Vendor/KeyboardShortcuts"),
         .remote(url: "https://github.com/PostHog/posthog-ios",
                 requirement: .exact("3.67.1")),   // future anonymous analytics; strictly opt-in
     ],
