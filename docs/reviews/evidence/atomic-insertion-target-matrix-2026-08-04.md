@@ -11,7 +11,7 @@ real macOS controls. It does not claim provisional/live field mutation.
 - Xcode: 26.6 (17F113)
 - SDK: macOS 26.5
 - Swift: 6.3.3, compiled in Swift 5 mode
-- Harness build key: `09554ed1f9a071c422950051bcc2ef73a86c1e058564e2726f5201f730b9d548`
+- Harness build fingerprint: `09554ed1f9a071c422950051bcc2ef73a86c1e058564e2726f5201f730b9d548`
 - Harness signature: ad hoc, no Team Identifier
 - Harness CDHash: `eab525017483a66d0e760043bbb4684e112fa285`
 - Harness SHA-256: `7e74e0d66a065c9e85d65882f2cca98f22e7d71d90bd50510f3492abf875bfa2`
@@ -19,7 +19,7 @@ real macOS controls. It does not claim provisional/live field mutation.
 
 The harness was compiled from immutable Git blobs after an independently
 reviewed checkpoint. Every invocation reverified the ad-hoc signature, CDHash,
-SHA-256, build key, SDK, compiler, and exact revision before replacing the
+SHA-256, build fingerprint, SDK, compiler, and exact revision before replacing the
 clipboard with a synthetic marker. No Apple Developer membership, signing
 identity, notarization, network service, audio, or real transcript was used.
 
