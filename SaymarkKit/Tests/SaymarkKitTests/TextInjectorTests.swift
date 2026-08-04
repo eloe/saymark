@@ -4,6 +4,92 @@ import XCTest
 
 @MainActor
 final class TextInjectorTests: XCTestCase {
+    func testFocusedElementFallsBackToFrontmostApplicationWhenSystemLookupFails() {
+        var applicationLookupCount = 0
+        var frontmostLookupCount = 0
+
+        let resolved: String? = FocusedInsertionLease.resolveFocusedElement(
+            systemLookup: { nil },
+            frontmostProcessID: {
+                frontmostLookupCount += 1
+                return 7
+            },
+            applicationLookup: { processID in
+                applicationLookupCount += 1
+                XCTAssertEqual(processID, 7)
+                return "frontmost-field"
+            },
+            elementProcessID: { _ in 7 }
+        )
+
+        XCTAssertEqual(resolved, "frontmost-field")
+        XCTAssertEqual(applicationLookupCount, 1)
+        XCTAssertEqual(frontmostLookupCount, 2)
+    }
+
+    func testFocusedElementPrefersSystemLookupWithoutConsultingFrontmostApplication() {
+        var applicationLookupCount = 0
+        var frontmostLookupCount = 0
+
+        let resolved: String? = FocusedInsertionLease.resolveFocusedElement(
+            systemLookup: { "system-field" },
+            frontmostProcessID: {
+                frontmostLookupCount += 1
+                return 7
+            },
+            applicationLookup: { _ in
+                applicationLookupCount += 1
+                return "frontmost-field"
+            },
+            elementProcessID: { _ in 7 }
+        )
+
+        XCTAssertEqual(resolved, "system-field")
+        XCTAssertEqual(applicationLookupCount, 0)
+        XCTAssertEqual(frontmostLookupCount, 0)
+    }
+
+    func testFrontmostAppChangeDuringFallbackNeverPostsPaste() async {
+        let lock = NSLock()
+        var frontmostProcessIDs = [7, 8]
+        let resolved: String? = FocusedInsertionLease.resolveFocusedElement(
+            systemLookup: { nil },
+            frontmostProcessID: {
+                lock.withLock { frontmostProcessIDs.removeFirst() }
+            },
+            applicationLookup: { _ in "stale-field" },
+            elementProcessID: { _ in 7 }
+        )
+        XCTAssertNil(resolved)
+
+        let pasteboard = makePasteboard()
+        pasteboard.setString("original", forType: .string)
+        var postCount = 0
+        let result = await TextInjector.pasteAcknowledgedForTesting(
+            "transcript ",
+            pasteboard: pasteboard,
+            postPaste: { postCount += 1; return true },
+            targetIsCurrent: { resolved != nil },
+            targetStillPresent: { resolved != nil },
+            targetAcknowledged: { false }
+        )
+
+        XCTAssertEqual(result, .copiedTargetChanged)
+        XCTAssertEqual(postCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
+    }
+
+    func testFallbackRejectsElementFromUnexpectedProcess() {
+        let resolved: String? = FocusedInsertionLease.resolveFocusedElement(
+            systemLookup: { nil },
+            frontmostProcessID: { 7 },
+            applicationLookup: { _ in "wrong-process-field" },
+            elementProcessID: { _ in 8 }
+        )
+
+        XCTAssertNil(resolved)
+    }
+
     func testAtomicPasteRestoresOriginalClipboardAfterTargetReadsExactlyOnce() async {
         let pasteboard = makePasteboard()
         pasteboard.setString("original", forType: .string)
@@ -176,6 +262,27 @@ final class TextInjectorTests: XCTestCase {
         XCTAssertEqual(result, .copiedTargetChanged)
         XCTAssertEqual(lock.withLock { postCount }, 0)
         XCTAssertEqual(pasteboard.string(forType: .string), "transcript ")
+    }
+
+    func testFallbackValidationFitsProductionProbeBudget() async {
+        let pasteboard = makePasteboard()
+        var postCount = 0
+
+        let result = await TextInjector.pasteAcknowledgedForTesting(
+            "transcript ",
+            pasteboard: pasteboard,
+            timeout: 0.40,
+            postPaste: { postCount += 1; return true },
+            targetIsCurrent: {
+                Thread.sleep(forTimeInterval: 0.18)
+                return true
+            },
+            targetStillPresent: { true },
+            targetAcknowledged: { true }
+        )
+
+        XCTAssertEqual(result, .pasted)
+        XCTAssertEqual(postCount, 1)
     }
 
     func testSecureInputTransitionDuringValidationPreventsPasteDispatch() async {

@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Foundation
 
@@ -107,11 +108,44 @@ public struct FocusedInsertionLease {
     }
 
     private static func focusedElement() -> AXUIElement? {
-        let system = AXUIElementCreateSystemWide()
-        guard AXUIElementSetMessagingTimeout(system, 0.05) == .success else { return nil }
+        resolveFocusedElement(
+            systemLookup: {
+                focusedElement(in: AXUIElementCreateSystemWide())
+            },
+            frontmostProcessID: {
+                NSWorkspace.shared.frontmostApplication?.processIdentifier
+            },
+            applicationLookup: { processID in
+                return focusedElement(in: AXUIElementCreateApplication(processID))
+            },
+            elementProcessID: { element in
+                var processID: pid_t = 0
+                guard AXUIElementGetPid(element, &processID) == .success else { return nil }
+                return processID
+            }
+        )
+    }
+
+    static func resolveFocusedElement<Element, ProcessID: Equatable>(
+        systemLookup: () -> Element?,
+        frontmostProcessID: () -> ProcessID?,
+        applicationLookup: (ProcessID) -> Element?,
+        elementProcessID: (Element) -> ProcessID?
+    ) -> Element? {
+        if let systemElement = systemLookup() { return systemElement }
+        guard let expectedProcessID = frontmostProcessID(),
+              let applicationElement = applicationLookup(expectedProcessID),
+              elementProcessID(applicationElement) == expectedProcessID,
+              frontmostProcessID() == expectedProcessID
+        else { return nil }
+        return applicationElement
+    }
+
+    private static func focusedElement(in container: AXUIElement) -> AXUIElement? {
+        guard AXUIElementSetMessagingTimeout(container, 0.05) == .success else { return nil }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
-            system,
+            container,
             kAXFocusedUIElementAttribute as CFString,
             &value
         ) == .success,
