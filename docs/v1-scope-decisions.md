@@ -1,6 +1,6 @@
 # Saymark 1.0 scope decisions
 
-Status: approved product scope for the `saymark-v1.0.0` release line  
+Status: approved product scope for the `saymark-v1.0.0` release line
 Decision date: 2026-08-03
 
 Saymark 1.0 is a local-first macOS dictation utility. Its release priority is
