@@ -784,14 +784,17 @@ developer-account tests:
 
 The release evidence walkthrough is
 [`videos/recent-dictations-evidence.mp4`](videos/recent-dictations-evidence.mp4).
-It is a real screen recording of 17 passing focused integration tests followed
-by the native Saymark app loading three synthetic local records, selecting a
-detail, filtering to one result, and presenting the single-record Delete
-confirmation before safely cancelling. The production Recent Dictations window
+It is a real screen recording of the native Saymark app loading three synthetic
+local records, selecting a detail, filtering to one result, and presenting the
+single-record Delete confirmation before safely cancelling. The repository's
+focused Recent Dictations unit and hosted tests establish the named behavior.
+The production Recent Dictations window
 opts out of screen capture; recording used a DEBUG-only capture override that
 was removed before commit. No private dictation data appears in the recording.
 Its claims remain bounded to the recorded behavior and the independently
 reviewed test evidence; it is not proof of live insertion.
+The final no-fee 1.0 environment, revision, privacy boundary, and checksum are
+recorded in [`v1-manual-acceptance.md`](v1-manual-acceptance.md).
 
 ## 10. Claude Opus independent-review package
 

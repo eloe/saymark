@@ -36,6 +36,10 @@ The target generates a separately identified local app, signs the app and test
 runner ad hoc, runs on the local arm64 Mac, and prints a compact test and resource
 summary from the resulting `.xcresult` bundle.
 
+The completed no-fee 1.0 local and manual acceptance record is
+[`v1-manual-acceptance.md`](v1-manual-acceptance.md). It states the exact
+revision for every run or recording and keeps unavailable evidence explicit.
+
 ## Test boundary
 
 `SAYMARK_UI_TESTING=1` is honored only by Debug builds and injected only into the
