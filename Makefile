@@ -13,7 +13,7 @@ XCB = tuist xcodebuild build -workspace $(WORKSPACE) -scheme $(SCHEME) \
 	ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO
 
 .PHONY: legal-check security-check dependency-check ci-config-check zsh-syntax-check release-version-check dependencies architecture architecture-check daily-driver-check live-insertion-policy-check gen gen-local build run setup-local-signing install-local clean cli run-cli bench bench-accept-efficient bench-accept-live \
-	test-unit test-integration model-fixture prepare-model-tests test-model-efficient test-model-live \
+	ui-evidence-preflight test-unit test-integration model-fixture prepare-model-tests test-model-efficient test-model-live \
 	test-model-parakeet-int8 test-model-live-parakeet-int8 prepare-corpus prepare-corpus-tests \
 	test-corpus-efficient test-corpus-live report-diagnostics
 
@@ -211,6 +211,9 @@ test-unit: gen-local
 
 # Native macOS end-to-end tests. External boundaries are deterministic; the real
 # SwiftUI/AppKit onboarding, navigation, and lifecycle run under XCUITest.
+ui-evidence-preflight:
+	DEVELOPER_DIR="$(DEVELOPER_DIR)" Scripts/check-local-ui-evidence-preflight.sh
+
 test-integration: gen-local
 	DEVELOPER_DIR="$(DEVELOPER_DIR)" xcodebuild test -workspace "$(WORKSPACE)" \
 		-scheme "$(SCHEME)" -destination 'platform=macOS,arch=arm64' \
