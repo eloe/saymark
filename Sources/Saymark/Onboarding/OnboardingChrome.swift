@@ -14,6 +14,7 @@ func onboardingMark(_ size: CGFloat) -> some View {
 /// Standard wizard navigation with a single progress label and native buttons.
 struct OnboardingFooter: View {
     @Bindable var model: OnboardingModel
+    var focusedControl: FocusState<OnboardingFocus?>.Binding
 
     private var continueLabel: LocalizedStringKey {
         switch model.flow.step {
@@ -39,6 +40,7 @@ struct OnboardingFooter: View {
                 .controlSize(.large)
                 .disabled(!model.canContinue)
                 .accessibilityIdentifier("onboarding.continue")
+                .focused(focusedControl, equals: .continueButton)
         }
         .padding(.horizontal, 32)
         .padding(.vertical, 18)

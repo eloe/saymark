@@ -53,16 +53,33 @@ import Testing
 		#expect(window.firstResponder !== recorder)
 	}
 
+	@Test
+	func testIdleFieldEditorRoutesBacktabToBoundaryHandler() {
+		let recorder = KeyboardShortcuts.RecorderCocoa(for: .init("idle-traversal-test"))
+		var handoffCount = 0
+		recorder.onReverseTabTraversal = { handoffCount += 1 }
+
+		let handled = recorder.control(
+			recorder,
+			textView: NSTextView(),
+			doCommandBy: #selector(NSResponder.insertBacktab(_:))
+		)
+
+		#expect(handled)
+		#expect(handoffCount == 1)
+	}
+
 	private func event(modifiers: NSEvent.ModifierFlags, window: NSWindow) -> NSEvent {
-		NSEvent.keyEvent(
+		let characters = modifiers.contains(.shift) ? "\u{19}" : "\t"
+		return NSEvent.keyEvent(
 			with: .keyDown,
 			location: .zero,
 			modifierFlags: modifiers,
 			timestamp: 0,
 			windowNumber: window.windowNumber,
 			context: nil,
-			characters: "\t",
-			charactersIgnoringModifiers: "\t",
+			characters: characters,
+			charactersIgnoringModifiers: characters,
 			isARepeat: false,
 			keyCode: 48
 		)!

@@ -7,6 +7,7 @@ import SwiftUI
 /// for permissions, model preparation, and try-it gates.
 struct OnboardingView: View {
     @Bindable var model: OnboardingModel
+    @FocusState private var focusedControl: OnboardingFocus?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -24,7 +25,7 @@ struct OnboardingView: View {
                 }
 
                 Divider()
-                OnboardingFooter(model: model)
+                OnboardingFooter(model: model, focusedControl: $focusedControl)
             }
             .background(Color(nsColor: .windowBackgroundColor))
         }
@@ -35,11 +36,18 @@ struct OnboardingView: View {
         switch model.flow.step {
         case .welcome: WelcomeScreen()
         case .permissions: PermissionsScreen(model: model)
-        case .shortcut: ShortcutScreen()
+        case .shortcut:
+            ShortcutScreen {
+                focusedControl = .continueButton
+            }
         case .download: DownloadScreen(model: model)
         case .tryIt, .done: TryItScreen(model: model)
         }
     }
+}
+
+enum OnboardingFocus: Hashable {
+    case continueButton
 }
 
 private struct OnboardingSidebar: View {

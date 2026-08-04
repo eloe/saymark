@@ -40,6 +40,7 @@ extension KeyboardShortcuts {
 		private var bindingShortcut: Shortcut?
 		private var canBecomeKey = false
 		private var eventMonitor: LocalEventMonitor?
+		private var traversalMonitor: LocalEventMonitor?
 		// Stores the shortcut active when recording begins, so unchanged values can be compared against
 		// existing menu bindings and avoid self-conflicts for menu items bound to the same shortcut name.
 		private var shortcutBeforeRecording: Shortcut?
@@ -72,6 +73,10 @@ extension KeyboardShortcuts {
 		Controls how the recorder handles keyboard shortcut conflicts with menu items, system shortcuts, and disallowed shortcuts.
 		*/
 		public var conflictPolicy = ConflictPolicy.default
+
+		/// Lets a SwiftUI container hand reverse-Tab focus across an AppKit
+		/// representable boundary after this recorder has released first responder.
+		public var onReverseTabTraversal: (() -> Void)?
 
 		/**
 		The shortcut name for the recorder.
@@ -273,10 +278,12 @@ extension KeyboardShortcuts {
 			NotificationCenter.default.post(name: .recorderActiveStatusDidChange, object: nil, userInfo: [NotificationUserInfoKey.isActive: false])
 		}
 
-		/// Traverses explicitly so SwiftUI's AppKit bridge cannot return focus to
-		/// the recorder, and so Shift-Tab is not treated as an invalid shortcut.
+		/// Routes Tab while actively recording so Shift-Tab is not treated as an
+		/// invalid shortcut.
 		func traverseForTab(_ event: NSEvent) -> Bool {
-			guard event.specialKey == .tab else {
+			// A real macOS Shift-Tab event uses the backtab character and may not
+			// expose `specialKey == .tab`; the hardware key code remains stable.
+			guard event.specialKey == .tab || event.keyCode == kVK_Tab else {
 				return false
 			}
 
@@ -286,10 +293,21 @@ extension KeyboardShortcuts {
 			guard modifiers.isEmpty || modifiers == .shift else {
 				return false
 			}
+			return traverseForTab(reverse: modifiers == .shift)
+		}
+
+		/// Explicit traversal is also used by the field editor while the recorder
+		/// is merely keyboard-focused (not yet recording).
+		private func traverseForTab(reverse: Bool) -> Bool {
+			if reverse, let onReverseTabTraversal {
+				blur()
+				onReverseTabTraversal()
+				return true
+			}
 			guard let window else {
 				return true
 			}
-			let destination = modifiers == .shift ? previousValidKeyView : nextValidKeyView
+			let destination = reverse ? previousValidKeyView : nextValidKeyView
 			guard let destination, destination !== self else {
 				blur()
 				return true
@@ -298,6 +316,22 @@ extension KeyboardShortcuts {
 				blur()
 			}
 			return true
+		}
+
+		@_documentation(visibility: private)
+		public func control(
+			_ control: NSControl,
+			textView: NSTextView,
+			doCommandBy commandSelector: Selector
+		) -> Bool {
+			switch commandSelector {
+			case #selector(NSResponder.insertTab(_:)):
+				return traverseForTab(reverse: false)
+			case #selector(NSResponder.insertBacktab(_:)):
+				return traverseForTab(reverse: true)
+			default:
+				return false
+			}
 		}
 
 		private func preventBecomingKey() {
@@ -331,11 +365,25 @@ extension KeyboardShortcuts {
 		@_documentation(visibility: private)
 		override public func viewDidMoveToWindow() {
 			guard let window else {
+				traversalMonitor = nil
 				removeObserver(&windowDidResignKeyObserver)
 				removeObserver(&windowDidBecomeKeyObserver)
 				endRecording()
 				return
 			}
+
+			traversalMonitor = LocalEventMonitor(events: [.keyDown]) { [weak self, weak window] event in
+				guard
+					let self,
+					let window,
+					event.window === window,
+					ownsFirstResponder(in: window)
+				else {
+					return event
+				}
+
+				return traverseForTab(event) ? nil : event
+			}.start()
 
 			removeObserver(&windowDidResignKeyObserver)
 			removeObserver(&windowDidBecomeKeyObserver)
@@ -364,6 +412,16 @@ extension KeyboardShortcuts {
 			}
 
 			preventBecomingKey()
+		}
+
+		private func ownsFirstResponder(in window: NSWindow) -> Bool {
+			if window.firstResponder === self {
+				return true
+			}
+			guard let editor = window.firstResponder as? NSTextView else {
+				return false
+			}
+			return editor === currentEditor() || (editor.delegate as AnyObject?) === self
 		}
 
 		@_documentation(visibility: private)
