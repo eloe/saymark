@@ -44,13 +44,34 @@ emitted MLX's `mlx-swift_Cmlx.bundle`. An ad-hoc-signed local Xcode app build
 with package-plugin validation explicitly skipped produced the 3.82 MB Metal
 library; copying that generated bundle into the isolated XCTest resources made
 the documented runner reproducible. No app was installed, launched, signed by
-an Apple identity, or sent to Apple.
+an Apple identity, or sent to Apple during that model benchmark preparation.
+
+### Optimized local app idle
+
+A later, separate welcome-state run launched the uninstalled optimized app at
+`.build/local-corpus/Build/Products/Release/Saymark.app` from Saymark commit
+`028628a98d44b27c9d2ad17e52cd1c4aeb8e61e9`. The app reported version `0.1.1`
+and build `1001`, used the local identifier `com.eloe.saymark.local`, and had an
+ad-hoc signature with no Team Identifier. After a three-second warm-up,
+`Scripts/check-app-resources.sh` collected 30 samples at one-second intervals.
+
+| State | Samples | Median CPU | Nearest-rank p95 CPU | Final RSS | Gate |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Welcome/onboarding idle | 30 | 0.0% | 0.0% | 68.1 MB | Pass |
+
+The gate was median CPU at most 0.5% and p95 CPU at most 2.0%. The app was
+terminated after the measurement. It was not installed, signed by an Apple
+identity, notarized, or sent to Apple. This is a process-level welcome-state
+idle result: it does not claim model-warm idle, active-capture CPU, retained
+post-session resources, shortcut or microphone latency, main-thread stalls,
+external-target delivery, or a feature walkthrough.
 
 This evidence closes the real-model WER, long-form, warmed model latency, peak
-memory, and settled model-memory portions of the hardware gate on this machine.
-It does not claim app-level shortcut feedback, microphone start, idle CPU,
-main-thread stall, retained UI resources, external-target delivery, or a real
-feature walkthrough; those remain separate measurements.
+memory, settled model-memory, and welcome-state idle CPU portions of the
+hardware gate on this machine. It does not claim app-level shortcut feedback,
+microphone start, model-warm idle, main-thread stall, retained UI resources,
+external-target delivery, or a real feature walkthrough; those remain separate
+measurements.
 
 ## 2026-07-24 — Apple M2, 24 GB
 
