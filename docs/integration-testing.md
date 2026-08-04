@@ -8,8 +8,29 @@ server or WebDriver bridge.
 ## Run
 
 ```bash
-make test-integration
+mise exec -- make ui-evidence-preflight
+mise exec -- make test-integration
 ```
+
+The preflight uses only local macOS/Xcode state and does not require an Apple
+Developer Program membership, Apple ID, signing certificate, provisioning
+profile, or notarization. It checks the supported OS/architecture, the selected
+Xcode installation and first-launch setup, and whether Developer Mode is
+enabled. If Developer Mode is disabled, run the printed
+`sudo /usr/sbin/DevToolsSecurity -enable` command while present at the Mac; this
+is a local administrator action and may request the Mac login password.
+The preflight also verifies a compatible Xcode 26 installation and the
+repository-pinned Tuist version. It prints a plain `make` next step when Tuist
+is already active on `PATH`, or a `mise exec -- make` next step when the pinned
+tool is available through mise.
+
+The preflight cannot truthfully infer another executable's TCC grants.
+Accessibility, Microphone, Automation, and Screen Recording consent belong to
+the exact app or runner identity that macOS displays. Approve those prompts only
+when the real Saymark/local evidence run requests them. A successful preflight
+means the machine is ready to attempt XCUITest; the successful
+`make test-integration` result remains the evidence that automation actually
+executed.
 
 The target generates a separately identified local app, signs the app and test
 runner ad hoc, runs on the local arm64 Mac, and prints a compact test and resource
