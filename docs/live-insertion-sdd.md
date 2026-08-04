@@ -235,6 +235,10 @@ invoked the same deterministic key-down/key-up path because macOS rejected
 synthetic global keystrokes from the capture process; that trigger was removed
 before commit.
 
+The exact-main local UI result, current limitations, and published video
+checksums are recorded in
+[`v1-manual-acceptance.md`](v1-manual-acceptance.md).
+
 This recording is intentionally **not** evidence that cross-application partial
 live insertion ships. Slice 1 remains fail-closed, external provisional
 mutation remains denied, and Slices 2–5 remain blocked by the evidence gates
