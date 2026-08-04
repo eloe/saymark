@@ -15,7 +15,11 @@ import Foundation
 /// are blocked by **secure input** (password fields / secure-keyboard terminals).
 /// We detect that and refuse gracefully rather than silently dropping text.
 public enum TextInjector {
-    private static let axProbeTimeout: TimeInterval = 0.15
+    // A validation may attempt the bounded system-wide lookup, fall back to the
+    // frontmost application, and then read its selection. Keep coordinator
+    // headroom above those three 50 ms AX bounds without approaching the
+    // 750 ms delivery acknowledgement limit.
+    private static let axProbeTimeout: TimeInterval = 0.25
 
     public enum Result: Sendable, Equatable {
         case pasted              // ⌘V sent into the field; clipboard restored
@@ -94,7 +98,7 @@ public enum TextInjector {
         targetStillPresent: @escaping () -> Bool,
         deliveryStillAllowed: @escaping () -> Bool = { true },
         targetAcknowledged: @escaping () -> Bool,
-        probeTimeout: TimeInterval = 0.15
+        probeTimeout: TimeInterval = 0.25
     ) async -> Result {
         await pasteAcknowledged(
             text,

@@ -256,11 +256,28 @@ struct AtomicInsertionTargetHarness {
     }
 
     private static func focusedElement() -> AXUIElement? {
-        let system = AXUIElementCreateSystemWide()
-        guard AXUIElementSetMessagingTimeout(system, 0.05) == .success else { return nil }
+        if let systemElement = focusedElement(in: AXUIElementCreateSystemWide()) {
+            return systemElement
+        }
+        guard let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+            return nil
+        }
+        guard let element = focusedElement(in: AXUIElementCreateApplication(processID)) else {
+            return nil
+        }
+        var elementProcessID: pid_t = 0
+        guard AXUIElementGetPid(element, &elementProcessID) == .success,
+              elementProcessID == processID,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == processID
+        else { return nil }
+        return element
+    }
+
+    private static func focusedElement(in container: AXUIElement) -> AXUIElement? {
+        guard AXUIElementSetMessagingTimeout(container, 0.05) == .success else { return nil }
         var focusedValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
-            system,
+            container,
             kAXFocusedUIElementAttribute as CFString,
             &focusedValue
         ) == .success,
