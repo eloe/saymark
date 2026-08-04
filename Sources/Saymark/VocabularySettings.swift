@@ -15,6 +15,8 @@ final class VocabularySettingsModel {
     private(set) var errorMessage: String?
     private(set) var recoveryFileURL: URL?
     private(set) var isReadOnly = false
+    private(set) var isStorageAvailable = false
+    private(set) var preservesOpaqueDocumentForExport = false
     var search = ""
     var showEditor = false
     var editing: VocabularyEntry?
@@ -29,9 +31,11 @@ final class VocabularySettingsModel {
         do {
             let opened = try VocabularyStore(directoryURL: directory)
             store = opened
-            errorMessage = opened.recoveryMessage
+            errorMessage = opened.recoveryMessage ?? opened.readOnlyReason
             recoveryFileURL = opened.recoveryFileURL
             isReadOnly = opened.readOnlyReason != nil
+            isStorageAvailable = true
+            preservesOpaqueDocumentForExport = opened.preservesOpaqueDocumentForExport
         }
         catch {
             // Never divert sensitive vocabulary to /tmp.  The store itself can
@@ -40,15 +44,23 @@ final class VocabularySettingsModel {
             // less private fallback location.
             store = nil
             errorMessage = "Vocabulary could not be opened. Dictation will use raw text until local storage is available."
+            isReadOnly = true
         }
         reload()
     }
 
-    init(store: VocabularyStore) {
+    init(store: VocabularyStore?) {
         self.store = store
-        errorMessage = store.recoveryMessage
+        guard let store else {
+            errorMessage = "Vocabulary could not be opened. Dictation will use raw text until local storage is available."
+            isReadOnly = true
+            return
+        }
+        errorMessage = store.recoveryMessage ?? store.readOnlyReason
         recoveryFileURL = store.recoveryFileURL
         isReadOnly = store.readOnlyReason != nil
+        isStorageAvailable = true
+        preservesOpaqueDocumentForExport = store.preservesOpaqueDocumentForExport
         reload()
     }
 
@@ -59,6 +71,19 @@ final class VocabularySettingsModel {
             entry.written.localizedCaseInsensitiveContains(search)
                 || entry.heard.contains { $0.localizedCaseInsensitiveContains(search) }
         }
+    }
+    var canExport: Bool { isStorageAvailable && (!isReadOnly || preservesOpaqueDocumentForExport) }
+    var exportAccessibilityHint: String {
+        if !isStorageAvailable {
+            return "Export is unavailable because local vocabulary storage could not be opened"
+        }
+        if preservesOpaqueDocumentForExport {
+            return "Saves the original newer-format JSON file without changes"
+        }
+        if isReadOnly {
+            return "Export is unavailable; use the Finder recovery action"
+        }
+        return "Saves a private local schema version 2 JSON file"
     }
 
     func reload() { entries = store?.currentDocument().entries.sorted { $0.written.localizedStandardCompare($1.written) == .orderedAscending } ?? [] }
@@ -124,7 +149,13 @@ final class VocabularySettingsModel {
 struct VocabularySettingsSection: View {
     @State private var model: VocabularySettingsModel
 
-    init(model: VocabularySettingsModel = .shared) {
+    @MainActor
+    init() {
+        _model = State(initialValue: .shared)
+    }
+
+    @MainActor
+    init(model: VocabularySettingsModel) {
         _model = State(initialValue: model)
     }
 
@@ -141,9 +172,34 @@ struct VocabularySettingsSection: View {
                 }
                 .accessibilityHint("Locates the original unreadable file for manual recovery")
             }
-            if model.filteredEntries.isEmpty {
-                ContentUnavailableView("No vocabulary yet", systemImage: "text.book.closed",
-                    description: Text("Add explicit local rules for words Saymark hears incorrectly. Saymark never learns from your dictation."))
+            if !model.isStorageAvailable {
+                ContentUnavailableView(
+                    "Vocabulary storage unavailable",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("Editing, import, export, and correction are disabled until local storage can be opened.")
+                )
+            } else if model.isReadOnly {
+                ContentUnavailableView(
+                    model.preservesOpaqueDocumentForExport
+                        ? "Vocabulary requires a newer Saymark"
+                        : "Vocabulary is unavailable",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(
+                        model.preservesOpaqueDocumentForExport
+                            ? "This file may contain rules. Editing and correction are disabled, but Export saves the original file unchanged."
+                            : "The retained file may contain rules. Editing and correction are disabled; use the Finder recovery action above."
+                    )
+                )
+            } else if model.filteredEntries.isEmpty {
+                ContentUnavailableView(
+                    model.entries.isEmpty ? "No vocabulary yet" : "No matching vocabulary",
+                    systemImage: model.entries.isEmpty ? "text.book.closed" : "magnifyingglass",
+                    description: Text(
+                        model.entries.isEmpty
+                            ? "Add explicit local rules for words Saymark hears incorrectly. Saymark never learns from your dictation."
+                            : "Change or clear the search to show your local rules."
+                    )
+                )
             } else {
                 ForEach(model.filteredEntries) { entry in
                     HStack {
@@ -151,14 +207,24 @@ struct VocabularySettingsSection: View {
                             Text(entry.written).fontWeight(.medium)
                             Text(entry.heard.joined(separator: ", ")).foregroundStyle(.secondary)
                         }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Vocabulary entry \(entry.written)")
+                        .accessibilityValue("When I say: \(entry.heard.joined(separator: ", ")).")
                         Spacer()
                         Toggle("Enable \(entry.written)", isOn: Binding(get: { entry.enabled }, set: { model.setEnabled(entry, $0) }))
                             .labelsHidden()
+                            .accessibilityLabel("Enable \(entry.written)")
+                            .accessibilityValue(entry.enabled ? "On" : "Off")
+                            .accessibilityHint("Controls whether this rule changes dictated text")
+                            .disabled(model.isReadOnly)
                         Button("Edit") { model.beginEdit(entry) }
+                            .accessibilityLabel("Edit \(entry.written)")
+                            .disabled(model.isReadOnly)
                         Button("Delete", role: .destructive) { model.delete(entry) }
+                            .accessibilityLabel("Delete \(entry.written)")
+                            .accessibilityHint("Permanently removes this local rule")
+                            .disabled(model.isReadOnly)
                     }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Vocabulary entry \(entry.written). When I say: \(entry.heard.joined(separator: ", ")).")
                 }
             }
             Button("Add vocabulary") { model.beginAdd() }
@@ -168,6 +234,8 @@ struct VocabularySettingsSection: View {
                 Button("Import…") { model.chooseImport() }
                     .disabled(model.isReadOnly)
                 Button("Export…") { model.export() }
+                    .accessibilityHint(model.exportAccessibilityHint)
+                    .disabled(!model.canExport)
             }
         } header: { Text("Vocabulary") }
         footer: { Text("Rules change written text only. They do not train the speech model and stay on this Mac.") }

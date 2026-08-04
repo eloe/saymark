@@ -57,6 +57,9 @@ final class VocabularySettingsIntegrationTests: XCTestCase {
         XCTAssertTrue(model.entries.isEmpty)
         XCTAssertTrue(model.isReadOnly)
         XCTAssertEqual(model.recoveryFileURL, primary)
+        XCTAssertFalse(model.preservesOpaqueDocumentForExport)
+        XCTAssertFalse(model.canExport)
+        XCTAssertEqual(model.exportAccessibilityHint, "Export is unavailable; use the Finder recovery action")
         XCTAssertEqual(try Data(contentsOf: primary), corruptBytes)
         XCTAssertGreaterThan(host.fittingSize.height, 0)
         let source = try String(
@@ -68,6 +71,73 @@ final class VocabularySettingsIntegrationTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertTrue(source.contains("Show retained vocabulary file in Finder"))
+    }
+
+    func testUnavailableStoreDisablesEveryFileAndMutationActionTruthfully() {
+        let model = VocabularySettingsModel(store: nil)
+        XCTAssertFalse(model.isStorageAvailable)
+        XCTAssertTrue(model.isReadOnly)
+        XCTAssertFalse(model.canExport)
+        XCTAssertEqual(
+            model.exportAccessibilityHint,
+            "Export is unavailable because local vocabulary storage could not be opened"
+        )
+        XCTAssertEqual(
+            model.errorMessage,
+            "Vocabulary could not be opened. Dictation will use raw text until local storage is available."
+        )
+    }
+
+    func testFutureSchemaSettingsExplainReadOnlyStateAndPreserveExport() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try VocabularyStore(directoryURL: directory)
+        let primary = directory.appendingPathComponent(VocabularyStore.defaultFilename)
+        let futureBytes = Data(#"{"schemaVersion":999,"opaque":"preserve"}"#.utf8)
+        try futureBytes.write(to: primary)
+
+        let opened = try VocabularyStore(directoryURL: directory)
+        let model = VocabularySettingsModel(store: opened)
+        XCTAssertTrue(model.isReadOnly)
+        XCTAssertEqual(model.errorMessage, opened.readOnlyReason)
+        XCTAssertTrue(model.entries.isEmpty)
+        XCTAssertTrue(model.preservesOpaqueDocumentForExport)
+        XCTAssertTrue(model.canExport)
+        XCTAssertEqual(
+            model.exportAccessibilityHint,
+            "Saves the original newer-format JSON file without changes"
+        )
+
+        let export = directory.appendingPathComponent("future-export.json")
+        try opened.export(to: export)
+        XCTAssertEqual(try Data(contentsOf: export), futureBytes)
+
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Saymark/VocabularySettings.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("Vocabulary requires a newer Saymark"))
+        XCTAssertTrue(source.contains("Export saves the original file unchanged"))
+    }
+
+    func testVocabularyRowsKeepContextualActionsIndividuallyAccessible() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Saymark/VocabularySettings.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Enable \\(entry.written)\")"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Edit \\(entry.written)\")"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Delete \\(entry.written)\")"))
+        XCTAssertEqual(source.components(separatedBy: ".accessibilityElement(children: .combine)").count - 1, 1)
     }
 
     func testCorrectionReviewCarriesStatusAndVocabularyRevision() {
