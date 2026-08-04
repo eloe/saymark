@@ -111,3 +111,6 @@ Record separate evidence for native single-line and multiline fields, Safari
 web fields, installed Electron controls, rich editors, and Terminal. Use only
 locally available applications and synthetic content; absence of a target class
 must remain explicit rather than prompting an unapproved installation.
+
+The versioned macOS 26.5.1 certification record is
+[`docs/reviews/evidence/atomic-insertion-target-matrix-2026-08-04.md`](reviews/evidence/atomic-insertion-target-matrix-2026-08-04.md).

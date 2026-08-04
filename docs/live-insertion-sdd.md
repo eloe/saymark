@@ -3,8 +3,9 @@
 **Status:** fail-closed policy core and evidence harness shipped; no production
 cross-application provisional field mutation is approved or shipped. Atomic
 single-shot final insertion now has its own focus/selection lease and bounded receipt,
-tracked for real-target certification in [#24](https://github.com/eloe/saymark/issues/24).
-**Scope:** establish safe, testable policy for writing stable dictation text only after platform and UX evidence proves Saymark can distinguish its own provisional tail from user-owned text. The current single-shot final paste is the shipped delivery contract; real-target certification remains open.
+certified for the versioned app/control rows in the
+[macOS 26.5.1 real-target matrix](reviews/evidence/atomic-insertion-target-matrix-2026-08-04.md).
+**Scope:** establish safe, testable policy for writing stable dictation text only after platform and UX evidence proves Saymark can distinguish its own provisional tail from user-owned text. The current single-shot final paste is the shipped delivery contract; provisional live insertion and untested app/control versions remain uncertified.
 
 Independent review record: [Claude Opus 5 review](reviews/live-insertion-claude-opus-5-2026-07-26.md). It permits Slice 1 only. Slices 2–5 are blocked by B-01 through B-05 and the evidence table below.
 
@@ -20,7 +21,7 @@ Live insertion is an opt-in future delivery policy for Live Preview. Efficient m
 | LI-04 | Fail closed on loss of ownership. | Focus/PID/element/range change, same-offset content substitution, user edit, undo/redo, target close/termination, invalid AX element, secure transition, notification/order error, or timeout produces zero later writes. |
 | LI-05 | Distinguish final delivery states. | In fallback-final, where no live tail was written, existing single-shot final insertion is attempted once. In frozen-final, where a live tail exists but is unverified, there are zero AX writes and zero synthetic paste events; recovery is copy-only until an explicit user-approved action. |
 | LI-06 | Preserve security and privacy. | No synthetic event or AX mutation in protected states; no provisional clipboard write; diagnostics and remote events use closed enums/buckets only. |
-| LI-07 | Retain compatibility and mode isolation. | Single-shot paste with bounded acknowledgement is the current shipped contract, not proven real-app compatibility evidence. Efficient and Tier C emit zero provisional/live mutations but may use that one final synthetic paste; HUD-only and Tier D emit zero external delivery events. |
+| LI-07 | Retain compatibility and mode isolation. | Single-shot paste with bounded acknowledgement is the current shipped contract and is proven only for the app/control/version rows in the committed real-target matrix; it does not prove provisional live mutation or untested versions. Efficient and Tier C emit zero provisional/live mutations but may use that one final synthetic paste; HUD-only and Tier D emit zero external delivery events. |
 | LI-08 | Be ordered, bounded, and cancelable. | No stale/concurrent write after stop/restart/focus loss/quit; AX I/O is off-main, bounded, and timeout fails closed. |
 
 ## Non-negotiable evidence gates
@@ -132,7 +133,10 @@ Fakes must model AX ranges, read-only ranged-tail read-back, notifications, focu
 | LI-S01…S06 | Security | Reordered AX, check/write race, secure/clipboard race, diagnostics scan, static privacy review. |
 | LI-S07 | Security | Deliberately hung target with 100 ms messaging timeout fails closed with no mutation; asserts all AX I/O runs off-main. |
 
-Before Tier A is unblocked, commit: B-01 spike result, B-02 adversarial read-back result, B-04 secure matrix, B-05 hung-target result, and real application evidence for its target. The current compatibility matrix consists of in-process fakes and is insufficient evidence for Safari, Chrome, Electron, or Terminal.
+Before Tier A is unblocked, commit: B-01 spike result, B-02 adversarial read-back result, B-04 secure matrix, B-05 hung-target result, and real application evidence for its target. In-process compatibility fixtures alone are insufficient evidence for Safari, Chrome, Electron, or Terminal.
+
+The shipped single-shot atomic-final path is certified against the versioned
+[macOS 26.5.1 real-target matrix](reviews/evidence/atomic-insertion-target-matrix-2026-08-04.md).
 
 ## Implementation slices
 
