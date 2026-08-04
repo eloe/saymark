@@ -4,6 +4,7 @@ import SwiftUI
 /// Selects the actual shortcut and behavior the user will exercise on Try It.
 struct ShortcutScreen: View {
     @AppStorage(TriggerMode.defaultsKey) private var triggerMode = TriggerMode.hold.rawValue
+    let focusContinue: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -18,7 +19,7 @@ struct ShortcutScreen: View {
             GroupBox {
                 VStack(spacing: 14) {
                     LabeledContent("Shortcut") {
-                        KeyboardShortcuts.Recorder(for: .dictate)
+                        OnboardingShortcutRecorder(focusContinue: focusContinue)
                     }
 
                     Divider()
@@ -48,4 +49,17 @@ struct ShortcutScreen: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
+
+private struct OnboardingShortcutRecorder: NSViewRepresentable {
+    let focusContinue: () -> Void
+
+    func makeNSView(context: Context) -> KeyboardShortcuts.RecorderCocoa {
+        let recorder = KeyboardShortcuts.RecorderCocoa(for: .dictate)
+        recorder.setAccessibilityIdentifier("onboarding.shortcut-recorder")
+        recorder.onReverseTabTraversal = focusContinue
+        return recorder
+    }
+
+    func updateNSView(_ recorder: KeyboardShortcuts.RecorderCocoa, context: Context) {}
 }

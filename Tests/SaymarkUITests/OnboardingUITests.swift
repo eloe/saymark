@@ -95,6 +95,20 @@ final class OnboardingUITests: XCTestCase {
         }
     }
 
+    func testShortcutRecorderReverseTabReachesContinue() throws {
+        clickContinue("Set Up Saymark")
+        clickContinue("Continue")
+        XCTAssertTrue(app.staticTexts["Choose how to start dictation"].waitForExistence(timeout: 5))
+
+        let recorder = app.descendants(matching: .any)["onboarding.shortcut-recorder"]
+        XCTAssertTrue(recorder.waitForExistence(timeout: 2))
+        recorder.click()
+        app.typeKey(.tab, modifierFlags: [.shift])
+        app.typeKey(.space, modifierFlags: [])
+
+        XCTAssertTrue(app.staticTexts["Preparing on-device dictation"].waitForExistence(timeout: 5))
+    }
+
     private func continueButton(_ label: String) -> XCUIElement {
         let button = app.buttons[label]
         XCTAssertTrue(button.waitForExistence(timeout: 2))
