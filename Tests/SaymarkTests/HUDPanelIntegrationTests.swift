@@ -24,7 +24,8 @@ final class HUDPanelIntegrationTests: XCTestCase {
 
         let appKitButton = try XCTUnwrap(source.range(of: "private struct AccessibleHUDButton"))
         let appKitTail = source[appKitButton.lowerBound...].prefix(2_200)
-        XCTAssertTrue(appKitTail.contains("NSButton(title: title"))
+        XCTAssertTrue(appKitTail.contains("let button = NSButton("))
+        XCTAssertTrue(appKitTail.contains("title: title"))
         XCTAssertTrue(appKitTail.contains("button.setAccessibilityLabel(title)"))
         XCTAssertTrue(appKitTail.contains("button.setAccessibilityIdentifier(identifier)"))
     }
