@@ -39,7 +39,7 @@ let project = Project(
         .local(path: "SaymarkKit"),
         .local(path: "Vendor/KeyboardShortcuts"),
         .remote(url: "https://github.com/PostHog/posthog-ios",
-                requirement: .exact("3.67.1")),   // future anonymous analytics; strictly opt-in
+                requirement: .exact("3.69.3")),   // future anonymous analytics; strictly opt-in
     ],
     targets: [
         .target(
