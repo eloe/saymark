@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class HUDPanelIntegrationTests: XCTestCase {
-    func testCorrectionDisclosurePreservesNativeAndChildAccessibilityLabels() throws {
+    func testCorrectionDisclosureAndCopyControlsHaveExplicitAccessibilityLabels() throws {
         let source = try String(
             contentsOf: URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
@@ -13,12 +13,20 @@ final class HUDPanelIntegrationTests: XCTestCase {
                 .appendingPathComponent("Sources/Saymark/HUDOverlay.swift"),
             encoding: .utf8
         )
-        let disclosure = try XCTUnwrap(source.range(of: "DisclosureGroup("))
-        let tail = source[disclosure.lowerBound...].prefix(1_400)
+        let disclosure = try XCTUnwrap(source.range(of: "let disclosureTitle"))
+        let tail = source[disclosure.lowerBound...].prefix(1_800)
 
-        XCTAssertTrue(tail.contains("Button(\"Copy raw transcript\")"))
-        XCTAssertTrue(tail.contains(".accessibilityIdentifier(\"hud.raw-transcript-disclosure\")"))
-        XCTAssertFalse(tail.contains(".accessibilityLabel(\"Raw transcript disclosure\")"))
+        XCTAssertTrue(tail.contains("AccessibleHUDButton("))
+        XCTAssertTrue(tail.contains("identifier: \"hud.raw-transcript-disclosure\""))
+        XCTAssertTrue(tail.contains("title: \"Copy raw transcript\""))
+        XCTAssertTrue(tail.contains("identifier: \"hud.copy-raw-transcript\""))
+        XCTAssertFalse(tail.contains("DisclosureGroup("))
+
+        let appKitButton = try XCTUnwrap(source.range(of: "private struct AccessibleHUDButton"))
+        let appKitTail = source[appKitButton.lowerBound...].prefix(2_200)
+        XCTAssertTrue(appKitTail.contains("NSButton(title: title"))
+        XCTAssertTrue(appKitTail.contains("button.setAccessibilityLabel(title)"))
+        XCTAssertTrue(appKitTail.contains("button.setAccessibilityIdentifier(identifier)"))
     }
 
     func testProductionAnimatorMakesHotkeyFeedbackImmediatelyVisible() {
