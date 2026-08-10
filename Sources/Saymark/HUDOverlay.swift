@@ -178,16 +178,23 @@ private struct HUDView: View {
         return VStack(alignment: .leading, spacing: big ? 12 : 9) {
             header
             if model.showsCorrectionDetails {
-                DisclosureGroup(
-                    model.correctionStatus == "failedRawFallback" ? "Correction details" : "Raw transcript",
-                    isExpanded: Bindable(model).showRawTranscript
-                ) {
+                DisclosureGroup(isExpanded: Bindable(model).showRawTranscript) {
                     Text(model.correctionSummary)
                         .foregroundStyle(.secondary)
                     Text(model.rawTranscript).textSelection(.enabled)
                     Button("Copy raw transcript") { model.copyRawTranscript() }
+                } label: {
+                    Text(model.correctionStatus == "failedRawFallback" ? "Correction details" : "Raw transcript")
+                        .accessibilityLabel(
+                            model.correctionStatus == "failedRawFallback"
+                                ? "Correction details"
+                                : "Raw transcript"
+                        )
                 }
-                .accessibilityLabel("Raw transcript disclosure")
+                // Preserve the native DisclosureGroup label and descendant
+                // controls. Overriding the whole group label masks the visible
+                // correction summary and Copy raw transcript button in VoiceOver.
+                .accessibilityIdentifier("hud.raw-transcript-disclosure")
             }
             if model.showingFinal {
                 ScrollView(.vertical) {

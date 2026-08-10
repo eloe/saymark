@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class HUDPanelIntegrationTests: XCTestCase {
+    func testCorrectionDisclosurePreservesNativeAndChildAccessibilityLabels() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Saymark/HUDOverlay.swift"),
+            encoding: .utf8
+        )
+        let disclosure = try XCTUnwrap(source.range(of: "DisclosureGroup("))
+        let tail = source[disclosure.lowerBound...].prefix(1_400)
+
+        XCTAssertTrue(tail.contains("Button(\"Copy raw transcript\")"))
+        XCTAssertTrue(tail.contains(".accessibilityIdentifier(\"hud.raw-transcript-disclosure\")"))
+        XCTAssertFalse(tail.contains(".accessibilityLabel(\"Raw transcript disclosure\")"))
+    }
+
     func testProductionAnimatorMakesHotkeyFeedbackImmediatelyVisible() {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 100, height: 60),
