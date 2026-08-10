@@ -1,8 +1,11 @@
 # Saymark 1.0 no-fee manual acceptance evidence
 
-**Evidence date:** 2026-08-04  
-**Release candidate main:** `c53561fa7616b4376f1fa3349173d2ddb720d5bf`  
-**Reference Mac:** Mac Studio (Mac16,9), Apple M4 Max, 36 GB  
+**Evidence date:** 2026-08-04
+
+**Release candidate main:** `c53561fa7616b4376f1fa3349173d2ddb720d5bf`
+
+**Reference Mac:** Mac Studio (Mac16,9), Apple M4 Max, 36 GB
+
 **Toolchain:** macOS 26.5.1 (25F80), Xcode 26.6 (17F113), arm64
 
 This package records only tests that actually ran. It does not claim live-model,
@@ -59,6 +62,17 @@ inspected. macOS did not expose Saymark as a per-app text-sizing target, so that
 setting is not claimed. The reference Mac reported one display; multi-display
 placement is explicitly unverified rather than inferred.
 
+A separate real production-boundary run exercised the microphone denial and
+retry path without replacing TCC. The first attempt displayed Saymark's real
+microphone prompt in front of onboarding and denial returned to a recoverable
+permission state. Retrying and allowing the permission produced
+`microphone.permission granted=true`, verified the pinned model artifacts,
+loaded the real Parakeet and VAD components, and delivered the production
+shortcut callback. No transcription or insertion is claimed from this run:
+System Information reported no audio input device, so synthetic speaker output
+never entered capture. The temporary XCUITest driver and its privacy-unsafe
+full-screen recording were deleted rather than published.
+
 The synthetic walkthroughs are:
 
 - [`videos/onboarding-evidence.mp4`](videos/onboarding-evidence.mp4) — first-run
@@ -87,6 +101,43 @@ Executable/manual checks established these boundaries:
 - the public UI/documentation says deterministic correction and does not claim
   pronunciation training or model-native biasing.
 
+Supplemental exact-merged-main evidence was run on 2026-08-10 from a fresh
+Debug build of `bc231523de00e29ec3d60c0d7a37e3a53a9f881b`. A temporary regular
+file at the app's expected Application Support directory forced the real
+`VocabularyStore` open to fail; the pre-existing empty directory and defaults
+were preserved before the run and restored afterward. The Settings UI exposed
+the full raw-text fallback error, a “Vocabulary storage unavailable” state, and
+disabled Add, Import, and Export controls. Actual VoiceOver was started for the
+focused pass: keyboard focus reached Search Vocabulary, skipped the disabled
+actions, and the accessibility tree exposed the error and unavailable-state
+copy. VoiceOver and its Quickstart were quit after the pass. This is evidence
+for the unavailable-storage state.
+
+The privacy-safe window-only capture is
+[`evidence/v1/vocabulary-unavailable-storage-bc23152.png`](evidence/v1/vocabulary-unavailable-storage-bc23152.png).
+
+A second bounded exact-main pass loaded one local synthetic rule and selected a
+schema-v2 synthetic import whose differently cased “Say Mark” trigger normalized
+to the same phrase. The real import-preview sheet reported one conflict, exposed
+the normalized trigger and both fixed synthetic UUIDs, and disabled Import.
+With actual VoiceOver running, the accessibility tree exposed the conflict count,
+resolution instruction, trigger, both entry IDs, enabled Cancel, and disabled
+Import. VoiceOver and Quickstart were quit and the original empty local store and
+defaults were restored afterward. The privacy-safe window-only capture is
+[`evidence/v1/vocabulary-import-conflict-bc23152.png`](evidence/v1/vocabulary-import-conflict-bc23152.png).
+This evidence was supplemented after the accessibility correction merged. A
+fresh Debug build from literal merged main
+`58541a08130d8f7af37aa6ee152f6004fda0364c` rendered the production HUD in a
+deterministic synthetic `failedRawFallback` state through source-free debugger
+state injection; no source file, persisted user data, model, microphone, or
+transcript was modified or claimed. Actual VoiceOver was running during the
+bounded pass. The accessibility tree independently exposed the correction
+summary, raw transcript, final transcript, an enabled “Correction details”
+button with value “Expanded,” and a separate enabled “Copy raw transcript”
+button. The privacy-safe window-only capture is
+[`evidence/v1/vocabulary-raw-disclosure-58541a0.png`](evidence/v1/vocabulary-raw-disclosure-58541a0.png).
+VoiceOver and Saymark were quit after the pass.
+
 The synthetic walkthrough is
 [`videos/vocabulary-language-correction-evidence.mp4`](videos/vocabulary-language-correction-evidence.mp4),
 recorded at source revision `149955b6d992122edbf958b2c0054140b45efa27`.
@@ -113,4 +164,11 @@ SHA-256 values for every published video are committed in
 
 ```bash
 (cd docs/videos && shasum -a 256 -c SHA256SUMS)
+```
+
+Supplemental exact-main still-image checksums are committed in
+[`evidence/v1/SHA256SUMS`](evidence/v1/SHA256SUMS). Recompute with:
+
+```bash
+(cd docs/evidence/v1 && shasum -a 256 -c SHA256SUMS)
 ```
