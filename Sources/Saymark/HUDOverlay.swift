@@ -178,23 +178,30 @@ private struct HUDView: View {
         return VStack(alignment: .leading, spacing: big ? 12 : 9) {
             header
             if model.showsCorrectionDetails {
-                DisclosureGroup(isExpanded: Bindable(model).showRawTranscript) {
-                    Text(model.correctionSummary)
-                        .foregroundStyle(.secondary)
-                    Text(model.rawTranscript).textSelection(.enabled)
-                    Button("Copy raw transcript") { model.copyRawTranscript() }
-                } label: {
-                    Text(model.correctionStatus == "failedRawFallback" ? "Correction details" : "Raw transcript")
-                        .accessibilityLabel(
-                            model.correctionStatus == "failedRawFallback"
-                                ? "Correction details"
-                                : "Raw transcript"
+                let disclosureTitle = model.correctionStatus == "failedRawFallback"
+                    ? "Correction details"
+                    : "Raw transcript"
+                VStack(alignment: .leading, spacing: 6) {
+                    AccessibleHUDButton(
+                        title: disclosureTitle,
+                        systemImage: model.showRawTranscript ? "chevron.down" : "chevron.right",
+                        identifier: "hud.raw-transcript-disclosure",
+                        accessibilityValue: model.showRawTranscript ? "Expanded" : "Collapsed"
+                    ) {
+                        model.showRawTranscript.toggle()
+                    }
+
+                    if model.showRawTranscript {
+                        Text(model.correctionSummary)
+                            .foregroundStyle(.secondary)
+                        Text(model.rawTranscript).textSelection(.enabled)
+                        AccessibleHUDButton(
+                            title: "Copy raw transcript",
+                            identifier: "hud.copy-raw-transcript",
+                            action: model.copyRawTranscript
                         )
+                    }
                 }
-                // Preserve the native DisclosureGroup label and descendant
-                // controls. Overriding the whole group label masks the visible
-                // correction summary and Copy raw transcript button in VoiceOver.
-                .accessibilityIdentifier("hud.raw-transcript-disclosure")
             }
             if model.showingFinal {
                 ScrollView(.vertical) {
@@ -315,6 +322,54 @@ private struct HUDView: View {
 
     private static func words(_ s: String) -> [String] {
         s.split(whereSeparator: { $0 == " " || $0 == "\n" }).map(String.init)
+    }
+}
+
+/// AppKit-backed buttons keep explicit AX titles in the nonactivating HUD panel.
+/// SwiftUI's plain buttons render correctly here but macOS 26 exposes them as
+/// unnamed `AXButton`s, even when an accessibility label modifier is present.
+private struct AccessibleHUDButton: NSViewRepresentable {
+    let title: String
+    var systemImage: String? = nil
+    let identifier: String
+    var accessibilityValue: String? = nil
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(
+            title: title,
+            target: context.coordinator,
+            action: #selector(Coordinator.invoke)
+        )
+        button.bezelStyle = .inline
+        button.isBordered = false
+        button.font = .systemFont(ofSize: 13)
+        update(button)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        update(button)
+    }
+
+    private func update(_ button: NSButton) {
+        button.title = title
+        button.image = systemImage.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
+        button.imagePosition = systemImage == nil ? .noImage : .imageLeading
+        button.setAccessibilityLabel(title)
+        button.setAccessibilityIdentifier(identifier)
+        button.setAccessibilityValue(accessibilityValue)
+    }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) { self.action = action }
+
+        @objc func invoke() { action() }
     }
 }
 
