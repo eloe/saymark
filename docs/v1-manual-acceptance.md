@@ -73,6 +73,22 @@ System Information reported no audio input device, so synthetic speaker output
 never entered capture. The temporary XCUITest driver and its privacy-unsafe
 full-screen recording were deleted rather than published.
 
+On 2026-08-10, a fresh app built from literal merged main
+`58541a08130d8f7af37aa6ee152f6004fda0364c` naturally entered the real denied
+Accessibility state; no TCC reset or review override was used. With actual
+VoiceOver running, the permission screen exposed the Microphone and
+Accessibility explanations, the “Drag Saymark into System Settings” recovery
+instructions, the draggable Saymark icon and its help, “Set Up Accessibility,”
+Back, and the “Set Up Later” outcome (which correctly could not advance while
+the required microphone permission also remained denied). Invoking Set Up
+Accessibility did not strand or duplicate onboarding: Saymark remained
+frontmost and retained the recoverable denied-state instructions while polling
+for a future grant. The separate granted-state production run above verifies
+that returning with permission is reflected as Allowed. The privacy-safe
+window-only denied-state capture is
+[`evidence/v1/onboarding-accessibility-denied-58541a0.png`](evidence/v1/onboarding-accessibility-denied-58541a0.png).
+VoiceOver and Saymark were quit afterward.
+
 The synthetic walkthroughs are:
 
 - [`videos/onboarding-evidence.mp4`](videos/onboarding-evidence.mp4) — first-run
