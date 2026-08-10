@@ -27,12 +27,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     lazy var onboarding = OnboardingModel(session: dictation.dictationSession)
 
     private var onboardingWindow: NSWindow?
+    private var vocabularyWindow: NSWindow?
     private var didStartMenuApp = false
     #if DEBUG
     private var dailyDriverUITestHarness: DailyDriverUITestHarness?
     #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A hosted unit-test bundle launches a temporary, differently signed
+        // Saymark.app. Never let that test host trigger real TCC prompts or boot
+        // background capture/services on the developer's Mac.
+        guard !RuntimeEnvironment.isHostedUnitTesting else { return }
         DiagnosticLogSetting.configure()
         Task {
             // Durable store metadata is the sole policy authority. History
@@ -78,6 +83,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         onboarding.onReactivate = { [weak self] in self?.presentOnboarding() }
         dictation.onboardingHotkeyDown = { [weak self] in self?.onboarding.tryHotkeyDown() }
         dictation.onboardingHotkeyUp = { [weak self] in self?.onboarding.tryHotkeyUp() }
+        dictation.onAddToVocabulary = { [weak self] transcript in
+            self?.presentVocabulary(sourceTranscript: transcript)
+        }
         DictationShortcutDefaults.migrateLegacyVoiceOverConflict()
         dictation.installHotkeyRouting()
         if OnboardingModel.shouldShow {
@@ -145,6 +153,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// Open the one validated Vocabulary surface. A HUD entry additionally opens
+    /// an explicit blank rule editor alongside the memory-only raw transcript.
+    func presentVocabulary(sourceTranscript: String? = nil) {
+        let model = VocabularySettingsModel.shared
+        let window = vocabularyWindow ?? makeVocabularyWindow(model: model)
+        vocabularyWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        if let sourceTranscript, !sourceTranscript.isEmpty {
+            model.beginAdd(sourceTranscript: sourceTranscript, host: .manager)
+        }
+    }
+
+    private func makeVocabularyWindow(model: VocabularySettingsModel) -> NSWindow {
+        let host = NSHostingController(rootView: VocabularyWindowView(model: model))
+        let window = NSWindow(contentViewController: host)
+        window.title = "Saymark Vocabulary"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 520, height: 560))
+        window.contentMinSize = NSSize(width: 480, height: 420)
+        window.delegate = self
+        window.center()
+        return window
+    }
+
     private func makeOnboardingWindow() -> NSWindow {
         let size = NSSize(width: 680, height: 500)
         let host = NSHostingController(rootView: OnboardingView(model: onboarding).frame(
@@ -170,7 +204,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// quit, so the app never lingers half-configured. A returning user's "Setup tour…"
     /// replay (menu app already running) just closes the window.
     func windowWillClose(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === onboardingWindow else { return }
+        guard let window = notification.object as? NSWindow else { return }
+        if window === vocabularyWindow {
+            VocabularySettingsModel.shared.cancelEditor(in: .manager)
+            return
+        }
+        guard window === onboardingWindow else { return }
         if !didStartMenuApp {
             NSApp.terminate(nil)
         } else {

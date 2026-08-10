@@ -244,7 +244,7 @@ final class HUDControllerTests: XCTestCase {
         normal.begin(presentation: false, lang: "Auto", interactive: true)
         normal.finish("final words")
 
-        XCTAssertEqual(normalScheduler.entries.last?.delay, 3.2)
+        XCTAssertEqual(normalScheduler.entries.last?.delay, 8.0)
         XCTAssertEqual(normal.model.confirmed, "final words")
         XCTAssertEqual(normal.model.partial, "")
         XCTAssertEqual(normal.model.phase, .transcribing)
@@ -300,6 +300,33 @@ final class HUDControllerTests: XCTestCase {
         XCTAssertTrue(controller.model.allowsFinalInteraction)
         XCTAssertFalse(controller.panel?.ignoresMouseEvents ?? true)
         XCTAssertEqual(scheduler.entries.last?.delay, 8.0)
+    }
+
+    func testFinalCanOpenExplicitVocabularyRuleWithMemoryOnlyRawTranscript() {
+        let (controller, scheduler, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        var received: [String] = []
+        controller.onAddToVocabulary = { received.append($0) }
+        controller.begin(presentation: false, lang: "EN", interactive: false)
+
+        controller.finish(
+            "Seymark is ready.",
+            rawText: "sey mark is ready.",
+            correctionStatus: "unchanged",
+            correctionRevision: 3
+        )
+
+        XCTAssertTrue(controller.model.canAddToVocabulary)
+        XCTAssertTrue(controller.model.allowsFinalInteraction)
+        XCTAssertFalse(controller.panel?.ignoresMouseEvents ?? true)
+        XCTAssertEqual(scheduler.entries.last?.delay, 8.0)
+
+        controller.model.onAddToVocabulary(controller.model.rawTranscript)
+
+        XCTAssertEqual(received, ["sey mark is ready."])
+        XCTAssertEqual(controller.model.rawTranscript, "")
+        XCTAssertFalse(controller.model.showingFinal)
+        XCTAssertNil(controller.panel)
     }
 
     func testTypicalFailedRawFallbackHoldFinalMakesDisclosureAndCopyOperable() {

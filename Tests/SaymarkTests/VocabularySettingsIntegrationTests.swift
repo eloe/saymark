@@ -28,6 +28,87 @@ private final class CorrectedReceipt: @unchecked Sendable {
 
 @MainActor
 final class VocabularySettingsIntegrationTests: XCTestCase {
+    func testExplicitHUDRuleDraftKeepsTranscriptContextMemoryOnlyUntilCancel() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try VocabularyStore(directoryURL: directory)
+        let model = VocabularySettingsModel(store: store)
+
+        model.beginAdd(sourceTranscript: "say mark was misheard", host: .manager)
+
+        XCTAssertTrue(model.showEditor)
+        XCTAssertTrue(model.isEditorPresented(in: .manager))
+        XCTAssertFalse(model.isEditorPresented(in: .settings))
+        XCTAssertNil(model.editing)
+        XCTAssertEqual(model.editorSourceTranscript, "say mark was misheard")
+        XCTAssertTrue(model.entries.isEmpty, "opening a draft must never infer or persist a rule")
+
+        model.cancelEditor()
+
+        XCTAssertFalse(model.showEditor)
+        XCTAssertNil(model.editorSourceTranscript)
+        XCTAssertTrue(model.entries.isEmpty)
+    }
+
+    func testHUDRuleDraftDoesNotOpenWhenVocabularyIsUnavailable() {
+        let model = VocabularySettingsModel(store: nil)
+
+        model.beginAdd(sourceTranscript: "private transcript", host: .manager)
+
+        XCTAssertFalse(model.showEditor)
+        XCTAssertNil(model.editorHost)
+        XCTAssertNil(model.editorSourceTranscript)
+    }
+
+    func testManagerCloseCannotCancelSettingsOwnedEditor() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = VocabularySettingsModel(store: try VocabularyStore(directoryURL: directory))
+
+        model.beginAdd(sourceTranscript: "settings draft", host: .settings)
+        model.cancelEditor(in: .manager)
+
+        XCTAssertTrue(model.isEditorPresented(in: .settings))
+        XCTAssertEqual(model.editorSourceTranscript, "settings draft")
+        model.cancelEditor()
+    }
+
+    func testRepeatedHUDRuleEntryKeepsThePresentedDraftIdentityStable() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = VocabularySettingsModel(store: try VocabularyStore(directoryURL: directory))
+
+        model.beginAdd(sourceTranscript: "first transcript", host: .manager)
+        model.beginAdd(sourceTranscript: "second transcript", host: .manager)
+
+        XCTAssertTrue(model.isEditorPresented(in: .manager))
+        XCTAssertEqual(model.editorSourceTranscript, "first transcript")
+        model.cancelEditor()
+    }
+
+    func testHUDRuleDraftTranscriptExpiresFromMemory() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try VocabularyStore(directoryURL: directory)
+        let model = VocabularySettingsModel(store: store, editorContextLifetimeNanoseconds: 1_000_000)
+
+        model.beginAdd(sourceTranscript: "private transcript", host: .manager)
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertTrue(model.showEditor, "expiry clears only the transcript context, not the user's blank draft")
+        XCTAssertNil(model.editorSourceTranscript)
+        XCTAssertTrue(model.entries.isEmpty)
+    }
+
+    func testVocabularyWindowReusesValidatedSettingsSection() {
+        let host = NSHostingView(rootView: VocabularyWindowView(model: .shared))
+        host.frame = NSRect(x: 0, y: 0, width: 520, height: 560)
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertGreaterThan(host.fittingSize.width, 0)
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
+    }
+
     func testVocabularySectionHostsAsNativeSwiftUIViewAndExposesAccessibilityRoot() {
         let host = NSHostingView(rootView: Form { VocabularySettingsSection() })
         host.frame = NSRect(x: 0, y: 0, width: 640, height: 720)

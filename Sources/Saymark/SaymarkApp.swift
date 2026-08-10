@@ -17,7 +17,8 @@ struct SaymarkApp: App {
         MenuBarExtra {
             MenuPopover(dictation: appDelegate.dictation,
                         onSetupTour: { appDelegate.replayOnboarding() },
-                        onRecentDictations: { RecentDictationsController.shared.present() })
+                        onRecentDictations: { RecentDictationsController.shared.present() },
+                        onVocabulary: { appDelegate.presentVocabulary() })
         } label: {
             Image(nsImage: Self.menuIcon)
         }

@@ -33,6 +33,7 @@ final class HUDModel {
     var historyNotice: String?
     var showStop = false          // toggle-mode: HUD shows a clickable Stop
     var onStop: () -> Void = {}
+    var onAddToVocabulary: (String) -> Void = { _ in }
 
     /// Live captions stay compact. Final text is never line-truncated: the HUD
     /// expands and exposes the entire wrapped value in a native scroll view.
@@ -42,7 +43,10 @@ final class HUDModel {
         showingFinal && !rawTranscript.isEmpty &&
             (rawTranscript != confirmed || correctionStatus == "failedRawFallback")
     }
-    var allowsFinalInteraction: Bool { showingFinal && (showsCorrectionDetails || requiresExpandedFinal) }
+    var canAddToVocabulary: Bool { showingFinal && !rawTranscript.isEmpty }
+    var allowsFinalInteraction: Bool {
+        showingFinal && (canAddToVocabulary || showsCorrectionDetails || requiresExpandedFinal)
+    }
     var correctionSummary: String {
         switch correctionStatus {
         case "failedRawFallback":
@@ -68,7 +72,7 @@ final class HUDModel {
         // A final result should read as a stable completion state, not a flash.
         // Long dictations linger longer, while the cap keeps the HUD temporary.
         let readingTime = min(12.0, max(3.2, 2.4 + Double(words) * 0.045))
-        return showsCorrectionDetails ? max(8.0, readingTime) : readingTime
+        return canAddToVocabulary || showsCorrectionDetails ? max(8.0, readingTime) : readingTime
     }
 
     func copyRawTranscript() {
@@ -155,6 +159,14 @@ private struct HUDView: View {
                 .background(scheme == .dark ? Color.white.opacity(0.08) : SaymarkTheme.ink.opacity(0.07),
                             in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             if model.showStop { stopButton }
+            if model.canAddToVocabulary {
+                Button("Add to Vocabulary…") {
+                    model.onAddToVocabulary(model.rawTranscript)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityHint("Opens an explicit local rule editor without changing the inserted text")
+            }
         }
     }
 
@@ -409,10 +421,12 @@ final class HUDCancellation {
 @MainActor
 final class DispatchHUDHideScheduler: HUDHideScheduling {
     func schedule(after delay: TimeInterval, action: @escaping @MainActor () -> Void) -> HUDCancellation {
-        let work = DispatchWorkItem {
-            MainActor.assumeIsolated { action() }
+        let work = Task { @MainActor in
+            let nanoseconds = UInt64(max(0, delay) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            action()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         return HUDCancellation { work.cancel() }
     }
 }
@@ -437,7 +451,7 @@ final class AppKitHUDAnimator: HUDAnimating {
             $0.duration = 0.25
             panel.animator().alphaValue = 0
         }, completionHandler: {
-            MainActor.assumeIsolated { completion() }
+            Task { @MainActor in completion() }
         })
     }
 }
@@ -452,6 +466,7 @@ final class HUDController {
     private let animator: any HUDAnimating
     private let halo: any ListeningHaloControlling
     private let activeScreenProvider: @MainActor () -> NSScreen?
+    var onAddToVocabulary: @MainActor (String) -> Void = { _ in }
     private weak var activeScreen: NSScreen?
     var announcementSink: (String) -> Void = { message in
         NSAccessibility.post(
@@ -492,6 +507,9 @@ final class HUDController {
         self.animator = animator
         self.halo = halo
         self.activeScreenProvider = activeScreenProvider
+        model.onAddToVocabulary = { [weak self] transcript in
+            self?.openVocabularyEditor(for: transcript)
+        }
     }
 
     /// Reveal the HUD for a new utterance. `interactive` (toggle mode) makes the
@@ -675,6 +693,19 @@ final class HUDController {
         hideWork = scheduler.schedule(after: delay) { [weak self] in
             self?.fadeOut(presentationID: presentationID)
         }
+    }
+
+    private func openVocabularyEditor(for transcript: String) {
+        guard model.showingFinal, !transcript.isEmpty else { return }
+        hideWork?.cancel()
+        hideWork = nil
+        panel?.orderOut(nil)
+        panel?.contentView = nil
+        panel = nil
+        model.rawTranscript = ""
+        model.confirmed = ""
+        model.showingFinal = false
+        onAddToVocabulary(transcript)
     }
 
     private func fadeOut(presentationID: Int) {

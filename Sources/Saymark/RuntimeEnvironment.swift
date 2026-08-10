@@ -4,6 +4,21 @@ import Foundation
 /// boundaries become deterministic while the real app views, navigation, and
 /// state machine continue to run.
 enum RuntimeEnvironment {
+    /// Hosted app unit tests load XCTest into a temporary Saymark.app. That app
+    /// has a different TCC identity from the installed local build and must never
+    /// start services or request real microphone/Accessibility permissions.
+    static var isHostedUnitTesting: Bool {
+        isHostedUnitTesting(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func isHostedUnitTesting(environment: [String: String]) -> Bool {
+        [
+            "XCTestConfigurationFilePath",
+            "XCTestBundlePath",
+            "XCInjectBundleInto",
+        ].contains { environment[$0]?.isEmpty == false }
+    }
+
     static var isUITesting: Bool {
         #if DEBUG
         ProcessInfo.processInfo.environment["SAYMARK_UI_TESTING"] == "1"
