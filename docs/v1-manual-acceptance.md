@@ -1,8 +1,8 @@
 # Saymark 1.0 no-fee manual acceptance evidence
 
-**Evidence date:** 2026-08-04
+**Evidence dates:** 2026-08-04 through 2026-08-10
 
-**Release candidate main:** `c53561fa7616b4376f1fa3349173d2ddb720d5bf`
+**Base integration revision:** `c53561fa7616b4376f1fa3349173d2ddb720d5bf`
 
 **Reference Mac:** Mac Studio (Mac16,9), Apple M4 Max, 36 GB
 
