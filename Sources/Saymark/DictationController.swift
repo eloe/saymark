@@ -379,8 +379,8 @@ final class DictationController {
         switch TriggerMode.current {
         case .hold:   beginRecording()
         case .toggle:
-            if state == .recording { endRecording() }
-            else if state != .starting { beginRecording() }
+            if state == .starting || state == .recording { endRecording() }
+            else { beginRecording() }
         }
     }
 
