@@ -72,7 +72,10 @@ final class HUDModel {
         // A final result should read as a stable completion state, not a flash.
         // Long dictations linger longer, while the cap keeps the HUD temporary.
         let readingTime = min(12.0, max(3.2, 2.4 + Double(words) * 0.045))
-        return canAddToVocabulary || showsCorrectionDetails ? max(8.0, readingTime) : readingTime
+        // Keep the ordinary final lifecycle unchanged when the optional
+        // Vocabulary action is present. Only correction details need the
+        // established eight-second review window.
+        return showsCorrectionDetails ? max(8.0, readingTime) : readingTime
     }
 
     func copyRawTranscript() {

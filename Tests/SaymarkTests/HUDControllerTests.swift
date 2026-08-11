@@ -244,7 +244,7 @@ final class HUDControllerTests: XCTestCase {
         normal.begin(presentation: false, lang: "Auto", interactive: true)
         normal.finish("final words")
 
-        XCTAssertEqual(normalScheduler.entries.last?.delay, 8.0)
+        XCTAssertEqual(normalScheduler.entries.last?.delay, 3.2)
         XCTAssertEqual(normal.model.confirmed, "final words")
         XCTAssertEqual(normal.model.partial, "")
         XCTAssertEqual(normal.model.phase, .transcribing)
@@ -310,8 +310,8 @@ final class HUDControllerTests: XCTestCase {
         controller.begin(presentation: false, lang: "EN", interactive: false)
 
         controller.finish(
-            "Seymark is ready.",
-            rawText: "sey mark is ready.",
+            "say mark is ready.",
+            rawText: "say mark is ready.",
             correctionStatus: "unchanged",
             correctionRevision: 3
         )
@@ -319,11 +319,15 @@ final class HUDControllerTests: XCTestCase {
         XCTAssertTrue(controller.model.canAddToVocabulary)
         XCTAssertTrue(controller.model.allowsFinalInteraction)
         XCTAssertFalse(controller.panel?.ignoresMouseEvents ?? true)
-        XCTAssertEqual(scheduler.entries.last?.delay, 8.0)
+        XCTAssertEqual(
+            scheduler.entries.last?.delay,
+            3.2,
+            "The optional Vocabulary action must not extend an ordinary final HUD lifecycle"
+        )
 
         controller.model.onAddToVocabulary(controller.model.rawTranscript)
 
-        XCTAssertEqual(received, ["sey mark is ready."])
+        XCTAssertEqual(received, ["say mark is ready."])
         XCTAssertEqual(controller.model.rawTranscript, "")
         XCTAssertFalse(controller.model.showingFinal)
         XCTAssertNil(controller.panel)
