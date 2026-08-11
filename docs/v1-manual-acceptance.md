@@ -59,8 +59,10 @@ Real production-boundary status showed Microphone and Accessibility as Allowed.
 Automated cases separately cover the safely skippable Accessibility consequence
 and copy-only recovery. Light, dark, Increased Contrast, and Reduce Motion were
 inspected. macOS did not expose Saymark as a per-app text-sizing target, so that
-setting is not claimed. The reference Mac reported one display; multi-display
-placement is explicitly unverified rather than inferred.
+setting is not claimed. The reference Mac reported one 1920-by-1080 display.
+Manual multi-display placement is not a no-fee 1.0 gate on this hardware; the
+deterministic active-display placement coverage remains required, and no real
+multi-display result is claimed.
 
 A separate real production-boundary run exercised the microphone denial and
 retry path without replacing TCC. The first attempt displayed Saymark's real
@@ -79,13 +81,15 @@ Accessibility state; no TCC reset or review override was used. With actual
 VoiceOver running, the permission screen exposed the Microphone and
 Accessibility explanations, the “Drag Saymark into System Settings” recovery
 instructions, the draggable Saymark icon and its help, “Set Up Accessibility,”
-Back, and the “Set Up Later” outcome (which correctly could not advance while
-the required microphone permission also remained denied). Invoking Set Up
-Accessibility did not strand or duplicate onboarding: Saymark remained
-frontmost and retained the recoverable denied-state instructions while polling
-for a future grant. The separate granted-state production run above verifies
-that returning with permission is reflected as Allowed. The privacy-safe
-window-only denied-state capture is
+Back, and the “Set Up Later” outcome. A later real pass on the same build had
+Microphone Allowed and Accessibility denied; activating Set Up Later advanced to
+Shortcut, proving the optional permission can be skipped when the required gate
+is satisfied. Invoking Set Up Accessibility did not strand or duplicate
+onboarding: Saymark remained frontmost and retained the recoverable denied-state
+instructions while polling for a future grant. The denied-to-granted polling
+transition remains unclaimed because changing the real macOS Accessibility
+setting requires one local authorization. The privacy-safe window-only
+denied-state capture is
 [`evidence/v1/onboarding-accessibility-denied-58541a0.png`](evidence/v1/onboarding-accessibility-denied-58541a0.png).
 VoiceOver and Saymark were quit afterward.
 
@@ -126,8 +130,10 @@ the full raw-text fallback error, a “Vocabulary storage unavailable” state, 
 disabled Add, Import, and Export controls. Actual VoiceOver was started for the
 focused pass: keyboard focus reached Search Vocabulary, skipped the disabled
 actions, and the accessibility tree exposed the error and unavailable-state
-copy. VoiceOver and its Quickstart were quit after the pass. This is evidence
-for the unavailable-storage state.
+copy. A literal-merged-main follow-up moved VoiceOver to the visible unavailable
+state and its Caption Panel announced “Vocabulary storage unavailable.”
+VoiceOver and its Quickstart were quit after the pass. This is evidence for the
+unavailable-storage state, not for every hidden error-detail announcement.
 
 The privacy-safe window-only capture is
 [`evidence/v1/vocabulary-unavailable-storage-bc23152.png`](evidence/v1/vocabulary-unavailable-storage-bc23152.png).
@@ -147,10 +153,12 @@ fresh Debug build from literal merged main
 deterministic synthetic `failedRawFallback` state through source-free debugger
 state injection; no source file, persisted user data, model, microphone, or
 transcript was modified or claimed. Actual VoiceOver was running during the
-bounded pass. The accessibility tree independently exposed the correction
-summary, raw transcript, final transcript, an enabled “Correction details”
-button with value “Expanded,” and a separate enabled “Copy raw transcript”
-button. The privacy-safe window-only capture is
+bounded pass. VoiceOver navigation announced “Expanded Correction details
+button,” “Copy raw transcript button,” and “Vocabulary correction was
+unavailable. Your raw transcript was kept. Vocabulary revision 18.” The
+accessibility tree independently exposed the correction summary, raw
+transcript, final transcript, and the enabled controls. The privacy-safe
+window-only capture is
 [`evidence/v1/vocabulary-raw-disclosure-58541a0.png`](evidence/v1/vocabulary-raw-disclosure-58541a0.png).
 VoiceOver and Saymark were quit after the pass.
 
