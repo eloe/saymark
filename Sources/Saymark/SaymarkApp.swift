@@ -15,17 +15,25 @@ struct SaymarkApp: App {
         // launch here). The live dictation backend stays deferred until onboarding
         // finishes (AppDelegate router) even though the icon is always present.
         MenuBarExtra {
-            MenuPopover(dictation: appDelegate.dictation,
-                        onSetupTour: { appDelegate.replayOnboarding() },
-                        onRecentDictations: { RecentDictationsController.shared.present() },
-                        onVocabulary: { appDelegate.presentVocabulary() })
+            if RuntimeEnvironment.isVocabularyReview {
+                EmptyView()
+            } else {
+                MenuPopover(dictation: appDelegate.dictation,
+                            onSetupTour: { appDelegate.replayOnboarding() },
+                            onRecentDictations: { RecentDictationsController.shared.present() },
+                            onVocabulary: { appDelegate.presentVocabulary() })
+            }
         } label: {
             Image(nsImage: Self.menuIcon)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView()
+            if RuntimeEnvironment.isVocabularyReview {
+                EmptyView()
+            } else {
+                SettingsView()
+            }
         }
     }
 

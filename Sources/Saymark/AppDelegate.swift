@@ -19,7 +19,7 @@ private let posthogHost = "https://eu.i.posthog.com"
 /// keeps working) while staying out of the Dock and ⌘-Tab switcher.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    let dictation = DictationController()
+    lazy var dictation = DictationController()
     private let resourceMonitor = ProcessResourceMonitor()
 
     /// Drives the onboarding window. Lazy so it builds after `dictation` exists,
@@ -28,6 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private var onboardingWindow: NSWindow?
     private var vocabularyWindow: NSWindow?
+    private var vocabularyWindowModel: VocabularySettingsModel?
+    #if DEBUG
+    private var vocabularyReviewModel: VocabularySettingsModel?
+    private var vocabularyReviewHUD: HUDController?
+    private var vocabularyReviewDirectory: URL?
+    #endif
     private var didStartMenuApp = false
     #if DEBUG
     private var dailyDriverUITestHarness: DailyDriverUITestHarness?
@@ -38,6 +44,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Saymark.app. Never let that test host trigger real TCC prompts or boot
         // background capture/services on the developer's Mac.
         guard !RuntimeEnvironment.isHostedUnitTesting else { return }
+        #if DEBUG
+        // Evidence capture must be hermetic: no production history, diagnostics,
+        // analytics, resource monitor, defaults migration, hotkey, microphone,
+        // model, or TCC work starts in this process.
+        if RuntimeEnvironment.isVocabularyReview {
+            startVocabularyReview()
+            return
+        }
+        #endif
         DiagnosticLogSetting.configure()
         Task {
             // Durable store metadata is the sole policy authority. History
@@ -130,6 +145,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dictation.bootstrap()
     }
 
+    #if DEBUG
+    private func startVocabularyReview() {
+        NSApp.setActivationPolicy(.regular)
+        if RuntimeEnvironment.isVocabularyHUDReview {
+            let raw = RuntimeEnvironment.vocabularyReviewTranscript
+                ?? "Please schedule a Kintec review with Jonathan tomorrow."
+            let corrected = raw.replacingOccurrences(of: "Kintec", with: "Kinteq")
+            let hud = HUDController()
+            vocabularyReviewHUD = hud
+            hud.onAddToVocabulary = { [weak self] transcript in
+                self?.presentVocabulary(sourceTranscript: transcript)
+            }
+            hud.begin(presentation: false, lang: "EN", interactive: true)
+            hud.update(confirmed: corrected, partial: "", rawConfirmed: raw, rawPartial: "")
+            hud.finish(corrected, rawText: raw, correctionStatus: "corrected", correctionRevision: 1)
+        } else {
+            presentVocabulary(sourceTranscript: RuntimeEnvironment.vocabularyReviewTranscript)
+        }
+    }
+
+    private func makeVocabularyReviewModel() -> VocabularySettingsModel {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saymark-vocabulary-review-\(UUID().uuidString)")
+            .standardizedFileURL
+        vocabularyReviewDirectory = directory
+        return VocabularySettingsModel(store: try? VocabularyStore(directoryURL: directory))
+    }
+
+    private func cleanUpVocabularyReview() {
+        vocabularyReviewHUD?.panel?.orderOut(nil)
+        vocabularyWindow?.orderOut(nil)
+        vocabularyReviewHUD = nil
+        vocabularyReviewModel = nil
+        vocabularyWindowModel = nil
+        vocabularyWindow = nil
+        guard let directory = vocabularyReviewDirectory else { return }
+        vocabularyReviewDirectory = nil
+        let temporary = FileManager.default.temporaryDirectory.standardizedFileURL
+        guard directory.deletingLastPathComponent() == temporary,
+              directory.lastPathComponent.hasPrefix("saymark-vocabulary-review-") else { return }
+        try? FileManager.default.removeItem(at: directory)
+    }
+    #endif
+
     /// Show (or re-show) the onboarding window. AppKit-owned `NSWindow` rather than a
     /// SwiftUI `Window` scene: a menu-bar (`.accessory`) app can't open a scene window
     /// reliably at launch, and a scene window hides on deactivation. This one persists
@@ -156,9 +215,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Open the one validated Vocabulary surface. A HUD entry additionally opens
     /// an explicit blank rule editor alongside the memory-only raw transcript.
     func presentVocabulary(sourceTranscript: String? = nil) {
+        #if DEBUG
+        let model: VocabularySettingsModel
+        if RuntimeEnvironment.isVocabularyReview {
+            if let vocabularyReviewModel {
+                model = vocabularyReviewModel
+            } else {
+                let reviewModel = makeVocabularyReviewModel()
+                vocabularyReviewModel = reviewModel
+                model = reviewModel
+            }
+        } else {
+            model = .shared
+        }
+        #else
         let model = VocabularySettingsModel.shared
+        #endif
         let window = vocabularyWindow ?? makeVocabularyWindow(model: model)
         vocabularyWindow = window
+        vocabularyWindowModel = model
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         if let sourceTranscript, !sourceTranscript.isEmpty {
@@ -206,7 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window === vocabularyWindow {
-            VocabularySettingsModel.shared.cancelEditor(in: .manager)
+            vocabularyWindowModel?.cancelEditor(in: .manager)
             return
         }
         guard window === onboardingWindow else { return }
@@ -220,6 +295,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        #if DEBUG
+        if RuntimeEnvironment.isVocabularyReview {
+            cleanUpVocabularyReview()
+            return
+        }
+        #endif
         RecentDictationsController.shared.clearSessionAtTermination()
         resourceMonitor.stop()
         SaymarkDiagnostics.log(.info, "app.terminating")

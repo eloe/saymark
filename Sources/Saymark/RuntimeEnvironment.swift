@@ -47,6 +47,36 @@ enum RuntimeEnvironment {
         #endif
     }
 
+    /// Presents the production Vocabulary window with optional synthetic
+    /// transcript context for deterministic, privacy-safe UX walkthroughs.
+    static var isVocabularyReview: Bool {
+        #if DEBUG
+        isUITesting &&
+            (ProcessInfo.processInfo.environment["SAYMARK_UI_TESTING_VOCABULARY_REVIEW"] == "1" ||
+             ProcessInfo.processInfo.environment["SAYMARK_UI_TESTING_VOCABULARY_HUD_REVIEW"] == "1")
+        #else
+        false
+        #endif
+    }
+
+    static var isVocabularyHUDReview: Bool {
+        #if DEBUG
+        isUITesting &&
+            ProcessInfo.processInfo.environment["SAYMARK_UI_TESTING_VOCABULARY_HUD_REVIEW"] == "1"
+        #else
+        false
+        #endif
+    }
+
+    static var vocabularyReviewTranscript: String? {
+        #if DEBUG
+        guard isVocabularyReview else { return nil }
+        return ProcessInfo.processInfo.environment["SAYMARK_UI_TESTING_VOCABULARY_TRANSCRIPT"]
+        #else
+        nil
+        #endif
+    }
+
     static var dailyDriverOutcome: String? {
         #if DEBUG
         guard isDailyDriverUITesting else { return nil }
