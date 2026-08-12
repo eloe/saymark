@@ -160,6 +160,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             hud.begin(presentation: false, lang: "EN", interactive: true)
             hud.update(confirmed: corrected, partial: "", rawConfirmed: raw, rawPartial: "")
             hud.finish(corrected, rawText: raw, correctionStatus: "corrected", correctionRevision: 1)
+            Task { @MainActor [weak hud] in
+                try? await Task.sleep(for: .seconds(2.5))
+                hud?.model.onAddToVocabulary(raw)
+            }
         } else {
             presentVocabulary(sourceTranscript: RuntimeEnvironment.vocabularyReviewTranscript)
         }
