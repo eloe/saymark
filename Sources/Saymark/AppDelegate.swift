@@ -286,6 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let window = notification.object as? NSWindow else { return }
         if window === vocabularyWindow {
             vocabularyWindowModel?.cancelEditor(in: .manager)
+            vocabularyWindowModel?.cancelImport(in: .manager)
             return
         }
         guard window === onboardingWindow else { return }

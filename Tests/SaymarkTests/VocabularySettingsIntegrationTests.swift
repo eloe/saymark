@@ -140,6 +140,76 @@ final class VocabularySettingsIntegrationTests: XCTestCase {
         XCTAssertFalse(model.showImportPreview)
     }
 
+    func testManagerCloseCleanupClearsOnlyManagerOwnedImportContext() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = VocabularySettingsModel(store: try VocabularyStore(directoryURL: directory))
+
+        model.presentImportPreview(in: .manager)
+        model.acknowledgedURLs = true
+        model.cancelImport(in: .manager)
+
+        XCTAssertFalse(model.showImportPreview)
+        XCTAssertNil(model.importHost)
+        XCTAssertNil(model.importURL)
+        XCTAssertNil(model.importPreview)
+        XCTAssertFalse(model.acknowledgedURLs)
+    }
+
+    func testSuccessfulImportClearsEveryImportContextField() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let importedDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: importedDirectory)
+        }
+        let store = try VocabularyStore(directoryURL: directory)
+        let importedStore = try VocabularyStore(directoryURL: importedDirectory)
+        try importedStore.upsert(VocabularyEntry(written: "Kinteq", heard: ["Kintec"]))
+        let importURL = importedDirectory.appendingPathComponent("import.json")
+        try importedStore.export(to: importURL)
+        let model = VocabularySettingsModel(store: store)
+
+        model.importURL = importURL
+        model.refreshImportPreview()
+        model.presentImportPreview(in: .manager)
+        model.acknowledgedURLs = true
+        model.applyImport()
+
+        XCTAssertEqual(model.entries.map(\.written), ["Kinteq"])
+        XCTAssertFalse(model.showImportPreview)
+        XCTAssertNil(model.importHost)
+        XCTAssertNil(model.importURL)
+        XCTAssertNil(model.importPreview)
+        XCTAssertFalse(model.acknowledgedURLs)
+    }
+
+    func testRefreshingChangedURLImportRequiresFreshAcknowledgement() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try VocabularyStore(directoryURL: directory)
+        let importURL = directory.appendingPathComponent("changing-url.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var entry = VocabularyEntry(written: "mailto:first@example.com", heard: ["security mail"])
+        try encoder.encode(VocabularyDocument(entries: [entry])).write(to: importURL)
+        let model = VocabularySettingsModel(store: store)
+
+        model.importURL = importURL
+        model.refreshImportPreview()
+        XCTAssertTrue(model.importPreview?.containsURL == true)
+        model.acknowledgedURLs = true
+
+        entry.written = "mailto:changed@example.com"
+        try encoder.encode(VocabularyDocument(entries: [entry])).write(to: importURL)
+        model.refreshImportPreview()
+
+        XCTAssertFalse(model.acknowledgedURLs)
+        model.applyImport()
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(model.entries.isEmpty)
+    }
+
     func testHUDRuleDraftTranscriptExpiresFromMemory() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

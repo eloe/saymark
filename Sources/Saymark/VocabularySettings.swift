@@ -185,8 +185,11 @@ final class VocabularySettingsModel {
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            importURL = url; importStrategy = .mergeByID; acknowledgedURLs = false
-            importPreview = try store.importDocument(from: url, strategy: .mergeByID)
+            let preview = try store.importDocument(from: url, strategy: .mergeByID)
+            importURL = url
+            importStrategy = .mergeByID
+            acknowledgedURLs = false
+            importPreview = preview
             presentImportPreview(in: host)
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
@@ -201,6 +204,9 @@ final class VocabularySettingsModel {
     }
     func cancelImport(in host: VocabularyEditorHost) {
         guard importHost == host else { return }
+        clearImportContext()
+    }
+    private func clearImportContext() {
         showImportPreview = false
         importHost = nil
         importURL = nil
@@ -210,6 +216,7 @@ final class VocabularySettingsModel {
 
     func refreshImportPreview() {
         guard let importURL, let store else { return }
+        acknowledgedURLs = false
         do { importPreview = try store.importDocument(from: importURL, strategy: importStrategy); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
@@ -218,7 +225,8 @@ final class VocabularySettingsModel {
         guard let importURL, let store else { return }
         do {
             try store.applyImport(from: importURL, strategy: importStrategy, acknowledgedURLs: acknowledgedURLs, previewToken: importPreview?.sourceToken)
-            reload(); showImportPreview = false; importHost = nil; self.importURL = nil; importPreview = nil
+            reload()
+            clearImportContext()
         } catch { errorMessage = error.localizedDescription }
     }
 
