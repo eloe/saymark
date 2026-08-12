@@ -86,6 +86,60 @@ final class VocabularySettingsIntegrationTests: XCTestCase {
         model.cancelEditor()
     }
 
+    func testCrossWindowMutationsCannotChangeManagerDraftOrStoredEntry() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try VocabularyStore(directoryURL: directory)
+        let entry = VocabularyEntry(written: "Saymark", heard: ["say mark"])
+        try store.upsert(entry)
+        let model = VocabularySettingsModel(store: store)
+
+        model.beginAdd(sourceTranscript: "private manager draft", host: .manager)
+        model.setEnabled(entry, false)
+        model.delete(entry)
+
+        XCTAssertTrue(model.isEditorPresented(in: .manager))
+        XCTAssertEqual(model.editorSourceTranscript, "private manager draft")
+        XCTAssertEqual(model.entries.first(where: { $0.id == entry.id })?.enabled, true)
+        model.cancelEditor()
+    }
+
+    func testImportReviewLocksCrossWindowMutationsAndEditorAdmission() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try VocabularyStore(directoryURL: directory)
+        let entry = VocabularyEntry(written: "Saymark", heard: ["say mark"])
+        try store.upsert(entry)
+        let model = VocabularySettingsModel(store: store)
+
+        model.presentImportPreview(in: .manager)
+        model.beginAdd(sourceTranscript: "private transcript", host: .settings)
+        model.beginEdit(entry, host: .settings)
+        model.setEnabled(entry, false)
+        model.delete(entry)
+
+        XCTAssertTrue(model.isImportPresented(in: .manager))
+        XCTAssertFalse(model.showEditor)
+        XCTAssertNil(model.editorSourceTranscript)
+        XCTAssertEqual(model.entries.first(where: { $0.id == entry.id })?.enabled, true)
+        model.cancelImport(in: .manager)
+    }
+
+    func testImportPreviewOwnershipIsHostScoped() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = VocabularySettingsModel(store: try VocabularyStore(directoryURL: directory))
+
+        model.presentImportPreview(in: .manager)
+
+        XCTAssertTrue(model.isImportPresented(in: .manager))
+        XCTAssertFalse(model.isImportPresented(in: .settings))
+        model.cancelImport(in: .settings)
+        XCTAssertTrue(model.isImportPresented(in: .manager))
+        model.cancelImport(in: .manager)
+        XCTAssertFalse(model.showImportPreview)
+    }
+
     func testHUDRuleDraftTranscriptExpiresFromMemory() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
