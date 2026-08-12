@@ -1,6 +1,6 @@
 # Saymark 1.0 no-fee manual acceptance evidence
 
-**Evidence dates:** 2026-08-04 through 2026-08-10
+**Evidence dates:** 2026-08-04 through 2026-08-11
 
 **Base integration revision:** `c53561fa7616b4376f1fa3349173d2ddb720d5bf`
 
@@ -165,6 +165,25 @@ VoiceOver and Saymark were quit after the pass.
 The synthetic walkthrough is
 [`videos/vocabulary-language-correction-evidence.mp4`](videos/vocabulary-language-correction-evidence.mp4),
 recorded at source revision `149955b6d992122edbf958b2c0054140b45efa27`.
+
+### PR #68 explicit correction workflow
+
+[`videos/pr68-safe-vocabulary-ux-bfb36af.mp4`](videos/pr68-safe-vocabulary-ux-bfb36af.mp4)
+is a privacy-safe, app-window-only walkthrough recorded from exact source
+revision `bfb36af9139298512f00273c864e40542fb72f1f`. It uses a synthetic transcript
+and an isolated temporary Vocabulary store that is removed when the review app
+terminates. The DEBUG-only capture route starts before production diagnostics,
+history, analytics, hotkeys, models, microphone, or TCC work.
+
+The walkthrough covers the final HUD action, the explicit transcript-backed rule
+editor, deterministic preview and Save, the direct Vocabulary manager, and the
+manual Add/Cancel path. Its review cards call out the product contract: the action
+does not rewrite already-inserted text, does not infer a rule, and does not train
+the speech model. Automated unit coverage additionally verifies transcript cleanup
+on cancel/expiry, host-scoped editor and import ownership, recording start
+admission, and the hosted-test TCC guard. `make test-unit`, the repository
+security audit, and independent code/security reviews passed for this revision;
+`gitleaks` was unavailable locally.
 
 ## Recent Dictations and daily-driver evidence (#29)
 
