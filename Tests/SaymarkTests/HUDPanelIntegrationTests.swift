@@ -139,8 +139,7 @@ final class HUDPanelIntegrationTests: XCTestCase {
         let animator = ManualHUDAnimator()
         let controller = HUDController(scheduler: DispatchHUDHideScheduler(), animator: animator)
         defer { tearDownHUD(controller) }
-        controller.begin(presentation: false, lang: "Auto")
-        controller.finish("done")
+        controller.error(title: "Test", detail: "Scheduled hide", hideAfter: 0.05)
 
         let didStartHiding = await waitForHUDCondition(timeout: .seconds(5)) {
             animator.hiddenPanels.count == 1

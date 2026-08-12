@@ -185,7 +185,8 @@ target certification is [#27](https://github.com/eloe/saymark/issues/27).
 spellings without sending that vocabulary off-device.
 
 Shipped baseline: deterministic correction, local durable storage, the approved
-native Vocabulary surface, schema-v2 import/export, and legacy-v1 migration are present
+native Vocabulary surface with direct menu and explicit HUD-to-rule entry points,
+schema-v2 import/export, and legacy-v1 migration are present
 on `main`. Held-out promotion evidence remains
 [#30](https://github.com/eloe/saymark/issues/30), accessibility/interchange
 acceptance remains [#31](https://github.com/eloe/saymark/issues/31), and

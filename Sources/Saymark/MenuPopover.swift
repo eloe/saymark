@@ -11,6 +11,7 @@ struct MenuPopover: View {
     /// Re-open the onboarding window (resets to Welcome + presents it).
     let onSetupTour: () -> Void
     let onRecentDictations: () -> Void
+    let onVocabulary: () -> Void
     @Environment(\.openSettings) private var openSettings
     @Environment(\.colorScheme) private var scheme
 
@@ -125,6 +126,7 @@ struct MenuPopover: View {
 
     private var footer: some View {
         VStack(spacing: 0) {
+            footerRow("Vocabulary…", "") { onVocabulary() }
             footerRow("Settings…", "⌘ ,") {
                 PostHogSDK.shared.capture("settings_opened")
                 NSApp.activate(ignoringOtherApps: true)

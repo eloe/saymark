@@ -56,8 +56,8 @@ final class ActiveDisplayHaloController: ListeningHaloControlling {
     private let model = ListeningHaloModel()
     private var panel: NSPanel?
     private weak var display: NSScreen?
-    private var settleWork: DispatchWorkItem?
-    private var completionWork: DispatchWorkItem?
+    private var settleWork: Task<Void, Never>?
+    private var completionWork: Task<Void, Never>?
     private var generation = 0
 
     func begin(on screen: NSScreen?) {
@@ -75,15 +75,14 @@ final class ActiveDisplayHaloController: ListeningHaloControlling {
 
         guard model.blooming else { return }
         let expectedGeneration = generation
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, self.generation == expectedGeneration else { return }
-                self.model.blooming = false
-                self.settleWork = nil
-            }
+        let work = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard !Task.isCancelled,
+                  let self, self.generation == expectedGeneration else { return }
+            self.model.blooming = false
+            self.settleWork = nil
         }
         settleWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
     }
 
     func stopListening() {
@@ -111,16 +110,15 @@ final class ActiveDisplayHaloController: ListeningHaloControlling {
             panel.animator().alphaValue = 0
         }
 
-        let work = DispatchWorkItem { [weak self, weak panel] in
-            MainActor.assumeIsolated {
-                guard let self, let panel, self.generation == expectedGeneration else { return }
-                panel.orderOut(nil)
-                panel.alphaValue = 1
-                self.completionWork = nil
-            }
+        let work = Task { @MainActor [weak self, weak panel] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled,
+                  let self, let panel, self.generation == expectedGeneration else { return }
+            panel.orderOut(nil)
+            panel.alphaValue = 1
+            self.completionWork = nil
         }
         completionWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 
     func dismiss() {

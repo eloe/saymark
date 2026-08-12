@@ -5,6 +5,46 @@ import KeyboardShortcuts
 
 @MainActor
 final class HotkeyOwnershipTests: XCTestCase {
+    func testHostedUnitTestDetectionPreventsTemporaryAppPermissionPrompts() {
+        XCTAssertTrue(RuntimeEnvironment.isHostedUnitTesting(environment: [
+            "XCTestConfigurationFilePath": "/tmp/SaymarkTests.xctestconfiguration",
+        ]))
+        XCTAssertTrue(RuntimeEnvironment.isHostedUnitTesting(environment: [
+            "XCInjectBundleInto": "/tmp/Saymark.app/Contents/MacOS/Saymark",
+        ]))
+        XCTAssertFalse(RuntimeEnvironment.isHostedUnitTesting(environment: [:]))
+    }
+
+    func testRecordingStartAdmissionRejectsDuplicateAndDefersEarlyStop() {
+        var admission = RecordingStartAdmission()
+
+        XCTAssertTrue(admission.begin())
+        XCTAssertEqual(admission.phase, .starting)
+        XCTAssertFalse(admission.begin(), "a duplicate hotkey must not admit a second startup")
+        XCTAssertFalse(admission.requestStop(), "startup cannot be stopped until capture is active")
+        XCTAssertTrue(admission.stopRequestedWhileStarting)
+        XCTAssertTrue(admission.started(), "the deferred release must stop immediately after startup")
+        XCTAssertEqual(admission.phase, .recording)
+        XCTAssertTrue(admission.requestStop())
+
+        admission.reset()
+        XCTAssertEqual(admission.phase, .idle)
+        XCTAssertTrue(admission.begin(), "rollback must allow the next gesture")
+    }
+
+    func testRecordingStartAdmissionFailureRollbackClearsDeferredStop() {
+        var admission = RecordingStartAdmission()
+        XCTAssertTrue(admission.begin())
+        XCTAssertFalse(admission.requestStop())
+
+        admission.reset()
+
+        XCTAssertEqual(admission.phase, .idle)
+        XCTAssertFalse(admission.stopRequestedWhileStarting)
+        XCTAssertTrue(admission.begin())
+        XCTAssertFalse(admission.started())
+    }
+
     func testLegacyVoiceOverConflictMigratesOnlyOnceAndOnlyWhenUnchanged() {
         XCTAssertTrue(DictationShortcutDefaults.shouldMigrate(
             current: DictationShortcutDefaults.legacyVoiceOverConflict,

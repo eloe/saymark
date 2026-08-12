@@ -302,6 +302,37 @@ final class HUDControllerTests: XCTestCase {
         XCTAssertEqual(scheduler.entries.last?.delay, 8.0)
     }
 
+    func testFinalCanOpenExplicitVocabularyRuleWithMemoryOnlyRawTranscript() {
+        let (controller, scheduler, _) = makeHUDController()
+        defer { tearDownHUD(controller) }
+        var received: [String] = []
+        controller.onAddToVocabulary = { received.append($0) }
+        controller.begin(presentation: false, lang: "EN", interactive: false)
+
+        controller.finish(
+            "say mark is ready.",
+            rawText: "say mark is ready.",
+            correctionStatus: "unchanged",
+            correctionRevision: 3
+        )
+
+        XCTAssertTrue(controller.model.canAddToVocabulary)
+        XCTAssertTrue(controller.model.allowsFinalInteraction)
+        XCTAssertFalse(controller.panel?.ignoresMouseEvents ?? true)
+        XCTAssertEqual(
+            scheduler.entries.last?.delay,
+            3.2,
+            "The optional Vocabulary action must not extend an ordinary final HUD lifecycle"
+        )
+
+        controller.model.onAddToVocabulary(controller.model.rawTranscript)
+
+        XCTAssertEqual(received, ["say mark is ready."])
+        XCTAssertEqual(controller.model.rawTranscript, "")
+        XCTAssertFalse(controller.model.showingFinal)
+        XCTAssertNil(controller.panel)
+    }
+
     func testTypicalFailedRawFallbackHoldFinalMakesDisclosureAndCopyOperable() {
         let (controller, scheduler, _) = makeHUDController()
         defer { tearDownHUD(controller) }

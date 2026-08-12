@@ -48,6 +48,50 @@ struct DeferredModelPreparation {
     }
 }
 
+/// Admits exactly one synchronous capture startup and remembers an early Stop
+/// request without pretending capture is already active. This is deliberately
+/// independent of model/audio work so duplicate-start and rollback behavior are
+/// deterministic in tests.
+struct RecordingStartAdmission {
+    enum Phase: Equatable { case idle, starting, recording }
+
+    private(set) var phase: Phase = .idle
+    private(set) var stopRequestedWhileStarting = false
+
+    mutating func begin() -> Bool {
+        guard phase == .idle else { return false }
+        phase = .starting
+        stopRequestedWhileStarting = false
+        return true
+    }
+
+    mutating func started() -> Bool {
+        guard phase == .starting else { return false }
+        phase = .recording
+        let shouldStop = stopRequestedWhileStarting
+        stopRequestedWhileStarting = false
+        return shouldStop
+    }
+
+    /// Returns true only when capture is active and can be stopped immediately.
+    mutating func requestStop() -> Bool {
+        switch phase {
+        case .starting:
+            stopRequestedWhileStarting = true
+            return false
+        case .recording:
+            return true
+        case .idle:
+            return false
+        }
+    }
+
+    mutating func reset() {
+        phase = .idle
+        stopRequestedWhileStarting = false
+    }
+}
+
 /// The application HUD has exactly one live transcript source: ordered,
 /// correction-complete updates. Raw ASR updates remain available to onboarding
 /// and benchmarks through `DictationSession`, but cannot race the app HUD.
@@ -82,6 +126,7 @@ final class DictationController {
     enum State: Equatable {
         case loadingModels
         case idle
+        case starting
         case recording
         case transcribing
         case transcribed(String)
@@ -92,6 +137,7 @@ final class DictationController {
 
     private let session: DictationSession
     private let hud = HUDController()
+    var onAddToVocabulary: @MainActor (String) -> Void = { _ in }
     @ObservationIgnored private var hudTranscriptObserver: CorrectedHUDObserver?
     @ObservationIgnored private var captureStopSubscription: DictationUpdateSubscription?
 
@@ -103,6 +149,7 @@ final class DictationController {
     @ObservationIgnored private var isPreparing = false
     @ObservationIgnored private var deferredPreparation = DeferredModelPreparation()
     @ObservationIgnored private var historyEnabledAtStart = false
+    @ObservationIgnored private var startAdmission = RecordingStartAdmission()
     #if DEBUG
     @ObservationIgnored private var dailyDriverUITestConfiguration: DailyDriverUITestConfiguration?
     #endif
@@ -112,6 +159,9 @@ final class DictationController {
         // thread-safe, nonisolated store snapshot from capture/metering queues.
         let vocabulary = VocabularySettingsModel.shared
         session = DictationSession(correctionSnapshotProvider: { vocabulary.snapshot })
+        hud.onAddToVocabulary = { [weak self] transcript in
+            self?.onAddToVocabulary(transcript)
+        }
         captureStopSubscription = session.observeCaptureStopRequests { [weak self] request in
             Task { @MainActor in
                 guard let self,
@@ -137,6 +187,7 @@ final class DictationController {
             return TriggerMode.current == .hold
                 ? "Idle — hold \(shortcutLabel)"
                 : "Idle — press \(shortcutLabel) to start"
+        case .starting: return "Starting microphone…"
         case .recording: return "Listening…"
         case .transcribing: return "Transcribing…"
         // The HUD owns the short-lived final display. Never mirror dictated text
@@ -151,6 +202,7 @@ final class DictationController {
         switch state {
         case .loadingModels: return "Loading…"
         case .idle, .transcribed: return "Ready"
+        case .starting: return "Starting…"
         case .recording: return "Listening"
         case .transcribing: return "Transcribing"
         case let .error(m): return m
@@ -159,7 +211,7 @@ final class DictationController {
 
     /// True while a dictation is in flight (drives the popover pulse dot).
     var isActive: Bool {
-        state == .recording || state == .transcribing
+        state == .starting || state == .recording || state == .transcribing
     }
 
     func bootstrap() {
@@ -217,7 +269,7 @@ final class DictationController {
             return
         }
         hotkeyOwner = .transitioningToOnboarding
-        if state == .recording { endRecording() }
+        if state == .starting || state == .recording { endRecording() }
         finishHotkeyHandoffIfPossible()
     }
 
@@ -258,7 +310,7 @@ final class DictationController {
     }
 
     private var utteranceIsActive: Bool {
-        state == .recording || state == .transcribing
+        state == .starting || state == .recording || state == .transcribing
     }
 
     private func prepareImmediately(mode: DictationMode) {
@@ -326,7 +378,9 @@ final class DictationController {
         }
         switch TriggerMode.current {
         case .hold:   beginRecording()
-        case .toggle: if state == .recording { endRecording() } else { beginRecording() }
+        case .toggle:
+            if state == .starting || state == .recording { endRecording() }
+            else { beginRecording() }
         }
     }
 
@@ -348,11 +402,13 @@ final class DictationController {
 
     private func beginRecording() {
         let gestureStarted = ProcessInfo.processInfo.systemUptime
-        guard state != .recording, state != .transcribing else {
+        guard state != .starting, state != .recording, state != .transcribing,
+              startAdmission.begin() else {
             SaymarkDiagnostics.log(.trace, "hotkey.ignored", fields: ["reason": "dictation_in_flight"])
             return
         }
         guard !isPreparing else {
+            startAdmission.reset()
             SaymarkDiagnostics.log(.debug, "dictation.start_deferred", fields: ["reason": "models_preparing"])
             return
         }
@@ -360,6 +416,7 @@ final class DictationController {
         // Models for this mode not loaded yet (e.g. just switched) — kick the load
         // and skip this press; the next one records once ready.
         guard session.isReady(modelMode) else {
+            startAdmission.reset()
             SaymarkDiagnostics.log(.debug, "dictation.start_deferred", fields: ["reason": "models_not_ready", "mode": modelMode.rawValue])
             requestPreparation(mode: modelMode)
             return
@@ -373,6 +430,7 @@ final class DictationController {
             && history.activeRetention != .off
             && insert != .hudOnly
         let toggle = TriggerMode.current == .toggle
+        state = .starting
         // Give visual feedback before AVAudioEngine setup. Capture startup takes
         // around 100 ms on this Mac; the HUD should never wait behind it.
         hud.begin(presentation: insert == .hudOnly, lang: "EN",
@@ -409,12 +467,15 @@ final class DictationController {
                 "insert_mode": insert.rawValue,
             ])
             state = .recording
+            let shouldStopImmediately = startAdmission.started()
             PostHogSDK.shared.capture("dictation_started", properties: [
                 "model_mode": modelMode.rawValue,
                 "trigger_mode": TriggerMode.current.rawValue,
                 "insert_mode": insert.rawValue,
             ])
+            if shouldStopImmediately { endRecording() }
         } catch {
+            startAdmission.reset()
             insertionLease = nil
             SaymarkDiagnostics.log(.error, "dictation.ui_start_failed", sessionID: session.activeSessionID, fields: [
                 "model_mode": modelMode.rawValue,
@@ -439,7 +500,12 @@ final class DictationController {
     }
 
     private func endRecording() {
-        guard state == .recording else { return }
+        guard startAdmission.requestStop() else { return }
+        guard state == .recording else {
+            startAdmission.reset()
+            return
+        }
+        startAdmission.reset()
         state = .transcribing
         hud.processing()
         let modelModeAtStop = ModelSetting.current.rawValue

@@ -3,6 +3,11 @@ import Observation
 import SaymarkKit
 import SwiftUI
 
+enum VocabularyEditorHost: Hashable {
+    case settings
+    case manager
+}
+
 /// Main-actor façade for the explicitly local vocabulary document. It exposes
 /// no transcript or rule value to analytics/diagnostics.
 @MainActor
@@ -19,14 +24,20 @@ final class VocabularySettingsModel {
     private(set) var preservesOpaqueDocumentForExport = false
     var search = ""
     var showEditor = false
+    private(set) var editorHost: VocabularyEditorHost?
     var editing: VocabularyEntry?
+    private(set) var editorSourceTranscript: String?
     var importPreview: VocabularyImportPreview?
     var importURL: URL?
     var importStrategy: VocabularyImportStrategy = .mergeByID
     var acknowledgedURLs = false
     var showImportPreview = false
+    private(set) var importHost: VocabularyEditorHost?
+    @ObservationIgnored private var editorContextExpiry: Task<Void, Never>?
+    @ObservationIgnored private let editorContextLifetimeNanoseconds: UInt64
 
     private init() {
+        editorContextLifetimeNanoseconds = 300_000_000_000
         let directory = VocabularyStore.applicationSupportURL(bundleIdentifier: Bundle.main.bundleIdentifier ?? "com.eloe.saymark")
         do {
             let opened = try VocabularyStore(directoryURL: directory)
@@ -49,8 +60,9 @@ final class VocabularySettingsModel {
         reload()
     }
 
-    init(store: VocabularyStore?) {
+    init(store: VocabularyStore?, editorContextLifetimeNanoseconds: UInt64 = 300_000_000_000) {
         self.store = store
+        self.editorContextLifetimeNanoseconds = editorContextLifetimeNanoseconds
         guard let store else {
             errorMessage = "Vocabulary could not be opened. Dictation will use raw text until local storage is available."
             isReadOnly = true
@@ -73,6 +85,8 @@ final class VocabularySettingsModel {
         }
     }
     var canExport: Bool { isStorageAvailable && (!isReadOnly || preservesOpaqueDocumentForExport) }
+    var canEdit: Bool { isStorageAvailable && !isReadOnly }
+    var hasActiveMutationPresentation: Bool { showEditor || showImportPreview }
     var exportAccessibilityHint: String {
         if !isStorageAvailable {
             return "Export is unavailable because local vocabulary storage could not be opened"
@@ -87,37 +101,122 @@ final class VocabularySettingsModel {
     }
 
     func reload() { entries = store?.currentDocument().entries.sorted { $0.written.localizedStandardCompare($1.written) == .orderedAscending } ?? [] }
-    func beginAdd() { editing = nil; showEditor = true }
-    func beginEdit(_ entry: VocabularyEntry) { editing = entry; showEditor = true }
+    func beginAdd(sourceTranscript: String? = nil, host: VocabularyEditorHost = .settings) {
+        guard canEdit, !hasActiveMutationPresentation else { return }
+        editorContextExpiry?.cancel()
+        editing = nil
+        editorSourceTranscript = sourceTranscript?.trimmingCharacters(in: .whitespacesAndNewlines)
+        editorHost = host
+        showEditor = true
+        if editorSourceTranscript != nil {
+            editorContextExpiry = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: self?.editorContextLifetimeNanoseconds ?? 0)
+                guard !Task.isCancelled else { return }
+                self?.expireEditorContext()
+            }
+        }
+    }
+    func beginEdit(_ entry: VocabularyEntry, host: VocabularyEditorHost = .settings) {
+        guard canEdit, !hasActiveMutationPresentation else { return }
+        editorContextExpiry?.cancel()
+        editorContextExpiry = nil
+        editing = entry
+        editorSourceTranscript = nil
+        editorHost = host
+        showEditor = true
+    }
+    func isEditorPresented(in host: VocabularyEditorHost) -> Bool {
+        showEditor && editorHost == host
+    }
+    func cancelEditor() {
+        showEditor = false
+        clearEditorDraftContext()
+    }
+    func cancelEditor(in host: VocabularyEditorHost) {
+        guard editorHost == host else { return }
+        cancelEditor()
+    }
+    func clearEditorDraftContext() {
+        editorContextExpiry?.cancel()
+        editorContextExpiry = nil
+        editing = nil
+        editorSourceTranscript = nil
+        editorHost = nil
+    }
+    private func expireEditorContext() {
+        editorSourceTranscript = nil
+        editorContextExpiry = nil
+    }
     func save(_ entry: VocabularyEntry) {
+        persist(entry, dismissEditor: true)
+    }
+    private func persist(_ entry: VocabularyEntry, dismissEditor: Bool) {
         guard let store else { errorMessage = "Vocabulary storage is unavailable."; return }
-        do { try store.upsert(entry); reload(); showEditor = false; errorMessage = nil }
+        do {
+            try store.upsert(entry)
+            reload()
+            if dismissEditor {
+                showEditor = false
+                clearEditorDraftContext()
+            }
+            errorMessage = nil
+        }
         catch { errorMessage = error.localizedDescription }
     }
     func setEnabled(_ entry: VocabularyEntry, _ enabled: Bool) {
-        var updated = entry; updated.enabled = enabled; updated.updatedAt = Date(); save(updated)
+        guard !hasActiveMutationPresentation else { return }
+        var updated = entry
+        updated.enabled = enabled
+        updated.updatedAt = Date()
+        persist(updated, dismissEditor: false)
     }
     func delete(_ entry: VocabularyEntry) {
+        guard !hasActiveMutationPresentation else { return }
         guard let store else { errorMessage = "Vocabulary storage is unavailable."; return }
         do { try store.delete(id: entry.id); reload(); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
 
-    func chooseImport() {
+    func chooseImport(host: VocabularyEditorHost = .settings) {
+        guard !showEditor, !showImportPreview else { return }
         guard let store else { errorMessage = "Vocabulary storage is unavailable."; return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            importURL = url; importStrategy = .mergeByID; acknowledgedURLs = false
-            importPreview = try store.importDocument(from: url, strategy: .mergeByID)
-            showImportPreview = true; errorMessage = nil
+            let preview = try store.importDocument(from: url, strategy: .mergeByID)
+            importURL = url
+            importStrategy = .mergeByID
+            acknowledgedURLs = false
+            importPreview = preview
+            presentImportPreview(in: host)
+            errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
+    }
+    func presentImportPreview(in host: VocabularyEditorHost) {
+        guard !showEditor, !showImportPreview else { return }
+        importHost = host
+        showImportPreview = true
+    }
+    func isImportPresented(in host: VocabularyEditorHost) -> Bool {
+        showImportPreview && importHost == host
+    }
+    func cancelImport(in host: VocabularyEditorHost) {
+        guard importHost == host else { return }
+        clearImportContext()
+    }
+    private func clearImportContext() {
+        showImportPreview = false
+        importHost = nil
+        importURL = nil
+        importPreview = nil
+        acknowledgedURLs = false
     }
 
     func refreshImportPreview() {
         guard let importURL, let store else { return }
+        acknowledgedURLs = false
         do { importPreview = try store.importDocument(from: importURL, strategy: importStrategy); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
@@ -126,7 +225,8 @@ final class VocabularySettingsModel {
         guard let importURL, let store else { return }
         do {
             try store.applyImport(from: importURL, strategy: importStrategy, acknowledgedURLs: acknowledgedURLs, previewToken: importPreview?.sourceToken)
-            reload(); showImportPreview = false; self.importURL = nil; importPreview = nil
+            reload()
+            clearImportContext()
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -148,15 +248,36 @@ final class VocabularySettingsModel {
 
 struct VocabularySettingsSection: View {
     @State private var model: VocabularySettingsModel
+    private let editorHost: VocabularyEditorHost
 
     @MainActor
-    init() {
+    init(editorHost: VocabularyEditorHost = .settings) {
         _model = State(initialValue: .shared)
+        self.editorHost = editorHost
     }
 
     @MainActor
-    init(model: VocabularySettingsModel) {
+    init(model: VocabularySettingsModel, editorHost: VocabularyEditorHost = .settings) {
         _model = State(initialValue: model)
+        self.editorHost = editorHost
+    }
+
+    private var editorIsPresented: Binding<Bool> {
+        Binding(
+            get: { model.isEditorPresented(in: editorHost) },
+            set: { presented in
+                if !presented { model.cancelEditor(in: editorHost) }
+            }
+        )
+    }
+
+    private var importIsPresented: Binding<Bool> {
+        Binding(
+            get: { model.isImportPresented(in: editorHost) },
+            set: { presented in
+                if !presented { model.cancelImport(in: editorHost) }
+            }
+        )
     }
 
     var body: some View {
@@ -216,31 +337,39 @@ struct VocabularySettingsSection: View {
                             .accessibilityLabel("Enable \(entry.written)")
                             .accessibilityValue(entry.enabled ? "On" : "Off")
                             .accessibilityHint("Controls whether this rule changes dictated text")
-                            .disabled(model.isReadOnly)
-                        Button("Edit") { model.beginEdit(entry) }
+                            .disabled(model.isReadOnly || model.hasActiveMutationPresentation)
+                        Button("Edit") { model.beginEdit(entry, host: editorHost) }
                             .accessibilityLabel("Edit \(entry.written)")
-                            .disabled(model.isReadOnly)
+                            .disabled(model.isReadOnly || model.hasActiveMutationPresentation)
                         Button("Delete", role: .destructive) { model.delete(entry) }
                             .accessibilityLabel("Delete \(entry.written)")
                             .accessibilityHint("Permanently removes this local rule")
-                            .disabled(model.isReadOnly)
+                            .disabled(model.isReadOnly || model.hasActiveMutationPresentation)
                     }
                 }
             }
-            Button("Add vocabulary") { model.beginAdd() }
+            Button("Add vocabulary") { model.beginAdd(host: editorHost) }
                 .accessibilityHint("Add a written replacement and explicit heard-as phrases")
-                .disabled(model.isReadOnly)
+                .disabled(!model.canEdit || model.showEditor || model.showImportPreview)
             HStack {
-                Button("Import…") { model.chooseImport() }
-                    .disabled(model.isReadOnly)
+                Button("Import…") { model.chooseImport(host: editorHost) }
+                    .disabled(model.isReadOnly || model.showEditor || model.showImportPreview)
                 Button("Export…") { model.export() }
                     .accessibilityHint(model.exportAccessibilityHint)
                     .disabled(!model.canExport)
             }
         } header: { Text("Vocabulary") }
         footer: { Text("Rules change written text only. They do not train the speech model and stay on this Mac.") }
-        .sheet(isPresented: $model.showEditor) { VocabularyRuleEditor(model: model, existing: model.editing) }
-        .sheet(isPresented: $model.showImportPreview) { VocabularyImportPreviewView(model: model) }
+        .sheet(isPresented: editorIsPresented) {
+            VocabularyRuleEditor(
+                model: model,
+                existing: model.editing,
+                sourceTranscript: model.editorSourceTranscript
+            )
+        }
+        .sheet(isPresented: importIsPresented) {
+            VocabularyImportPreviewView(model: model, host: editorHost)
+        }
         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
         .accessibilityIdentifier("settings.vocabulary")
     }
@@ -301,6 +430,7 @@ enum VocabularyImportDiffPresentation {
 
 private struct VocabularyImportPreviewView: View {
     let model: VocabularySettingsModel
+    let host: VocabularyEditorHost
     @State private var confirmReplace = false
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -356,7 +486,7 @@ private struct VocabularyImportPreviewView: View {
                     .accessibilityHint("Destructive confirmation")
             }
             HStack {
-                Button("Cancel") { model.showImportPreview = false }
+                Button("Cancel") { model.cancelImport(in: host) }
                 Spacer()
                 Button("Import") { model.applyImport() }
                     .disabled(
@@ -373,11 +503,14 @@ private struct VocabularyImportPreviewView: View {
 private struct VocabularyRuleEditor: View {
     let model: VocabularySettingsModel
     let existing: VocabularyEntry?
+    let sourceTranscript: String?
     @State private var written = ""
     @State private var heard = ""
 
-    init(model: VocabularySettingsModel, existing: VocabularyEntry?) {
-        self.model = model; self.existing = existing
+    init(model: VocabularySettingsModel, existing: VocabularyEntry?, sourceTranscript: String? = nil) {
+        self.model = model
+        self.existing = existing
+        self.sourceTranscript = sourceTranscript
         _written = State(initialValue: existing?.written ?? "")
         _heard = State(initialValue: existing?.heard.joined(separator: ", ") ?? "")
     }
@@ -387,20 +520,117 @@ private struct VocabularyRuleEditor: View {
                         heard: heard.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
                         enabled: existing?.enabled ?? true, createdAt: existing?.createdAt ?? Date(), updatedAt: Date())
     }
-    private var preview: String { (try? VocabularySnapshot(document: VocabularyDocument(entries: [candidate])))?.correct("Try \(heard)").renderedText ?? "Add a valid rule to preview it." }
+    private var preview: String {
+        guard let example = candidate.heard.first else { return "Add a valid rule to preview it." }
+        return (try? VocabularySnapshot(document: VocabularyDocument(entries: [candidate])))?
+            .correct("Try \(example)").renderedText ?? "Add a valid rule to preview it."
+    }
 
     var body: some View {
         Form {
-            TextField("Write", text: $written).accessibilityLabel("Write")
-            TextField("When I say", text: $heard).accessibilityLabel("When I say")
+            if let sourceTranscript, !sourceTranscript.isEmpty {
+                LabeledContent("Recent raw transcript") {
+                    PrivateVocabularyTranscriptView(text: sourceTranscript)
+                        .frame(minHeight: 72, maxHeight: 120)
+                }
+                Text("Choose the exact misheard phrase yourself. Saymark does not infer or save a rule from this transcript.")
+                    .foregroundStyle(.secondary)
+            }
+            LabeledContent("Write") {
+                PrivateVocabularyTextField(
+                    text: $written,
+                    placeholder: "Preferred spelling",
+                    accessibilityLabel: "Write"
+                )
+                .frame(height: 22)
+            }
+            LabeledContent("When I say") {
+                PrivateVocabularyTextField(
+                    text: $heard,
+                    placeholder: "Misheard phrase",
+                    accessibilityLabel: "When I say"
+                )
+                .frame(height: 22)
+            }
             Text("Separate alternatives with commas.").foregroundStyle(.secondary)
             LabeledContent("Preview", value: preview).accessibilityLabel("Deterministic preview: \(preview)")
             Text("This changes written text only. It does not train the speech model.").foregroundStyle(.secondary)
             HStack {
-                Button("Cancel") { model.showEditor = false }
+                Button("Cancel") { model.cancelEditor() }
                 Spacer()
                 Button("Save") { model.save(candidate) }.disabled(written.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding().frame(width: 460)
+    }
+}
+
+/// Reuses the existing validated Settings surface in a focused manager window.
+/// There is one store and one editor implementation regardless of entry point.
+struct VocabularyWindowView: View {
+    let model: VocabularySettingsModel
+
+    var body: some View {
+        Form { VocabularySettingsSection(model: model, editorHost: .manager) }
+            .formStyle(.grouped)
+            .frame(width: 520)
+            .frame(minHeight: 520)
+    }
+}
+
+private struct PrivateVocabularyTextField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let accessibilityLabel: String
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.placeholderString = placeholder
+        field.delegate = context.coordinator
+        field.setAccessibilityLabel(accessibilityLabel)
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text { field.stringValue = text }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: PrivateVocabularyTextField
+
+        init(_ parent: PrivateVocabularyTextField) { self.parent = parent }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField,
+                  let editor = field.currentEditor() as? NSTextView else { return }
+            configurePrivateHistoryTextView(editor)
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            parent.text = (notification.object as? NSTextField)?.stringValue ?? ""
+        }
+    }
+}
+
+private struct PrivateVocabularyTranscriptView: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        let view = NSTextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = false
+        configurePrivateHistoryTextView(view)
+        view.setAccessibilityLabel("Recent raw transcript")
+        scroll.documentView = view
+        scroll.hasVerticalScroller = true
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        (scroll.documentView as? NSTextView)?.string = text
     }
 }

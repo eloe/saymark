@@ -293,6 +293,14 @@ the raw transcript where corrected output is shown. Add/edit requires a written
 value and one or more “heard as” aliases. A preview must show supplied sample
 ASR text and the exact deterministic result, plus a conflict before save.
 
+The menu-bar popover may open that same validated Vocabulary section directly.
+A completed HUD may also open an explicit add-rule editor with its memory-only
+raw transcript visible as reference. The user must type the exact **When I say**
+and **Write** values; opening, dismissing, or timing out that editor never infers
+or persists a rule, and it never rewrites text already delivered to another app.
+The transcript reference is cleared on save, cancel, dismissal, or after five
+minutes.
+
 No setting means no rules. New installs start with an empty store. The app must
 never infer a rule from a correction the user made elsewhere, a frequently seen
 word, an imported transcript, or a previously recognized phrase. The only
@@ -437,8 +445,9 @@ prohibited.
 
 ## 7. Accessibility and UI/design approval
 
-**Approved UI direction (binding):** one native **Vocabulary** Settings section,
-not separate Vocabulary/Replacements tabs. It contains native empty, populated,
+**Approved UI direction (binding):** one native **Vocabulary** management section,
+reused by Settings and the menu-bar entry rather than separate implementations
+or Vocabulary/Replacements tabs. It contains native empty, populated,
 search, and add/edit states; the editor labels are **Write** and **When I say**.
 Its preview explicitly says it changes written text only and does not train the
 speech model. Corrected output has a disclosure to show/copy the raw transcript.
@@ -454,6 +463,12 @@ sample preview while editing, field-level import review (including deletions),
 explicit per-import URL acknowledgement, and an export warning.  This approval
 authorizes implementation of the UI direction above; it does not authorize
 network learning, cloud sync, or telemetry of vocabulary values.
+
+**Follow-up approval (2026-08-10):** the product owner approved direct menu-bar
+access to the same management section and an explicit HUD-to-rule entry point.
+This approval does not authorize inferred learning or post-insertion mutation:
+the user supplies and reviews both rule fields, and delivered application text
+remains untouched.
 
 **Final-review implementation record (2026-07-26):** corrected drafts are
 published from correction completion, not sampled at microphone-chunk
@@ -596,10 +611,11 @@ PR/release evidence.
 | UI-03 | Rule preview and conflict | Preview is deterministic; save is blocked with an accessible conflict message. |
 | UI-04 | Keyboard-only traversal | All list/editor/preview/import controls reachable, ordered, and operable. |
 | UI-05 | VoiceOver | Labels distinguish written output from heard-as aliases; errors announced once. |
-| UI-06 | Corrected final and raw fallback | User can identify/copy the intended text without ambiguity; failed raw fallback remains visible when raw equals rendered and exposes no internal enum name. |
-| UI-07 | Import preview/cancel/merge/replace | New/updated/unchanged/disabled/conflict counts, created/modified/kind/value diffs, per-entry URL flags, URL acknowledgement, and destructive confirmation match the approved mockup; conflicts are reviewable but block apply; cancel changes nothing. |
-| UI-08 | Dynamic Type, contrast, reduced motion | No clipped values or color-only validation; no new distracting animation. |
-| UI-09 | Language truth | `AUTO` is absent; `EN` or no badge matches the approved mockup, no unsupported language appears selectable/detected, and no label comes from model output. |
+| UI-06 | HUD-to-rule entry | Opens the explicit editor with memory-only raw context; cancel/dismiss/timeout leaves the store byte-for-byte unchanged and clears the context. |
+| UI-07 | Corrected final and raw fallback | User can identify/copy the intended text without ambiguity; failed raw fallback remains visible when raw equals rendered and exposes no internal enum name. |
+| UI-08 | Import preview/cancel/merge/replace | New/updated/unchanged/disabled/conflict counts, created/modified/kind/value diffs, per-entry URL flags, URL acknowledgement, and destructive confirmation match the approved mockup; conflicts are reviewable but block apply; cancel changes nothing. |
+| UI-09 | Dynamic Type, contrast, reduced motion | No clipped values or color-only validation; no new distracting animation. |
+| UI-10 | Language truth | `AUTO` is absent; `EN` or no badge matches the approved mockup, no unsupported language appears selectable/detected, and no label comes from model output. |
 
 ### Performance, reliability, and security tests
 
