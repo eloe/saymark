@@ -23,7 +23,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/PostHog/posthog-ios",
-            exact: "3.69.3"
+            exact: "3.69.5"
         ),
     ]
 )
