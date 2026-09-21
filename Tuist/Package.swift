@@ -19,11 +19,11 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/sindresorhus/KeyboardShortcuts",
-            exact: "3.0.1"
+            exact: "3.1.0"
         ),
         .package(
             url: "https://github.com/PostHog/posthog-ios",
-            exact: "3.69.3"
+            exact: "3.78.1"
         ),
     ]
 )
